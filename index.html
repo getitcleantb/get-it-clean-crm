@@ -725,7 +725,7 @@ html.gated, html.gated body { overflow: hidden; }
     events: () => cache.events, calendars: () => cache.cals, loadedAt: () => cache.at,
     connected: () => tokenOk() && has("calWrite") && (status === "ready" || status === "loading"), // can write to the calendar right now
     busy: () => !!loading,
-    missing: () => !tokenOk() ? "" : !has("calRead") ? "read" : !has("calWrite") ? "write" : "", // a calendar box left unticked on Google's screen
+    missing: () => !L.get(K.on) ? "" : !granted("calRead") ? "read" : !granted("calWrite") ? "write" : "", // a calendar box left unticked on Google's screen (still known after the token runs out)
     range: () => ({ from: cache.from || range().from, to: cache.to || range().to }),
     takeReturn: () => { const r = returned; returned = null; return r; },
     // ret = where the CRM was (view, open lead) so it comes back to the same place
@@ -1283,7 +1283,9 @@ function sourcePhrase(l) { return ({ "Angi": "Angi", "Facebook / Meta ads": "Fac
 function servicePhrase(l) { const s = (l.services || []).map(x => x.toLowerCase()); return s.length ? (s.length > 1 ? s.slice(0, -1).join(", ") + " and " + s[s.length - 1] : s[0]) : "pressure washing"; }
 function freeSlots(n) {
   const busy = S.jobs.filter(j => j.status !== "canceled" && j.start && j.start.length > 10).map(j => [new Date(j.start), new Date(j.end || j.start)])
-    .concat(S.cal.events.filter(e => e.start && e.start.dateTime && e.transparency !== "transparent").map(e => [new Date(e.start.dateTime), new Date((e.end || e.start).dateTime || e.start.dateTime)]));
+    .concat(S.cal.events.filter(e => e.start && e.start.dateTime && e.transparency !== "transparent").map(e => [new Date(e.start.dateTime), new Date((e.end || e.start).dateTime || e.start.dateTime)]))
+    // a Google all-day event marked Busy (a vacation) takes the whole day
+    .concat(S.cal.events.filter(e => e.start && e.start.date && !e.start.dateTime && e.transparency !== "transparent").map(e => [new Date(e.start.date + "T00:00:00"), new Date(((e.end && e.end.date) || addDays(1, e.start.date)) + "T00:00:00")]));
   const out = []; const now = new Date(); const hours = [9, 11, 13, 15, 17];
   for (let d = 1; d <= 14 && out.length < n; d++) {
     const day = new Date(now); day.setDate(now.getDate() + d); if (day.getDay() === 0) continue;
@@ -1524,7 +1526,7 @@ function dropOnStage(l, stage) {
   if (stage === "paid") {
     const open = S.jobs.find(j => j.leadId === l.id && j.kind === "job" && ["scheduled", "completed"].includes(j.status));
     if (open) { openLead(l.id, "work"); setTimeout(() => { payBox(open, "modal"); if (S.payOpen) S.payOpen.dropPaid = l.id; }, 30); toast("Record the payment to mark them paid"); }
-    else { closeModal(); S.view = "money"; S.money.form = "job"; S.money.formLead = l.id; S.money.dropPaid = l.id; forgetTyped(/^mj-/); render(); window.scrollTo(0, 0); toast("Add the paid job to mark them paid"); }
+    else { closeModal(); S.view = "money"; S.money.form = "job"; S.money.formLead = l.id; S.money.dropPaid = l.id; S.money.gen = (S.money.gen || 0) + 1; forgetTyped(/^mj-/); render(); window.scrollTo(0, 0); toast("Add the paid job to mark them paid"); }
     return;
   }
   setStage(l, stage, null, stage === "lost" ? "Find them with “Lost” in the list above." : "").catch(() => {});
@@ -1572,7 +1574,7 @@ async function promote(l, why, extra) {
 
 // ---------- LEAD MODAL ----------
 let openLeadId = null;
-function closeModal() { if (openLeadId) flushFollowUp(openLeadId); $("#modal").innerHTML = ""; S.book = null; openLeadId = null; S.leaveLeadOk = false; S.dispoMsg = null; S.draftMsg = null; S.tabDraft = null; S.dirty = false; fuDeferred = false; if (S.payOpen && S.payOpen.where === "modal") S.payOpen = null; document.body.style.overflow = ""; }
+function closeModal() { if (S.book && S.book.saving) { toast("Still saving the job…"); return; } if (openLeadId) flushFollowUp(openLeadId); $("#modal").innerHTML = ""; S.book = null; openLeadId = null; S.leaveLeadOk = false; S.dispoMsg = null; S.draftMsg = null; S.tabDraft = null; S.dirty = false; fuDeferred = false; if (S.payOpen && S.payOpen.where === "modal") S.payOpen = null; document.body.style.overflow = ""; }
 function showModal(html, wide) {
   $("#modal").innerHTML = `<div class="scrim" data-scrim="1"><div class="sheet ${wide ? "wide" : ""}" role="dialog" aria-modal="true">${html}</div></div>`;
   document.body.style.overflow = "hidden";
@@ -1994,6 +1996,7 @@ async function saveSchedule(btn) {
   const l = leadById(openLeadId); if (!l) return;
   const kind = btn.dataset.kind; const date = $("#sc-date").value;
   if (!date) { toast("Pick a date"); return; }
+  if (!fuYearOk(date)) { toast("Finish typing the year in the date"); return; }
   btn.disabled = true;
   const ok = await bookAppt(l, kind, { date, time: $("#sc-time").value, dur: +$("#sc-dur").value, title: $("#sc-title").value, addr: $("#sc-addr").value, amount: $("#sc-amt")?.value, service: $("#sc-svc")?.value, crew: kind === "job" ? crewVal("sc-crew") : "", cal: $("#sc-gcal").checked, quoteId: btn.dataset.quote || "" }, $("#sc-status"));
   if (ok) clearExtra(); else btn.disabled = false;
@@ -2143,7 +2146,7 @@ function quoteActsHTML() {
   if (!QD.id) return send;
   const opts = inv ? [["draft", "Draft"], ["sent", "Sent"], ["paid", "Paid"]] : [["draft", "Draft"], ["sent", "Sent"], ["accepted", "Accepted"], ["declined", "Declined"]];
   const cur = QD.status || "draft";
-  const status = `<div class="qsec"><span class="lab">Status</span><div class="seg wide" role="group" aria-label="Status">${opts.map(([k, t]) => `<button data-act="q-status" data-s="${k}" aria-pressed="${cur === k}">${t}</button>`).join("")}</div>${!inv && !["accepted", "declined"].includes(cur) ? `<p class="note">Tap Accepted when they say yes: a calendar opens to book the job.</p>` : ""}${!inv && cur === "accepted" ? (() => { const j = bookedFrom(QD.id); return `<div class="row" style="margin-top:8px">${j ? `<span class="note">Job booked for ${esc(fmtDT(j.start))}.</span><button class="btn sm" data-act="bk-open">Book another visit</button>` : `<button class="btn sm primary" data-act="bk-open">Book the job</button>`}</div>`; })() : ""}</div>`;
+  const status = `<div class="qsec"><span class="lab">Status</span><div class="seg wide" role="group" aria-label="Status">${opts.map(([k, t]) => `<button data-act="q-status" data-s="${k}" aria-pressed="${cur === k}">${t}</button>`).join("")}</div>${!inv && !["accepted", "declined"].includes(cur) ? `<p class="note">Tap Accepted when they say yes: a calendar opens to book the job.</p>` : ""}${!inv && cur === "accepted" ? (() => { const mine = bookedFrom(QD.id), j = mine || (l && nextAppt(l, "job")); return `<div class="row" style="margin-top:8px">${j ? `<span class="note">${mine ? "Job" : `${esc(leadName(l))} has a job`} booked for ${esc(fmtDT(j.start))}.</span><button class="btn sm" data-act="bk-open">Book another visit</button>` : `<button class="btn sm primary" data-act="bk-open">Book the job</button>`}</div>`; })() : ""}</div>`;
   const more = `<details class="qmore"><summary>More</summary><div class="actions">${!inv ? `<button class="btn" data-act="q-to-invoice">Make invoice from this</button>` : ""}<button class="btn danger" data-act="q-delete">Delete</button></div></details>`;
   return status + send + more;
 }
@@ -2260,9 +2263,11 @@ async function saveQuote(silent) {
   if (l && (isNew || linked || isOutreach(l))) {
     const upd = { updatedAt: doc.updatedAt };
     if (isNew || linked) {
-      upd.activity = activity(l, "quote", `${isInvoice(QD) ? "Invoice" : "Estimate"} ${QD.number} ${isNew ? "created" : "linked"}, ${money(t.total, true)}`);
+      const acc = !isInvoice(QD) && QD.status === "accepted";
+      upd.activity = activity(l, "quote", `${isInvoice(QD) ? "Invoice" : "Estimate"} ${QD.number} ${isNew ? "created" : "linked"}, ${money(t.total, true)}${acc ? ", accepted" : ""}`);
       // only an open lead takes the estimate's total as its value; a past customer keeps their stage and value
-      if (!isInvoice(QD) && PRE_SALE.includes(l.stage || "new")) { upd.value = t.total; if (l.stage !== "selling") upd.stage = "selling"; }
+      if (!isInvoice(QD) && PRE_SALE.includes(l.stage || "new")) { upd.value = t.total; if (acc) upd.stage = "scheduled"; else if (l.stage !== "selling" && QD.status !== "declined") upd.stage = "selling"; }
+      else if (acc && l.stage === "lost" && !l.dnc) { upd.value = t.total; upd.stage = "scheduled"; }
     }
     if (isOutreach(l)) Object.assign(upd, PROMOTE());
     await saveDoc("leads", l.id, upd, true);
@@ -2272,8 +2277,15 @@ async function saveQuote(silent) {
   syncQuoteChrome();
   return true;
 }
+// one status change at a time: a second tap while the first is saving is ignored
+let qStatusBusy = false;
 async function quoteStatus(s) {
-  if (QD.id && (QD.status || "draft") === s) return;
+  if (qStatusBusy || (QD.id && (QD.status || "draft") === s)) return;
+  qStatusBusy = true;
+  try { await quoteStatusNow(s); } finally { qStatusBusy = false; }
+}
+async function quoteStatusNow(s) {
+  const q0 = QD;
   if (!(await saveQuote(true))) return;
   const now = new Date().toISOString(); const inv = isInvoice(QD);
   await saveDoc("quotes", QD.id, { status: s, updatedAt: now }, true); QD.status = s;
@@ -2294,7 +2306,8 @@ async function quoteStatus(s) {
   syncQuoteChrome();
   if (s === "paid" && l) toast("Marked paid. Record the payment on the job too, so Money counts it.", 9000, { label: "Open jobs", fn: () => { closeModal(); openLead(l.id, "work"); } });
   else toast(`Marked ${QSTAT[s].toLowerCase()}`);
-  if (s === "accepted" && !inv) startBooking();
+  // the calendar opens only if this estimate is still the one on screen
+  if (s === "accepted" && !inv && QD === q0 && $("#modal #q-acts")) startBooking();
 }
 // ---------- CALENDAR ----------
 // Two ways to reach Google Calendar: the claude.ai connectors (S.mcp, the old page) or the website's own Google
@@ -2406,7 +2419,7 @@ const touches = (e, startT, endT) => (e.start || "").slice(0, 10) <= endT && las
 function rangeItems(startT, endT) {
   const crm = S.jobs.filter(j => j.status !== "canceled").map(j => ({ src: "crm", id: j.id, title: j.title, start: j.start, end: j.end, where: j.address, kind: j.kind, eventId: j.eventId, leadId: j.leadId, amount: j.amount })).filter(e => touches(e, startT, endT));
   const ids = new Set(crm.map(c => c.eventId).filter(Boolean));
-  const g = S.cal.events.filter(e => !ids.has(e.id)).map(e => ({ src: "g", id: e.id, title: e.summary || "(No title)", start: e.start?.dateTime || e.start?.date, end: e.end?.dateTime || e.end?.date, allDay: !e.start?.dateTime, where: e.location || e.description || "", link: e.htmlLink, cal: e.calName || "" })).filter(e => touches(e, startT, endT));
+  const g = S.cal.events.filter(e => !ids.has(e.id)).map(e => ({ src: "g", id: e.id, title: e.summary || "(No title)", start: e.start?.dateTime || e.start?.date, end: e.end?.dateTime || e.end?.date, allDay: !e.start?.dateTime, free: e.transparency === "transparent", where: e.location || e.description || "", link: e.htmlLink, cal: e.calName || "" })).filter(e => touches(e, startT, endT));
   return crm.concat(g).sort((a, b) => (a.start || "").localeCompare(b.start || ""));
 }
 function upcomingItems(days) { return rangeItems(ymd(new Date()), addDays(days)); }
@@ -2497,14 +2510,23 @@ async function loadMail() {
 // from the estimate. Booking it saves the job, puts it on Google Calendar and goes back to the Quotes tab.
 const BOOK_STARTS = ["07:00", "08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00"];
 const timedOnly = (e) => !(e.allDay || String(e.start || "").length <= 10);
-// start times that day (7 AM to 6 PM) with nothing timed booked for the job's length, and not already past
-function openTimes(day, durMin) {
-  const busy = rangeItems(day, day).filter(timedOnly).map(e => [new Date(e.start), new Date(e.end || e.start)]), now = new Date();
-  return BOOK_STARTS.filter(t => {
-    const st = new Date(`${day}T${t}:00`), en = new Date(st.getTime() + durMin * 60000);
-    return st > now && !busy.some(([a, b]) => a < en && b > st);
-  });
+// what's booked from one day to another: timed jobs and estimates, Google events not marked Free, and a Google
+// all-day event marked Busy (a vacation) takes the whole day
+function busyBetween(from, to) {
+  return rangeItems(from, to).filter(e => !e.free && (timedOnly(e) || e.src === "g"))
+    .map(e => timedOnly(e) ? { a: new Date(e.start), b: new Date(e.end || e.start), e } : { a: new Date(String(e.start).slice(0, 10) + "T00:00:00"), b: new Date(String(e.end || addDays(1, e.start)).slice(0, 10) + "T00:00:00"), e });
 }
+// why a start time doesn't work that day for the job's length: null when it fits
+function clashFor(day, hhmm, durMin) {
+  if (!/^\d{2}:\d{2}/.test(hhmm || "")) return { bad: "time" };
+  const st = new Date(`${day}T${hhmm.slice(0, 5)}:00`), en = new Date(st.getTime() + durMin * 60000);
+  if (isNaN(st.getTime())) return { bad: "time" };
+  if (st <= new Date()) return { bad: "past" };
+  const hit = busyBetween(day, ymd(en)).find(x => x.a < en && x.b > st);
+  return hit ? { bad: "clash", e: hit.e } : null;
+}
+// the start times (7 AM to 6 PM) with room for the job's length
+function openTimes(day, durMin) { return BOOK_STARTS.filter(t => !clashFor(day, t, durMin)); }
 // the first day from tomorrow (not a Sunday) with room for the job
 function bookFirstDay(durMin) {
   for (let i = 1; i <= 60; i++) { const d = addDays(i); if (new Date(d + "T12:00:00").getDay() === 0) continue; if (openTimes(d, durMin).length) return d; }
@@ -2517,19 +2539,21 @@ function startBooking() {
   if (!l) { toast("Pick the customer, or type a new customer's name, at the top of the estimate. Then tap Book the job.", 7000); return; }
   const dur = 240, day = bookFirstDay(dur), total = quoteTotals(QD).total;
   const svc = [...new Set((QD.items || []).filter(isLine).map(i => String(i.service || "").trim()).filter(Boolean))].join(", ") || (l.services || []).join(", ");
-  S.book = { quoteId: QD.id, leadId: l.id, number: QD.number, amount: total, month: monthKey(day), day, dur, svc };
+  S.book = { quoteId: QD.id, leadId: l.id, number: QD.number, amount: total, month: monthKey(day), day, dur, svc, auto: "" };
   S.dirty = false;
   $("#modal .sheet").innerHTML = bookHTML(l);
   const sc = $("#modal .scrim"); if (sc) sc.scrollTop = 0;
+  const h = $("#bk-h"); if (h) h.focus({ preventScroll: true });
 }
 function bookHTML(l) {
-  const b = S.book, first = openTimes(b.day, b.dur)[0] || "08:00", had = bookedFrom(b.quoteId);
+  const b = S.book, first = openTimes(b.day, b.dur)[0] || "08:00"; b.auto = first;
+  const mine = bookedFrom(b.quoteId), had = mine || nextAppt(l, "job");
   const calNote = S.mcp || calConnected() || !STANDALONE ? "Add to my Google Calendar" : "Add it to my Google Calendar (opens Google Calendar so you can save it there)";
-  return `<div class="sh"><h2>Book the job</h2><button class="x" data-close="1" aria-label="Close">×</button></div>
+  return `<div class="sh"><h2 id="bk-h" tabindex="-1">Book the job</h2><button class="x" data-close="1" aria-label="Close">×</button></div>
   <div class="sb stack">
     <p class="note">${esc(leadName(l))} accepted estimate #${esc(b.number)} for ${money(b.amount, b.amount % 1 !== 0)}. Pick the day on the calendar, then the time you'll do the job.</p>
-    ${had ? `<div class="banner warn">A job from this estimate is already booked for ${esc(fmtDT(had.start))}. Book another only if it's an extra visit.</div>` : ""}
-    <div id="bk-cal">${bookCalHTML()}</div>
+    ${had ? `<div class="banner warn">${mine ? "A job from this estimate" : `A job for ${esc(leadName(l))}`} is already booked for ${esc(fmtDT(had.start))}. Book this one only if it's another visit.</div>` : ""}
+    <div id="bk-cal">${bookCalHTML(first)}</div>
     <section class="panel"><div class="panel-h"><h2>The job</h2></div><div class="form">
       <label class="f">Date<input type="date" id="bk-date" value="${esc(b.day)}"></label>
       <label class="f">Start time<input type="time" id="bk-time" value="${first}"></label>
@@ -2541,42 +2565,72 @@ function bookHTML(l) {
       <label class="f full">Calendar title<input type="text" id="bk-title" value="${esc("Job: " + [l.company, l.name].filter(Boolean).join(", "))}"></label>
       <label class="check full"><input type="checkbox" id="bk-gcal" checked> ${calNote}</label>
     </div>
-    <div class="row"><button class="btn primary" data-act="bk-save">Book job</button><button class="btn" data-act="bk-back">Back to the estimate</button><span id="bk-status" class="note"></span></div></section>
+    <div class="row"><button class="btn primary" data-act="bk-save">Book job</button><button class="btn" data-act="bk-back">Back to the estimate</button><span id="bk-status" class="note" role="status"></span></div></section>
   </div>`;
 }
-// what's on a day, without links (tapping one would leave the booking)
-function bookRow(e) {
+// what's on a day, without links (tapping one would leave the booking); something running past this day shows its dates
+function bookRow(e, day) {
   const tag = e.src === "crm" ? `<span class="pill ${e.kind === "job" ? "s-scheduled" : "s-visit"}">${e.kind === "job" ? "Job" : "Estimate"}</span>` : `<span class="chip">${esc(e.cal || "Google")}</span>`;
-  const when = timedOnly(e) ? `${fmtT(e.start)}${e.end ? " to " + fmtT(e.end) : ""}` : "All day";
-  return `<div class="item static"><div class="main-col"><span class="t">${esc(e.title)}</span><span class="s">${esc(when)}${e.where ? " · " + esc(String(e.where).split("\n")[0]) : ""}</span></div><div class="r">${tag}</div></div>`;
+  let when;
+  if (!timedOnly(e)) {
+    const s0 = String(e.start).slice(0, 10), e0 = e.end ? String(e.end).slice(0, 10) : "";
+    when = e0 && e0 > addDays(1, s0) ? `All day, ${fmtD(s0, { month: "short", day: "numeric" })} to ${fmtD(addDays(-1, e0), { month: "short", day: "numeric" })}` : "All day";
+  } else {
+    const endDay = e.end ? ymd(new Date(new Date(e.end).getTime() - 1)) : "";
+    when = ymd(new Date(e.start)) !== day || (endDay && endDay !== day) ? `${fmtDT(e.start)} to ${fmtDT(e.end || e.start)}` : `${fmtT(e.start)}${e.end ? " to " + fmtT(e.end) : ""}`;
+  }
+  return `<div class="item static"><div class="main-col"><span class="t">${esc(e.title)}${e.free ? ' <span class="note">(free)</span>' : ""}</span><span class="s">${esc(when)}${e.where ? " · " + esc(String(e.where).split("\n")[0]) : ""}</span></div><div class="r">${tag}</div></div>`;
 }
-function bookCalHTML() {
-  const b = S.book, items = rangeItems(b.day, b.day), times = openTimes(b.day, b.dur), cur = ($("#bk-time") || {}).value || "";
-  const hrs = b.dur / 60, sunday = new Date(b.day + "T12:00:00").getDay() === 0, past = b.day < today();
+// Google Calendar isn't loaded on this device, so the open times only know the CRM's own jobs and estimates
+function bookGoogleNote() {
+  if (S.mcp || !GC() || S.cal.status === "ready" || S.cal.status === "loading") return "";
+  if (S.cal.status === "expired" && S.cal.events.length && S.cal.at) return `Google Calendar needs a reconnect on this device, so these times count what was loaded at ${new Date(S.cal.at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })} plus your CRM jobs.`;
+  return "Your Google Calendar isn't showing on this device, so these times only count the jobs and estimates in the CRM. Connect it on the Calendar tab.";
+}
+function bookCalHTML(cur) {
+  const b = S.book, items = rangeItems(b.day, b.day), times = openTimes(b.day, b.dur);
+  if (cur == null) cur = ($("#bk-time") || {}).value || "";
+  const hrs = b.dur / 60, len = hrs === 1 ? "an hour" : hrs + " hours", sunday = new Date(b.day + "T12:00:00").getDay() === 0, past = b.day < today();
+  const c = cur && !past ? clashFor(b.day, cur, b.dur) : null, gn = bookGoogleNote(), at = cur ? fmtT(b.day + "T" + cur.slice(0, 5) + ":00") : "";
+  const clash = !c ? "" : c.bad === "clash" ? `${at} for ${len} runs into ${c.e.title} (${timedOnly(c.e) ? fmtDT(c.e.start) : "all day"}).` : c.bad === "past" ? `${at} has already passed.` : "";
   return `<section class="panel flush"><div class="panel-h mnav"><button class="btn sm icon-btn" data-bk-nav="-1" aria-label="Previous month">‹</button><h2>${esc(fmtD(b.month + "-01", { month: "long", year: "numeric" }))}</h2><button class="btn sm icon-btn" data-bk-nav="1" aria-label="Next month">›</button><button class="btn sm ghost" data-bk-nav="0">This month</button></div>
     <div class="pad" style="padding-top:0">${monthGrid(b.month, b.day, "data-bk-day", true)}</div></section>
   <section class="panel flush"><div class="panel-h"><h2>${esc(fmtD(b.day, { weekday: "long", month: "long", day: "numeric" }))}</h2><span class="count">${items.length ? plural(items.length, "thing") + " booked" : "Nothing booked"}</span></div>
-    ${items.length ? `<div class="list">${items.map(bookRow).join("")}</div>` : ""}
-    <div class="pad stack"><span class="lab">${past ? "That day has passed." : `Open start times for ${hrs === 1 ? "an hour" : hrs + " hours"}${sunday ? " (it's a Sunday)" : ""}`}</span>
-      <div class="row bk-times">${times.length ? times.map(t => `<button class="btn sm${t === cur ? " primary" : ""}" data-bk-time="${t}" aria-pressed="${t === cur}">${esc(fmtT(b.day + "T" + t + ":00"))}</button>`).join("") : past ? "" : `<span class="note">Nothing open that long this day. Pick another day, or type a time below anyway.</span>`}</div></div></section>`;
+    ${items.length ? `<div class="list">${items.map(e => bookRow(e, b.day)).join("")}</div>` : ""}
+    <div class="pad stack"><span class="lab">${past ? "That day has passed." : `Open start times for ${len}${sunday ? " (it's a Sunday)" : ""}`}</span>
+      <div class="row bk-times">${times.length ? times.map(t => `<button class="btn sm${t === cur ? " primary" : ""}" data-bk-time="${t}" aria-pressed="${t === cur}">${esc(fmtT(b.day + "T" + t + ":00"))}</button>`).join("") : past ? "" : `<span class="note">Nothing open that long this day. Pick another day, or type a time below anyway.</span>`}</div>
+      ${clash ? `<div class="banner warn" role="status">${esc(clash)}</div>` : ""}${gn ? `<p class="note">${esc(gn)}</p>` : ""}</div></section>`;
 }
-// redraws the calendar and the day, not the boxes below, so nothing typed is lost
-function refreshBook() { const box = $("#modal #bk-cal"); if (S.book && box) box.innerHTML = bookCalHTML(); }
+// redraws the calendar and the day, not the boxes below, so nothing typed is lost. A start time the CRM suggested
+// moves when something new now takes it (one picked by hand stays, with a note), and focus stays on the same button.
+function refreshBook() {
+  const box = $("#modal #bk-cal"); if (!S.book || !box) return;
+  const ti = $("#bk-time"), b = S.book;
+  if (ti && b.auto && ti.value === b.auto && clashFor(b.day, ti.value, b.dur)) { const o = openTimes(b.day, b.dur)[0]; if (o) { ti.value = o; b.auto = o; } }
+  const a = document.activeElement, d = a && box.contains(a) ? a.dataset : null;
+  const k = !d ? "" : d.bkNav !== undefined ? `[data-bk-nav="${d.bkNav}"]` : d.bkDay ? `[data-bk-day="${d.bkDay}"]` : d.bkTime ? `[data-bk-time="${d.bkTime}"]` : "";
+  box.innerHTML = bookCalHTML();
+  if (k) { const n = box.querySelector(k) || box.querySelector(".mday.sel"); if (n) n.focus({ preventScroll: true }); }
+}
 function bookPickDay(d) {
-  if (!S.book || !/^\d{4}-\d{2}-\d{2}$/.test(d)) return;
+  if (!S.book || !/^\d{4}-\d{2}-\d{2}$/.test(d) || !fuYearOk(d)) return;
   S.book.day = d; S.book.month = monthKey(d);
   const di = $("#bk-date"); if (di && di.value !== d) di.value = d;
   const ti = $("#bk-time"), open = openTimes(d, S.book.dur);
-  // a time that isn't open on the new day moves to that day's first open one
-  if (ti && open.length && !open.includes(ti.value)) ti.value = open[0];
+  // a time that doesn't work on the new day moves to that day's first open one; a time typed by hand that still fits stays
+  if (ti && open.length && clashFor(d, ti.value, S.book.dur)) { ti.value = open[0]; S.book.auto = open[0]; }
   refreshBook();
 }
 async function bookSave(btn) {
-  const b = S.book, l = b && leadById(b.leadId); if (!l) return;
-  const date = $("#bk-date").value; if (!date) { toast("Pick a date"); return; }
+  const b = S.book, l = b && leadById(b.leadId); if (!l || b.saving) return;
+  const date = $("#bk-date").value; if (!date || !fuYearOk(date)) { toast(date ? "Finish typing the year in the date" : "Pick a date"); return; }
+  const time = $("#bk-time").value; if (!time) { toast("Pick a start time"); return; }
   const hrs = +$("#bk-hrs").value; if (!(hrs > 0)) { toast("Put how many hours the job takes"); return; }
-  btn.disabled = true;
-  const r = await bookAppt(l, "job", { date, time: $("#bk-time").value, dur: Math.round(hrs * 60), title: $("#bk-title").value, addr: $("#bk-addr").value, amount: $("#bk-amt").value, service: $("#bk-svc").value, crew: crewVal("bk-crew"), cal: $("#bk-gcal").checked, quoteId: b.quoteId }, $("#bk-status"));
+  btn.disabled = true; b.saving = true; // the popup can't be closed until it's saved, so the job can't be booked twice
+  let r = false;
+  try { r = await bookAppt(l, "job", { date, time, dur: Math.round(hrs * 60), title: $("#bk-title").value, addr: $("#bk-addr").value, amount: $("#bk-amt").value, service: $("#bk-svc").value, crew: crewVal("bk-crew"), cal: $("#bk-gcal").checked, quoteId: b.quoteId }, $("#bk-status")); }
+  finally { b.saving = false; }
+  if (S.book !== b) return;
   if (!r) { btn.disabled = false; return; }
   closeModal(); render();
 }
@@ -2884,8 +2938,10 @@ function moneyForm(kind) {
     </div>
     <div class="row"><button class="btn primary" data-act="save-mjob">Save job</button></div></section>`;
 }
+// what the Money forms hold when Save is tapped, so leaving the form while it saves can't blank anything out
+function moneySnap(prefix) { const F = {}; document.querySelectorAll(`#view input[id^="${prefix}"], #view select[id^="${prefix}"], #view textarea[id^="${prefix}"]`).forEach(el => { F[el.id] = String(el.value || "").trim(); }); return F; }
 async function saveMoneyJob(btn) {
-  const v = id => (document.getElementById(id)?.value || "").trim();
+  const F = moneySnap("mj-"), crew = crewVal("mj-crew"), gen = S.money.gen; const v = id => F[id] || "";
   const price = Number(v("mj-price")); if (!(price > 0)) { toast("Enter the job price (more than $0)"); return; }
   if (v("mj-cost") !== "" && !(Number(v("mj-cost")) >= 0)) { toast("Job cost can't be negative"); return; }
   let leadId = v("mj-lead"); const date = v("mj-date") || today(); const status = v("mj-status"); const svc = v("mj-svc"); const now = new Date().toISOString();
@@ -2920,17 +2976,19 @@ async function saveMoneyJob(btn) {
         if (isOutreach(l)) Object.assign(upd, PROMOTE());
         await saveDoc("leads", l.id, upd, true); }
     }
-    const job = { kind: "job", leadId, title: "Job: " + name, service: svc, start: date, end: date, address: v("mj-addr"), amount: price, cost: Number(v("mj-cost")) || 0, crew: crewVal("mj-crew"), source: v("mj-src"), status, paidDate: status === "paid" ? date : "", method: status === "paid" ? v("mj-method") : "", createdAt: now };
+    const job = { kind: "job", leadId, title: "Job: " + name, service: svc, start: date, end: date, address: v("mj-addr"), amount: price, cost: Number(v("mj-cost")) || 0, crew, source: v("mj-src"), status, paidDate: status === "paid" ? date : "", method: status === "paid" ? v("mj-method") : "", createdAt: now };
     if (v("mj-bank") !== "") job.bankPct = Math.max(0, Math.min(100, Number(v("mj-bank")) || 0)) / 100;
     await saveDoc("jobs", uid("job"), job);
-    S.money.form = ""; S.money.formLead = ""; S.money.dropPaid = ""; forgetTyped(/^m[je]-/); const msg = (matched ? `Job saved on your existing customer ${matched}.` : "Job saved.") + (kept ? " " + kept : ""); toast(msg, matched || kept ? 5000 : 2600); schedule();
+    // the form closes only if it's still the one that was saved (not one opened since)
+    if (S.money.gen === gen && S.money.form === "job") { S.money.form = ""; S.money.formLead = ""; S.money.dropPaid = ""; forgetTyped(/^mj-/); }
+    const msg = (matched ? `Job saved on your existing customer ${matched}.` : "Job saved.") + (kept ? " " + kept : ""); toast(msg, matched || kept ? 5000 : 2600); schedule();
   } catch (e) { btn.disabled = false; }
 }
 async function saveMoneyExpense(btn) {
-  const v = id => (document.getElementById(id)?.value || "").trim();
+  const F = moneySnap("me-"), gen = S.money.gen; const v = id => F[id] || "";
   const amt = Number(v("me-amt")); if (!(amt > 0)) { toast("Enter the amount spent (more than $0)"); return; }
   btn.disabled = true;
-  try { await saveDoc("expenses", uid("exp"), { date: v("me-date") || today(), category: v("me-cat"), vendor: v("me-vendor"), note: v("me-note"), paidWith: v("me-paid"), forSource: v("me-src"), amount: amt, createdAt: new Date().toISOString() }); S.money.form = ""; forgetTyped(/^m[je]-/); toast("Expense saved"); schedule(); }
+  try { await saveDoc("expenses", uid("exp"), { date: v("me-date") || today(), category: v("me-cat"), vendor: v("me-vendor"), note: v("me-note"), paidWith: v("me-paid"), forSource: v("me-src"), amount: amt, createdAt: new Date().toISOString() }); if (S.money.gen === gen && S.money.form === "expense") { S.money.form = ""; forgetTyped(/^me-/); } toast("Expense saved"); schedule(); }
   catch (e) { btn.disabled = false; }
 }
 function jobRow(j) {
@@ -3427,7 +3485,7 @@ document.addEventListener("click", async (e) => {
   // Book the job popup: a day, another month, a start time
   if (t.dataset.bkDay) { bookPickDay(t.dataset.bkDay); return; }
   if (t.dataset.bkNav !== undefined && S.book) { const n = +t.dataset.bkNav; S.book.month = n === 0 ? monthKey(today()) : monthShift(S.book.month, n); refreshBook(); return; }
-  if (t.dataset.bkTime) { const ti = $("#bk-time"); if (ti) { ti.value = t.dataset.bkTime; S.dirty = true; } refreshBook(); return; }
+  if (t.dataset.bkTime) { const ti = $("#bk-time"); if (ti) { ti.value = t.dataset.bkTime; S.dirty = true; } if (S.book) S.book.auto = ""; refreshBook(); return; }
   if (t.dataset.stageTo) { const sl = leadById(openLeadId); if (sl && (sl.stage || "new") !== t.dataset.stageTo) moveStage(sl, t.dataset.stageTo).catch(() => {}); return; }
   if (t.dataset.openLead && !e.target.closest(".msgrow .row")) { openLead(t.dataset.openLead); return; }
   if (t.dataset.openQuote) { const q = S.quotes.find(x => x.id === t.dataset.openQuote); if (q) openQuoteEditor(q); return; }
@@ -3508,7 +3566,7 @@ document.addEventListener("click", async (e) => {
       case "toggle-filters": S.showFilters = !S.showFilters; render(); break;
       case "clear-filters": S.leadFilter.city = ""; S.leadFilter.group = ""; render(); break;
       case "promote": if (l) { await promote(l, "They replied. Moved from email outreach to Leads."); toast("Moved to Leads"); } break;
-      case "use-open-job": { const j = S.jobs.find(x => x.id === t.dataset.id); if (j) { S.money.form = ""; forgetTyped(/^m[je]-/); render(); setTimeout(() => payBox(j, "view"), 30); } break; }
+      case "use-open-job": { const j = S.jobs.find(x => x.id === t.dataset.id); if (j) { S.money.form = ""; S.money.gen = (S.money.gen || 0) + 1; forgetTyped(/^m[je]-/); render(); setTimeout(() => payBox(j, "view"), 30); } break; }
       case "undo-dispo": await undoDispo(); break;
       case "save-notes": { if (!l) break; const box = $("#ln-notes"), v = box.value.trim();
         // the box then shows exactly what's saved, so a trailing space or line doesn't leave it looking unsaved
@@ -3626,8 +3684,8 @@ document.addEventListener("click", async (e) => {
         break; }
       case "import": importModal(); break;
       case "do-import": await doImport(t); break;
-      case "mf-open": if (S.money.form !== t.dataset.f || S.money.formLead) forgetTyped(/^m[je]-/); S.money.form = t.dataset.f; S.money.formLead = ""; S.money.dropPaid = ""; render(); { const f = $("#view .panel input[autofocus], #mj-lead"); if (f) f.focus(); } window.scrollTo({ top: 0, behavior: "smooth" }); break;
-      case "mf-close": S.money.form = ""; S.money.dropPaid = ""; forgetTyped(/^m[je]-/); render(); break;
+      case "mf-open": if (S.money.form !== t.dataset.f || S.money.formLead) forgetTyped(/^m[je]-/); S.money.gen = (S.money.gen || 0) + 1; S.money.form = t.dataset.f; S.money.formLead = ""; S.money.dropPaid = ""; render(); { const f = $("#view .panel input[autofocus], #mj-lead"); if (f) f.focus(); } window.scrollTo({ top: 0, behavior: "smooth" }); break;
+      case "mf-close": S.money.form = ""; S.money.dropPaid = ""; S.money.gen = (S.money.gen || 0) + 1; forgetTyped(/^m[je]-/); render(); break;
       case "save-mjob": await saveMoneyJob(t); break;
       case "save-mexp": await saveMoneyExpense(t); break;
       case "save-pay": {
@@ -3658,7 +3716,7 @@ document.addEventListener("click", async (e) => {
 document.addEventListener("input", (e) => {
   if (e.target.id === "mj-addr") delete e.target.dataset.auto; // typed by hand: picking another customer won't replace it
   if (S.book && e.target.id === "bk-hrs") { const h = +e.target.value; if (h > 0) { S.book.dur = Math.round(h * 60); refreshBook(); } return; }
-  if (S.book && e.target.id === "bk-time") { refreshBook(); return; }
+  if (S.book && e.target.id === "bk-time") { S.book.auto = ""; refreshBook(); return; }
   const it = e.target.closest && e.target.closest(".qitem");
   if (it && QD) {
     const i = +it.dataset.i, k = e.target.dataset.k; if (!k) return;
