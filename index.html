@@ -20,6 +20,7 @@
 <style>
 /* Layout: navy sidebar on desktop, bottom tab bar on phone. Each page is one calm column: page title, a joined number strip, then panels with plenty of air. */
 :root {
+  --gold: #f2c230; --gold-ink: #3b2b00; --gold-dot: #d9a514;
   --bg: #f3f6f9;
   --surface: #ffffff;
   --surface-2: #f5f7fb;
@@ -47,10 +48,12 @@
   --r: 14px;
 }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --gold: #e6b734; --gold-ink: #1f1600; --gold-dot: #f2c230;
   --bg: #0b1320; --surface: #131e2d; --surface-2: #0f1826; --wash: #1b2a3c; --ink: #edf2f8; --ink-2: #c0cbda; --muted: #92a0b5; --line: #253447;
   --navy: #0b1d52; --accent: #7f99ff; --accent-soft: #1d2a5c; --sky: #3fc2ff; --rev: #3987e5; --exp: #e0652f;
   --good: #4cc38a; --good-soft: #10301f; --warn: #e5aa45; --warn-soft: #33260c; --bad: #f08079; --bad-soft: #3a1513; --plum: #c9a2f5; --plum-soft: #2b1c42; color-scheme: dark; } }
 :root[data-theme="dark"] {
+  --gold: #e6b734; --gold-ink: #1f1600; --gold-dot: #f2c230;
   --bg: #0b1320; --surface: #131e2d; --surface-2: #0f1826; --wash: #1b2a3c; --ink: #edf2f8; --ink-2: #c0cbda; --muted: #92a0b5; --line: #253447;
   --navy: #0b1d52; --accent: #7f99ff; --accent-soft: #1d2a5c; --sky: #3fc2ff; --rev: #3987e5; --exp: #e0652f;
   --good: #4cc38a; --good-soft: #10301f; --warn: #e5aa45; --warn-soft: #33260c; --bad: #f08079; --bad-soft: #3a1513; --plum: #c9a2f5; --plum-soft: #2b1c42; color-scheme: dark; }
@@ -173,6 +176,7 @@ input[type=text], input[type=search], input[type=email], input[type=tel], input[
 select.show { font-weight: 700; font-size: 15px; padding: 10px 14px; border-color: var(--ink-2); max-width: 100%; }
 textarea { resize: vertical; min-height: 70px; }
 label.f { display: flex; flex-direction: column; gap: 5px; font-size: 13px; font-weight: 600; color: var(--muted); min-width: 0; }
+label.f[hidden] { display: none; }
 label.check { display: flex; align-items: center; gap: 9px; font-size: 14px; font-weight: 500; color: var(--ink); }
 .form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .form .full { grid-column: 1 / -1; }
@@ -256,9 +260,8 @@ label.check { display: flex; align-items: center; gap: 9px; font-size: 14px; fon
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .mday.today .dn { color: #0a1030; } }
 .mday.sel { box-shadow: inset 0 0 0 2px var(--accent); }
 .mday .mevs { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.mev { font-size: 11.5px; line-height: 1.3; padding: 2px 6px; border-radius: 5px; background: var(--wash); color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mev.job { background: var(--good-soft); color: var(--good); }
-.mev.visit { background: var(--warn-soft); color: var(--warn); }
+/* every event on the month calendar is gold, so it stands out */
+.mev { font-size: 11.5px; line-height: 1.3; padding: 2px 6px; border-radius: 5px; background: var(--gold); color: var(--gold-ink); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mday .more { font-size: 11px; color: var(--muted); padding-left: 2px; }
 .mcal.compact .mday { min-height: 70px; }
 .bk-times .btn { min-height: 38px; min-width: 84px; justify-content: center; }
@@ -443,9 +446,7 @@ div.item[role="button"]:focus-visible { outline: 2px solid var(--accent); outlin
   .mday .mevs, .mday .more { display: none; }
   .mcal.compact .mday { min-height: 48px; }
   .mdots { display: flex; gap: 3px; flex-wrap: wrap; justify-content: center; max-width: 100%; }
-  .mdots i { width: 6px; height: 6px; border-radius: 50%; background: var(--ink-2); }
-  .mdots i.job { background: var(--good); }
-  .mdots i.visit { background: var(--warn); }
+  .mdots i { width: 7px; height: 7px; border-radius: 50%; background: var(--gold-dot); }
   .mnav h2 { min-width: 0; flex: 1; font-size: 17px; }
   .controls select.show { flex: 1 1 100%; }
   .controls input[type=search] { flex-basis: 140px; }
@@ -2117,7 +2118,8 @@ function quoteEditorHTML() {
   <div class="sb"><div class="qgrid">
     <div class="stack">
       <div class="form">
-        <label class="f full">Customer<select id="q-lead"><option value="">Pick a customer (fills Bill To)</option><optgroup label="Leads">${leads.filter(l => !isOutreach(l)).map(opt).join("")}</optgroup>${out.length ? `<optgroup label="Email outreach contacts">${out.map(opt).join("")}</optgroup>` : ""}</select></label>
+        <label class="f full">Customer<select id="q-lead"><option value="">New customer (type the name below)</option><optgroup label="Leads">${leads.filter(l => !isOutreach(l)).map(opt).join("")}</optgroup>${out.length ? `<optgroup label="Email outreach contacts">${out.map(opt).join("")}</optgroup>` : ""}</select></label>
+        <label class="f full" id="q-newname-wrap" ${QD.leadId ? "hidden" : ""}>New customer's name<input type="text" id="q-newname" autocomplete="off" placeholder="Not in the list? Type their name" value="${esc(QD.leadId ? "" : (QD.newName || ""))}" data-prev="${esc(QD.leadId ? "" : (QD.newName || ""))}"></label>
         <label class="f">Type<select id="q-type"><option value="ESTIMATE" ${!isInvoice(QD) ? "selected" : ""}>Estimate</option><option value="INVOICE" ${isInvoice(QD) ? "selected" : ""}>Invoice</option></select></label>
         <label class="f">Number<input type="text" id="q-num" value="${esc(QD.number)}"></label>
         <label class="f full">Date<input type="date" id="q-date" value="${esc(QD.date)}"></label>
@@ -2166,6 +2168,7 @@ function renderItems() {
 function readQuoteHeader() {
   QD.leadId = $("#q-lead").value; QD.docType = $("#q-type").value; QD.number = $("#q-num").value.trim(); QD.date = $("#q-date").value;
   QD.billTo = $("#q-bill").value.split("\n").map(s => s.trim()).filter(Boolean); QD.notes = $("#q-notes").value.trim();
+  const nb = $("#q-newname"); QD.newName = !QD.leadId && nb ? nb.value.trim() : "";
 }
 let pvTimer = 0;
 function updatePreview() { clearTimeout(pvTimer); pvTimer = setTimeout(() => { const box = $("#q-preview"); if (!box) return; const fits = renderEst(box, QD); $("#q-total").textContent = money(quoteTotals(QD).total, true); fitPreview();
@@ -2218,15 +2221,42 @@ async function saveFile(name, blob) {
   catch (e) { if (e.code !== "declined") toast(e.code === "rate_limited" ? "Finish the open save first" : "Couldn't save the file here"); return false; }
 }
 function blobToB64(blob) { return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(",")[1]); r.onerror = rej; r.readAsDataURL(blob); }); }
+// the name typed under Customer when nobody is picked: an existing customer with that name, or a new lead
+async function quoteNewCustomer() {
+  const box = $("#q-newname"); const name = box ? box.value.trim() : ""; if (QD.leadId || !name) return { ok: true };
+  const norm = (x) => String(x || "").trim().toLowerCase().replace(/\s+/g, " ");
+  let same = leadsOnly().filter(l => [l.name, l.company].some(x => x && norm(x) === norm(name)));
+  if (!same.length) { const o = outreachOnly().filter(l => l.company && norm(l.company) === norm(name)); if (o.length === 1) same = o; }
+  if (same.length > 1) { toast(`${same.length} customers are named ${name}. Pick the right one under Customer.`, 6000); const sel = $("#q-lead"); if (sel) sel.focus(); return { ok: false }; }
+  if (same.length === 1) { pickQuoteCust(same[0].id); return { ok: true, matched: leadName(same[0]) }; }
+  // what's typed in Bill To fills in their email, phone and address
+  const lines = (QD.billTo || []).filter(x => norm(x) !== norm(name));
+  const email = lines.find(x => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x)) || "";
+  const phone = lines.find(x => x !== email && /^[\d\s().+-]{7,}$/.test(x) && (x.match(/\d/g) || []).length >= 7) || "";
+  const address = lines.find(x => x !== email && x !== phone && /\d/.test(x)) || "";
+  const id = uid("lead"), now = new Date().toISOString();
+  const doc = { name, company: "", phone, email, address, city: "", type: "Residential", source: "Other", stage: isInvoice(QD) ? "completed" : "working", stageSince: today(), services: [], value: 0, nextFollowUp: "", dnc: false, list: "leads", notes: "", createdAt: now, updatedAt: now, activity: [{ at: now, type: "created", text: `Added from ${isInvoice(QD) ? "invoice" : "estimate"} ${QD.number}` }] };
+  await saveDoc("leads", id, doc);
+  pickQuoteCust(id, name); return { ok: true, made: Object.assign({ id }, doc) };
+}
+// shows the customer picked under Customer (adding them to the list if they're new) and takes the name box away
+function pickQuoteCust(id, name) {
+  QD.leadId = id; delete QD.newName;
+  const sel = $("#q-lead"), nb = $("#q-newname"), w = $("#q-newname-wrap");
+  if (sel && name && !sel.querySelector(`option[value="${id}"]`)) (sel.querySelector("optgroup") || sel).appendChild(new Option(name, id));
+  if (sel) sel.value = id; if (nb) nb.value = ""; if (w) w.hidden = true;
+}
 async function saveQuote(silent) {
   readQuoteHeader();
   if (!QD.number) { toast("Give it a number"); return false; }
+  let nc; try { nc = await quoteNewCustomer(); } catch (e) { return false; }
+  if (!nc.ok) return false;
   const t = quoteTotals(QD); QD.total = t.total;
   const isNew = !QD.id; const id = QD.id || uid("quote");
   // blank lines stay on screen (so typing into one still works) but aren't saved
-  const { id: _, taxRate: _t, ...doc } = QD; doc.items = QD.items.filter(isLine); doc.updatedAt = new Date().toISOString(); if (isNew) doc.createdAt = doc.updatedAt;
+  const { id: _, taxRate: _t, newName: _n, ...doc } = QD; doc.items = QD.items.filter(isLine); doc.updatedAt = new Date().toISOString(); if (isNew) doc.createdAt = doc.updatedAt;
   await saveDoc("quotes", id, doc); QD.id = id;
-  const l = leadById(QD.leadId); const linked = (QD.leadId || "") !== QD_LEAD; QD_LEAD = QD.leadId || "";
+  const l = leadById(QD.leadId) || nc.made; const linked = (QD.leadId || "") !== QD_LEAD; QD_LEAD = QD.leadId || "";
   if (l && (isNew || linked || isOutreach(l))) {
     const upd = { updatedAt: doc.updatedAt };
     if (isNew || linked) {
@@ -2238,7 +2268,7 @@ async function saveQuote(silent) {
     await saveDoc("leads", l.id, upd, true);
   }
   S.dirty = false;
-  if (!silent) toast("Saved");
+  if (!silent) toast(nc.made ? `Saved, and ${nc.made.name} is added to your leads` : nc.matched ? `Saved on your existing customer ${nc.matched}` : "Saved");
   syncQuoteChrome();
   return true;
 }
@@ -2465,14 +2495,14 @@ async function loadMail() {
 // Tapping Accepted on an estimate opens this in the same popup on the Quotes tab: a month calendar with what's already
 // booked (jobs, estimates, Google Calendar), the picked day's schedule with the open start times, and the job filled in
 // from the estimate. Booking it saves the job, puts it on Google Calendar and goes back to the Quotes tab.
-const BOOK_STARTS = ["07:00", "08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00"];
+const BOOK_STARTS = ["07:00", "08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00"];
 const timedOnly = (e) => !(e.allDay || String(e.start || "").length <= 10);
-// start times that day with nothing timed booked for the job's length, done by 7 PM, and not already past
+// start times that day (7 AM to 6 PM) with nothing timed booked for the job's length, and not already past
 function openTimes(day, durMin) {
   const busy = rangeItems(day, day).filter(timedOnly).map(e => [new Date(e.start), new Date(e.end || e.start)]), now = new Date();
   return BOOK_STARTS.filter(t => {
     const st = new Date(`${day}T${t}:00`), en = new Date(st.getTime() + durMin * 60000);
-    return st > now && ymd(en) === day && en.getHours() * 60 + en.getMinutes() <= 19 * 60 && !busy.some(([a, b]) => a < en && b > st);
+    return st > now && !busy.some(([a, b]) => a < en && b > st);
   });
 }
 // the first day from tomorrow (not a Sunday) with room for the job
@@ -2484,7 +2514,7 @@ const bookedFrom = (quoteId) => S.jobs.find(j => quoteId && j.quoteId === quoteI
 function startBooking() {
   if (isInvoice(QD)) return;
   const l = leadById(QD.leadId);
-  if (!l) { toast("Pick the customer at the top of the estimate, then tap Book the job.", 6000); return; }
+  if (!l) { toast("Pick the customer, or type a new customer's name, at the top of the estimate. Then tap Book the job.", 7000); return; }
   const dur = 240, day = bookFirstDay(dur), total = quoteTotals(QD).total;
   const svc = [...new Set((QD.items || []).filter(isLine).map(i => String(i.service || "").trim()).filter(Boolean))].join(", ") || (l.services || []).join(", ");
   S.book = { quoteId: QD.id, leadId: l.id, number: QD.number, amount: total, month: monthKey(day), day, dur, svc };
@@ -3640,10 +3670,17 @@ document.addEventListener("input", (e) => {
     const mn = it.querySelector("[data-minnote]"); if (mn) mn.textContent = minNote(row);
     updatePreview(); return;
   }
+  // a new customer's name also goes on the first line of Bill To, while that line is still empty or what was typed here
+  if (QD && e.target.id === "q-newname") {
+    const bill = $("#q-bill"), v = e.target.value.trim(), prev = e.target.dataset.prev || "";
+    if (bill) { const ls = bill.value.split("\n"); if (!ls[0].trim() || ls[0].trim() === prev) { ls[0] = v; bill.value = ls.join("\n").replace(/^\n+$/, ""); } }
+    e.target.dataset.prev = v; readQuoteHeader(); syncQuoteChrome(); updatePreview(); return;
+  }
   if (QD && e.target.closest && e.target.closest("#modal .qgrid")) { readQuoteHeader(); updatePreview(); }
 });
 document.addEventListener("change", async (e) => {
   if (e.target.id === "q-lead" && QD) {
+    const w = $("#q-newname-wrap"); if (w) w.hidden = !!e.target.value;
     const l = leadById(e.target.value); if (l) { $("#q-bill").value = billToFor(l).join("\n"); }
     // a quote with no lines yet starts with the services the customer asked for
     if (l && l.services && l.services.length && !QD.items.some(isLine)) { QD.items = l.services.map(x => itemFromBook(x)); renderItems(); }
