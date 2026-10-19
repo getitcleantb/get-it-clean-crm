@@ -260,6 +260,8 @@ label.check { display: flex; align-items: center; gap: 9px; font-size: 14px; fon
 .mev.job { background: var(--good-soft); color: var(--good); }
 .mev.visit { background: var(--warn-soft); color: var(--warn); }
 .mday .more { font-size: 11px; color: var(--muted); padding-left: 2px; }
+.mcal.compact .mday { min-height: 70px; }
+.bk-times .btn { min-height: 38px; min-width: 84px; justify-content: center; }
 .mdots { display: none; }
 
 .logged { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 11px 14px; border-radius: 12px; background: var(--good-soft); color: var(--good); font-weight: 600; font-size: 14px; }
@@ -439,6 +441,7 @@ div.item[role="button"]:focus-visible { outline: 2px solid var(--accent); outlin
   .mday { min-height: 56px; padding: 4px 2px; align-items: center; gap: 4px; }
   .mday .dn { width: 24px; height: 24px; font-size: 12.5px; }
   .mday .mevs, .mday .more { display: none; }
+  .mcal.compact .mday { min-height: 48px; }
   .mdots { display: flex; gap: 3px; flex-wrap: wrap; justify-content: center; max-width: 100%; }
   .mdots i { width: 6px; height: 6px; border-radius: 50%; background: var(--ink-2); }
   .mdots i.job { background: var(--good); }
@@ -721,6 +724,7 @@ html.gated, html.gated body { overflow: hidden; }
     events: () => cache.events, calendars: () => cache.cals, loadedAt: () => cache.at,
     connected: () => tokenOk() && has("calWrite") && (status === "ready" || status === "loading"), // can write to the calendar right now
     busy: () => !!loading,
+    missing: () => !tokenOk() ? "" : !has("calRead") ? "read" : !has("calWrite") ? "write" : "", // a calendar box left unticked on Google's screen
     range: () => ({ from: cache.from || range().from, to: cache.to || range().to }),
     takeReturn: () => { const r = returned; returned = null; return r; },
     // ret = where the CRM was (view, open lead) so it comes back to the same place
@@ -1567,7 +1571,7 @@ async function promote(l, why, extra) {
 
 // ---------- LEAD MODAL ----------
 let openLeadId = null;
-function closeModal() { if (openLeadId) flushFollowUp(openLeadId); $("#modal").innerHTML = ""; openLeadId = null; S.leaveLeadOk = false; S.dispoMsg = null; S.draftMsg = null; S.tabDraft = null; S.dirty = false; fuDeferred = false; if (S.payOpen && S.payOpen.where === "modal") S.payOpen = null; document.body.style.overflow = ""; }
+function closeModal() { if (openLeadId) flushFollowUp(openLeadId); $("#modal").innerHTML = ""; S.book = null; openLeadId = null; S.leaveLeadOk = false; S.dispoMsg = null; S.draftMsg = null; S.tabDraft = null; S.dirty = false; fuDeferred = false; if (S.payOpen && S.payOpen.where === "modal") S.payOpen = null; document.body.style.overflow = ""; }
 function showModal(html, wide) {
   $("#modal").innerHTML = `<div class="scrim" data-scrim="1"><div class="sheet ${wide ? "wide" : ""}" role="dialog" aria-modal="true">${html}</div></div>`;
   document.body.style.overflow = "hidden";
@@ -1987,25 +1991,34 @@ function gcalLink(job, l) {
 function jobDesc(job, l) { l = l || {}; return [l.name && `Contact: ${l.name}`, l.phone && `Phone: ${l.phone}`, l.email && `Email: ${l.email}`, job.kind === "job" && job.amount ? `Price: ${money(job.amount)}` : "", job.service ? `Service: ${job.service}` : "", l.notes ? `Notes: ${l.notes}` : "", "Added from Get It Clean CRM"].filter(Boolean).join("\n"); }
 async function saveSchedule(btn) {
   const l = leadById(openLeadId); if (!l) return;
-  const kind = btn.dataset.kind; const date = $("#sc-date").value, time = $("#sc-time").value || "09:00";
+  const kind = btn.dataset.kind; const date = $("#sc-date").value;
   if (!date) { toast("Pick a date"); return; }
-  const durMin = Math.max(15, +$("#sc-dur").value || 60);
+  btn.disabled = true;
+  const ok = await bookAppt(l, kind, { date, time: $("#sc-time").value, dur: +$("#sc-dur").value, title: $("#sc-title").value, addr: $("#sc-addr").value, amount: $("#sc-amt")?.value, service: $("#sc-svc")?.value, crew: kind === "job" ? crewVal("sc-crew") : "", cal: $("#sc-gcal").checked, quoteId: btn.dataset.quote || "" }, $("#sc-status"));
+  if (ok) clearExtra(); else btn.disabled = false;
+}
+// Saves an estimate (kind "visit") or a job for a lead and puts it on Google Calendar; f holds the form's values.
+// Used by the lead's Schedule estimate / Book job form and by Book the job on an accepted estimate. True when saved.
+async function bookAppt(l, kind, f, statusEl) {
+  const say = (x) => { if (statusEl) statusEl.textContent = x; };
+  const date = f.date, time = f.time || "09:00";
+  const durMin = Math.max(15, +f.dur || 60);
   const start = `${date}T${time}:00`; const endD = new Date(start); endD.setMinutes(endD.getMinutes() + durMin);
   const end = `${ymd(endD)}T${pad(endD.getHours())}:${pad(endD.getMinutes())}:00`;
-  const job = { kind, leadId: l.id, title: $("#sc-title").value.trim(), start, end, address: $("#sc-addr").value.trim(), amount: kind === "job" ? (+($("#sc-amt")?.value) || 0) : 0, status: "scheduled", quoteId: btn.dataset.quote || "", createdAt: new Date().toISOString() };
-  if (kind === "job") { job.service = ($("#sc-svc")?.value || "").trim(); job.crew = crewVal("sc-crew"); }
-  btn.disabled = true; $("#sc-status").textContent = "Saving…";
-  const id = uid(kind); let calErr = ""; const wantCal = $("#sc-gcal").checked;
+  const job = { kind, leadId: l.id, title: String(f.title || "").trim(), start, end, address: String(f.addr || "").trim(), amount: kind === "job" ? (+f.amount || 0) : 0, status: "scheduled", quoteId: f.quoteId || "", createdAt: new Date().toISOString() };
+  if (kind === "job") { job.service = String(f.service || "").trim(); job.crew = f.crew || ""; }
+  say("Saving…");
+  const id = uid(kind); let calErr = ""; const wantCal = !!f.cal;
   const desc = jobDesc(job, l);
   if (wantCal && S.mcp) {
-    $("#sc-status").textContent = "Adding to Google Calendar…";
+    say("Adding to Google Calendar…");
     try {
       const r = await S.mcp.callTool("Google Calendar", "create_event", { summary: job.title, startTime: start, endTime: end, location: job.address, description: desc });
       const p = r.payload || {}; job.eventId = p.id || ""; job.eventLink = p.htmlLink || "";
       S.mcp.invalidate("Google Calendar").catch(() => {});
     } catch (e) { calErr = mcpMsg("Google Calendar", e); }
   } else if (wantCal && calConnected()) {
-    $("#sc-status").textContent = "Adding to Google Calendar…";
+    say("Adding to Google Calendar…");
     try { const r = await GC().createEvent({ summary: job.title, location: job.address, description: desc, start, end }); job.eventId = r.id; job.eventLink = r.htmlLink; job.calendarId = "primary"; }
     catch (e) { calErr = e.code === "expired" ? "Google Calendar needs a quick reconnect on the Calendar tab." : e.code === "offline" ? "Couldn't reach Google Calendar." : "Google Calendar said: " + (e.message || "no"); }
   }
@@ -2021,9 +2034,9 @@ async function saveSchedule(btn) {
     const what = kind === "visit" ? "Estimate" : "Job";
     if (calErr) toast(`${what} saved in the CRM, but it is NOT on your Google Calendar. ${calErr}`, 8000);
     else if (wantCal && !S.mcp && !job.eventId && !calConnected() && STANDALONE) toast(kind === "visit" ? "Estimate scheduled" : "Job booked", 9000, { label: "Add to Google Calendar", fn: () => window.open(gcalLink(job, l), "_blank", "noopener") });
-    else toast(kind === "visit" ? "Estimate scheduled" : "Job booked");
-    clearExtra();
-  } catch (e) { btn.disabled = false; $("#sc-status").textContent = ""; }
+    else toast(kind === "visit" ? "Estimate scheduled" : `Job booked for ${fmtDT(start)}`);
+    return true;
+  } catch (e) { say(""); return false; }
 }
 // ---------- QUOTES ----------
 const isInvoice = (q) => !!q && q.docType === "INVOICE";
@@ -2128,7 +2141,7 @@ function quoteActsHTML() {
   if (!QD.id) return send;
   const opts = inv ? [["draft", "Draft"], ["sent", "Sent"], ["paid", "Paid"]] : [["draft", "Draft"], ["sent", "Sent"], ["accepted", "Accepted"], ["declined", "Declined"]];
   const cur = QD.status || "draft";
-  const status = `<div class="qsec"><span class="lab">Status</span><div class="seg wide" role="group" aria-label="Status">${opts.map(([k, t]) => `<button data-act="q-status" data-s="${k}" aria-pressed="${cur === k}">${t}</button>`).join("")}</div>${!inv && !["accepted", "declined"].includes(cur) ? `<p class="note">Accepted opens Book job with this total.</p>` : ""}</div>`;
+  const status = `<div class="qsec"><span class="lab">Status</span><div class="seg wide" role="group" aria-label="Status">${opts.map(([k, t]) => `<button data-act="q-status" data-s="${k}" aria-pressed="${cur === k}">${t}</button>`).join("")}</div>${!inv && !["accepted", "declined"].includes(cur) ? `<p class="note">Tap Accepted when they say yes: a calendar opens to book the job.</p>` : ""}${!inv && cur === "accepted" ? (() => { const j = bookedFrom(QD.id); return `<div class="row" style="margin-top:8px">${j ? `<span class="note">Job booked for ${esc(fmtDT(j.start))}.</span><button class="btn sm" data-act="bk-open">Book another visit</button>` : `<button class="btn sm primary" data-act="bk-open">Book the job</button>`}</div>`; })() : ""}</div>`;
   const more = `<details class="qmore"><summary>More</summary><div class="actions">${!inv ? `<button class="btn" data-act="q-to-invoice">Make invoice from this</button>` : ""}<button class="btn danger" data-act="q-delete">Delete</button></div></details>`;
   return status + send + more;
 }
@@ -2251,7 +2264,7 @@ async function quoteStatus(s) {
   syncQuoteChrome();
   if (s === "paid" && l) toast("Marked paid. Record the payment on the job too, so Money counts it.", 9000, { label: "Open jobs", fn: () => { closeModal(); openLead(l.id, "work"); } });
   else toast(`Marked ${QSTAT[s].toLowerCase()}`);
-  if (s === "accepted" && l) { closeModal(); openLead(l.id); setTimeout(() => scheduleForm(leadById(l.id) || l, "job", { amount: QD.total, quoteId: QD.id }), 50); }
+  if (s === "accepted" && !inv) startBooking();
 }
 // ---------- CALENDAR ----------
 // Two ways to reach Google Calendar: the claude.ai connectors (S.mcp, the old page) or the website's own Google
@@ -2285,6 +2298,7 @@ function syncGcal() {
   const was = S.cal || {};
   S.cal = { status: st === "idle" ? "ask" : st === "off" ? "off" : st, events: st === "idle" ? [] : ev, msg: gc.message(), at: gc.loadedAt(), cals: gc.calendars(), range: gc.range() };
   schedule(); if (was.status !== S.cal.status || (S.leadTab === "messages" && was.at !== S.cal.at)) refreshLeadModal();
+  if (was.at !== S.cal.at || was.status !== S.cal.status) refreshBook();
 }
 const calConnected = () => { const gc = GC(); return !!gc && gc.connected(); };
 // Gmail on the website: the same Google sign-in as the calendar (sa/src/gcal.js)
@@ -2293,9 +2307,9 @@ const mailConnected = () => { const m = MAIL(); return !!m && m.connected(); };
 // gcal.js checks this before a quick trip to Google for a new token, and comes back to GIC_WHERE: only when nothing is
 // typed anywhere, including forms kept from another tab, and nothing is under way (a payment box, a backup loading,
 // an Angi test, a quote PDF waiting to be sent, a popup other than a lead's)
-const workUnderWay = () => Object.values(keptTyped).some(t => Object.keys(t).length) || !!S.payOpen || !!(S.restore && !S.restore.done && !S.restore.err) || !!(S.angiTest && S.angiTest.busy) || !!S.carried || !!(!openLeadId && $("#modal").innerHTML);
+const workUnderWay = () => Object.values(keptTyped).some(t => Object.keys(t).length) || !!S.payOpen || !!(S.restore && S.restore.busy) || !!(S.angiTest && S.angiTest.busy) || !!S.carried || !!(!openLeadId && $("#modal").innerHTML);
 window.GIC_CAN_LEAVE = () => !S.dirty && !S.setDirty && !formEls(document).some(typedIn) && !(openLeadId && (fuTimers[openLeadId] || leadUnsaved())) && !workUnderWay();
-window.GIC_WHERE = () => calReturn();
+window.GIC_WHERE = () => { carryTyped(); return calReturn(); };
 // A tap on Connect or Reconnect leaves for Google and comes back: what's typed goes along and is put back. That's the
 // open lead's boxes on every tab (an email being written), half-filled Money forms and the payment box.
 const CARRY = "gic-carry";
@@ -2372,19 +2386,23 @@ function eventRow(e) {
   return `<button class="item" ${attrs}><div class="main-col"><span class="t">${esc(e.title)}</span><span class="s">${esc(e.allDay ? fmtD(e.start, { weekday: "short", month: "short", day: "numeric" }) + " · all day" : fmtDT(e.start))}${e.where ? " · " + esc(String(e.where).split("\n")[0]) : ""}</span></div><div class="r">${tag}${e.amount ? `<span class="note num">${money(e.amount)}</span>` : ""}</div></button>`;
 }
 // the note at the top of the Calendar tab, by connection state
+// a calendar box left unticked on Google's screen ("read" or "write"): only a Reconnect fixes that, unlike being offline
+const calMissing = () => { const gc = GC(); return gc && gc.missing ? gc.missing() : ""; };
 function calBanner() {
   const gc = GC(), st = S.cal.status;
   if (st === "ask") return `<div class="banner info spread"><span>${gc ? esc(S.cal.msg || "Show your Google Calendar here, next to the estimates and jobs in your CRM.") : esc(S.cal.msg)}</span><button class="btn primary sm" data-act="cal-connect">${gc ? "Connect Google Calendar" : "Show my Google Calendar"}</button></div>`;
   if (st === "idle") return gc ? "" : `<div class="banner info spread"><span>Show your Google Calendar next to the estimates and jobs in your CRM.</span><button class="btn primary sm" data-act="cal-connect">Show my Google Calendar</button></div>`;
   if (st === "loading") return `<div class="banner info">Loading your Google Calendar…</div>`;
   if (st === "expired") return `<div class="banner warn spread"><span>${esc(S.cal.msg || "Google Calendar needs a quick reconnect.")}${S.cal.events.length ? " Showing what was loaded last." : ""}</span><button class="btn primary sm" data-act="cal-connect">Reconnect</button></div>`;
-  if (S.cal.msg) return st === "ready" && gc ? `<div class="banner warn spread"><span>${esc(S.cal.msg)}</span><button class="btn primary sm" data-act="cal-connect">Reconnect</button></div>` : `<div class="banner ${st === "off" ? "info" : "warn"}">${esc(S.cal.msg)}</div>`;
+  if (S.cal.msg) return calMissing() ? `<div class="banner warn spread"><span>${esc(S.cal.msg)}</span><button class="btn primary sm" data-act="cal-connect">Reconnect</button></div>` : `<div class="banner ${st === "off" ? "info" : "warn"}">${esc(S.cal.msg)}</div>`;
   return "";
 }
 // ---------- month view ----------
 const monthKey = (d) => d.slice(0, 7);
 function monthShift(m, n) { const d = new Date(m + "-01T12:00:00"); d.setMonth(d.getMonth() + n); return monthKey(ymd(d)); }
-function monthGrid(m, sel) {
+// dayAttr: what a tap on a day sets (the Calendar tab, or the Book the job popup); compact = shorter days
+function monthGrid(m, sel, dayAttr, compact) {
+  dayAttr = dayAttr || "data-cal-day";
   const first = new Date(m + "-01T12:00:00"); const start = new Date(first); start.setDate(1 - first.getDay());
   const last = new Date(first); last.setMonth(last.getMonth() + 1); last.setDate(0);
   const end = new Date(last); end.setDate(last.getDate() + (6 - last.getDay()));
@@ -2393,12 +2411,12 @@ function monthGrid(m, sel) {
   for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
     const k = ymd(d), list = byDay[k] || [], dim = monthKey(k) !== m;
     const kind = (e) => e.src === "crm" ? e.kind : "g";
-    cells.push(`<button class="mday${k === t ? " today" : ""}${k === sel ? " sel" : ""}${dim ? " dim" : ""}" data-cal-day="${k}" aria-label="${esc(fmtD(k, { weekday: "long", month: "long", day: "numeric" }))}${list.length ? ", " + plural(list.length, "event") : ""}"${k === sel ? ' aria-current="date"' : ""}>
+    cells.push(`<button class="mday${k === t ? " today" : ""}${k === sel ? " sel" : ""}${dim ? " dim" : ""}" ${dayAttr}="${k}" aria-label="${esc(fmtD(k, { weekday: "long", month: "long", day: "numeric" }))}${list.length ? ", " + plural(list.length, "event") : ""}"${k === sel ? ' aria-current="date"' : ""}>
       <span class="dn">${d.getDate()}</span>
       <span class="mevs">${list.slice(0, 3).map(e => `<span class="mev ${kind(e)}">${e.allDay || (e.start || "").length <= 10 ? "" : esc(fmtT(e.start)) + " "}${esc(e.title)}</span>`).join("")}${list.length > 3 ? `<span class="more">+${list.length - 3} more</span>` : ""}</span>
       <span class="mdots">${list.slice(0, 4).map(e => `<i class="${kind(e)}"></i>`).join("")}</span></button>`);
   }
-  return `<div class="mcal" role="grid">${["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map(w => `<span class="wd">${w}</span>`).join("")}${cells.join("")}</div>`;
+  return `<div class="mcal${compact ? " compact" : ""}" role="grid">${["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map(w => `<span class="wd">${w}</span>`).join("")}${cells.join("")}</div>`;
 }
 VIEWS.calendar = () => {
   const t = today(); const m = S.calMonth || monthKey(t); const sel = S.calDay && monthKey(S.calDay) === m ? S.calDay : (m === monthKey(t) ? t : m + "-01");
@@ -2442,6 +2460,95 @@ async function loadMail() {
     S.mail = { status: c === "not_granted" ? "off" : "error", queue: [], follow: [], msg: c === "not_granted" ? "You chose not to let this page read your project files, so the email schedule can't show here." : c === "not_found" ? "Couldn't find the email schedule files in your project." : "Couldn't load the email schedule right now." };
   }
   schedule();
+}
+// ---------- BOOK THE JOB (an estimate marked Accepted) ----------
+// Tapping Accepted on an estimate opens this in the same popup on the Quotes tab: a month calendar with what's already
+// booked (jobs, estimates, Google Calendar), the picked day's schedule with the open start times, and the job filled in
+// from the estimate. Booking it saves the job, puts it on Google Calendar and goes back to the Quotes tab.
+const BOOK_STARTS = ["07:00", "08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00"];
+const timedOnly = (e) => !(e.allDay || String(e.start || "").length <= 10);
+// start times that day with nothing timed booked for the job's length, done by 7 PM, and not already past
+function openTimes(day, durMin) {
+  const busy = rangeItems(day, day).filter(timedOnly).map(e => [new Date(e.start), new Date(e.end || e.start)]), now = new Date();
+  return BOOK_STARTS.filter(t => {
+    const st = new Date(`${day}T${t}:00`), en = new Date(st.getTime() + durMin * 60000);
+    return st > now && ymd(en) === day && en.getHours() * 60 + en.getMinutes() <= 19 * 60 && !busy.some(([a, b]) => a < en && b > st);
+  });
+}
+// the first day from tomorrow (not a Sunday) with room for the job
+function bookFirstDay(durMin) {
+  for (let i = 1; i <= 60; i++) { const d = addDays(i); if (new Date(d + "T12:00:00").getDay() === 0) continue; if (openTimes(d, durMin).length) return d; }
+  return addDays(1);
+}
+const bookedFrom = (quoteId) => S.jobs.find(j => quoteId && j.quoteId === quoteId && j.kind === "job" && j.status !== "canceled");
+function startBooking() {
+  if (isInvoice(QD)) return;
+  const l = leadById(QD.leadId);
+  if (!l) { toast("Pick the customer at the top of the estimate, then tap Book the job.", 6000); return; }
+  const dur = 240, day = bookFirstDay(dur), total = quoteTotals(QD).total;
+  const svc = [...new Set((QD.items || []).filter(isLine).map(i => String(i.service || "").trim()).filter(Boolean))].join(", ") || (l.services || []).join(", ");
+  S.book = { quoteId: QD.id, leadId: l.id, number: QD.number, amount: total, month: monthKey(day), day, dur, svc };
+  S.dirty = false;
+  $("#modal .sheet").innerHTML = bookHTML(l);
+  const sc = $("#modal .scrim"); if (sc) sc.scrollTop = 0;
+}
+function bookHTML(l) {
+  const b = S.book, first = openTimes(b.day, b.dur)[0] || "08:00", had = bookedFrom(b.quoteId);
+  const calNote = S.mcp || calConnected() || !STANDALONE ? "Add to my Google Calendar" : "Add it to my Google Calendar (opens Google Calendar so you can save it there)";
+  return `<div class="sh"><h2>Book the job</h2><button class="x" data-close="1" aria-label="Close">×</button></div>
+  <div class="sb stack">
+    <p class="note">${esc(leadName(l))} accepted estimate #${esc(b.number)} for ${money(b.amount, b.amount % 1 !== 0)}. Pick the day on the calendar, then the time you'll do the job.</p>
+    ${had ? `<div class="banner warn">A job from this estimate is already booked for ${esc(fmtDT(had.start))}. Book another only if it's an extra visit.</div>` : ""}
+    <div id="bk-cal">${bookCalHTML()}</div>
+    <section class="panel"><div class="panel-h"><h2>The job</h2></div><div class="form">
+      <label class="f">Date<input type="date" id="bk-date" value="${esc(b.day)}"></label>
+      <label class="f">Start time<input type="time" id="bk-time" value="${first}"></label>
+      <label class="f">How long (hours)<input type="number" id="bk-hrs" min="0.5" max="12" step="0.5" value="${b.dur / 60}"></label>
+      <label class="f">Job price ($)<input type="number" id="bk-amt" min="0" step="1" value="${esc(b.amount || "")}"></label>
+      <label class="f full">Service<input type="text" id="bk-svc" value="${esc(b.svc)}"></label>
+      ${crewPick("bk-crew", "EL")}
+      <label class="f full">Address<input type="text" id="bk-addr" value="${esc(leadAddr(l))}"></label>
+      <label class="f full">Calendar title<input type="text" id="bk-title" value="${esc("Job: " + [l.company, l.name].filter(Boolean).join(", "))}"></label>
+      <label class="check full"><input type="checkbox" id="bk-gcal" checked> ${calNote}</label>
+    </div>
+    <div class="row"><button class="btn primary" data-act="bk-save">Book job</button><button class="btn" data-act="bk-back">Back to the estimate</button><span id="bk-status" class="note"></span></div></section>
+  </div>`;
+}
+// what's on a day, without links (tapping one would leave the booking)
+function bookRow(e) {
+  const tag = e.src === "crm" ? `<span class="pill ${e.kind === "job" ? "s-scheduled" : "s-visit"}">${e.kind === "job" ? "Job" : "Estimate"}</span>` : `<span class="chip">${esc(e.cal || "Google")}</span>`;
+  const when = timedOnly(e) ? `${fmtT(e.start)}${e.end ? " to " + fmtT(e.end) : ""}` : "All day";
+  return `<div class="item static"><div class="main-col"><span class="t">${esc(e.title)}</span><span class="s">${esc(when)}${e.where ? " · " + esc(String(e.where).split("\n")[0]) : ""}</span></div><div class="r">${tag}</div></div>`;
+}
+function bookCalHTML() {
+  const b = S.book, items = rangeItems(b.day, b.day), times = openTimes(b.day, b.dur), cur = ($("#bk-time") || {}).value || "";
+  const hrs = b.dur / 60, sunday = new Date(b.day + "T12:00:00").getDay() === 0, past = b.day < today();
+  return `<section class="panel flush"><div class="panel-h mnav"><button class="btn sm icon-btn" data-bk-nav="-1" aria-label="Previous month">‹</button><h2>${esc(fmtD(b.month + "-01", { month: "long", year: "numeric" }))}</h2><button class="btn sm icon-btn" data-bk-nav="1" aria-label="Next month">›</button><button class="btn sm ghost" data-bk-nav="0">This month</button></div>
+    <div class="pad" style="padding-top:0">${monthGrid(b.month, b.day, "data-bk-day", true)}</div></section>
+  <section class="panel flush"><div class="panel-h"><h2>${esc(fmtD(b.day, { weekday: "long", month: "long", day: "numeric" }))}</h2><span class="count">${items.length ? plural(items.length, "thing") + " booked" : "Nothing booked"}</span></div>
+    ${items.length ? `<div class="list">${items.map(bookRow).join("")}</div>` : ""}
+    <div class="pad stack"><span class="lab">${past ? "That day has passed." : `Open start times for ${hrs === 1 ? "an hour" : hrs + " hours"}${sunday ? " (it's a Sunday)" : ""}`}</span>
+      <div class="row bk-times">${times.length ? times.map(t => `<button class="btn sm${t === cur ? " primary" : ""}" data-bk-time="${t}" aria-pressed="${t === cur}">${esc(fmtT(b.day + "T" + t + ":00"))}</button>`).join("") : past ? "" : `<span class="note">Nothing open that long this day. Pick another day, or type a time below anyway.</span>`}</div></div></section>`;
+}
+// redraws the calendar and the day, not the boxes below, so nothing typed is lost
+function refreshBook() { const box = $("#modal #bk-cal"); if (S.book && box) box.innerHTML = bookCalHTML(); }
+function bookPickDay(d) {
+  if (!S.book || !/^\d{4}-\d{2}-\d{2}$/.test(d)) return;
+  S.book.day = d; S.book.month = monthKey(d);
+  const di = $("#bk-date"); if (di && di.value !== d) di.value = d;
+  const ti = $("#bk-time"), open = openTimes(d, S.book.dur);
+  // a time that isn't open on the new day moves to that day's first open one
+  if (ti && open.length && !open.includes(ti.value)) ti.value = open[0];
+  refreshBook();
+}
+async function bookSave(btn) {
+  const b = S.book, l = b && leadById(b.leadId); if (!l) return;
+  const date = $("#bk-date").value; if (!date) { toast("Pick a date"); return; }
+  const hrs = +$("#bk-hrs").value; if (!(hrs > 0)) { toast("Put how many hours the job takes"); return; }
+  btn.disabled = true;
+  const r = await bookAppt(l, "job", { date, time: $("#bk-time").value, dur: Math.round(hrs * 60), title: $("#bk-title").value, addr: $("#bk-addr").value, amount: $("#bk-amt").value, service: $("#bk-svc").value, crew: crewVal("bk-crew"), cal: $("#bk-gcal").checked, quoteId: b.quoteId }, $("#bk-status"));
+  if (!r) { btn.disabled = false; return; }
+  closeModal(); render();
 }
 
 // ---------- EMAIL + OUTREACH ----------
@@ -2786,14 +2893,14 @@ async function saveMoneyJob(btn) {
     const job = { kind: "job", leadId, title: "Job: " + name, service: svc, start: date, end: date, address: v("mj-addr"), amount: price, cost: Number(v("mj-cost")) || 0, crew: crewVal("mj-crew"), source: v("mj-src"), status, paidDate: status === "paid" ? date : "", method: status === "paid" ? v("mj-method") : "", createdAt: now };
     if (v("mj-bank") !== "") job.bankPct = Math.max(0, Math.min(100, Number(v("mj-bank")) || 0)) / 100;
     await saveDoc("jobs", uid("job"), job);
-    S.money.form = ""; S.money.formLead = ""; S.money.dropPaid = ""; const msg = (matched ? `Job saved on your existing customer ${matched}.` : "Job saved.") + (kept ? " " + kept : ""); toast(msg, matched || kept ? 5000 : 2600); schedule();
+    S.money.form = ""; S.money.formLead = ""; S.money.dropPaid = ""; forgetTyped(/^m[je]-/); const msg = (matched ? `Job saved on your existing customer ${matched}.` : "Job saved.") + (kept ? " " + kept : ""); toast(msg, matched || kept ? 5000 : 2600); schedule();
   } catch (e) { btn.disabled = false; }
 }
 async function saveMoneyExpense(btn) {
   const v = id => (document.getElementById(id)?.value || "").trim();
   const amt = Number(v("me-amt")); if (!(amt > 0)) { toast("Enter the amount spent (more than $0)"); return; }
   btn.disabled = true;
-  try { await saveDoc("expenses", uid("exp"), { date: v("me-date") || today(), category: v("me-cat"), vendor: v("me-vendor"), note: v("me-note"), paidWith: v("me-paid"), forSource: v("me-src"), amount: amt, createdAt: new Date().toISOString() }); S.money.form = ""; toast("Expense saved"); schedule(); }
+  try { await saveDoc("expenses", uid("exp"), { date: v("me-date") || today(), category: v("me-cat"), vendor: v("me-vendor"), note: v("me-note"), paidWith: v("me-paid"), forSource: v("me-src"), amount: amt, createdAt: new Date().toISOString() }); S.money.form = ""; forgetTyped(/^m[je]-/); toast("Expense saved"); schedule(); }
   catch (e) { btn.disabled = false; }
 }
 function jobRow(j) {
@@ -2850,7 +2957,7 @@ VIEWS.settings = () => {
   const calPill = { ready: ["s-scheduled", "Connected"], ask: ["s-quoted", gc ? "Not connected" : "Needs your OK on the Calendar tab"], expired: ["s-quoted", "Needs a reconnect"], loading: ["", "Loading"], off: ["s-lost", gc ? "Not connected" : "Not set up"], error: ["s-lost", "Couldn't reach it"] }[S.cal.status] || ["", "Checking"];
   const calText = gc ? (S.cal.status === "ready" ? (S.cal.msg || `Showing ${plural((S.cal.cals || []).length || 1, "calendar")}, three months back to a year ahead. Estimates and jobs you book go on it.`) : S.cal.status === "expired" ? "Connected, but Google needs a quick reconnect to keep showing it." : S.cal.status === "error" ? S.cal.msg : S.cal.status === "ask" && S.cal.msg ? S.cal.msg : "Connect it to see your schedule here and put estimates and jobs on it.")
     : S.mcp || !STANDALONE ? "Estimates and jobs you schedule are added to your calendar" : "Not set up yet. After you schedule something, tap Add to Google Calendar to save it there";
-  const calBtn = !gc ? "" : S.cal.status === "ready" ? (S.cal.msg ? `<button class="btn sm primary" data-act="cal-connect">Reconnect</button>` : "") + `<button class="btn sm" data-act="cal-disconnect">Disconnect</button>` : S.cal.status === "loading" ? "" : `<button class="btn sm primary" data-act="cal-connect">${S.cal.status === "expired" ? "Reconnect" : "Connect"}</button>`;
+  const calBtn = !gc ? "" : S.cal.status === "ready" ? (calMissing() ? `<button class="btn sm primary" data-act="cal-connect">Reconnect</button>` : "") + `<button class="btn sm" data-act="cal-disconnect">Disconnect</button>` : S.cal.status === "loading" ? "" : `<button class="btn sm primary" data-act="cal-connect">${S.cal.status === "expired" || calMissing() ? "Reconnect" : "Connect"}</button>`;
   // Angi: leads with an Angi id came in through the link; Settings > Angi sets it up (website only)
   const angiN = S.leads.filter(l => l.angiId && !/^angi-test-/.test(l.id)).length, ang = S.angi || {};
   const angiRow = angiN ? [["s-scheduled", "Working"], `${plural(angiN, "Angi lead")} came in so far`, "Settings"] : ang.emailedAt ? [["s-quoted", "Waiting on Angi"], "Angi's team is connecting your link", "Settings"]
@@ -3040,9 +3147,9 @@ if (STANDALONE && window.GIC) {
     "restore-cancel": () => { S.restore = null; schedule(); },
     "restore-go": async (t) => {
       const r = S.restore; if (!r || !r.data) return; t.disabled = true;
-      S.restore = { msg: "Loading… keep this page open." }; schedule();
+      S.restore = { busy: true, msg: "Loading… keep this page open." }; schedule();
       try {
-        const counts = await G.importAll(r.data, (n, total) => { S.restore = { msg: `Loading… ${n} of ${total}. Keep this page open.` }; schedule(); });
+        const counts = await G.importAll(r.data, (n, total) => { S.restore = { busy: true, msg: `Loading… ${n} of ${total}. Keep this page open.` }; schedule(); });
         S.restore = { done: true, msg: `Loaded ${Object.entries(counts).map(([c, n]) => `${n} ${LABEL[c]}`).join(", ")}.` };
       } catch (e) { S.restore = { err: true, msg: e.code === "bad_file" ? "That file isn't a CRM backup." : "Couldn't load all of it. Check your internet connection and load the file again (nothing gets doubled)." }; }
       schedule();
@@ -3068,7 +3175,8 @@ if (STANDALONE && window.GIC) {
   async function ensureKey() {
     if (angiKey()) return angiKey();
     // the saved Angi settings may not have loaded on this device yet: look first, so a key Angi already has is never replaced
-    try { const d = await S.db.doc("settings/angi").get(); if (d.exists && d.data().key) { S.angi = Object.assign({}, d.data(), S.angi || {}, { key: d.data().key }); return S.angi.key; } } catch (e) {}
+    let d; try { d = await S.db.doc("settings/angi").get(); } catch (e) { toast("Couldn't check your Angi settings. Check your internet connection and try again.", 6000); throw e; }
+    if (d.exists && d.data().key) { S.angi = Object.assign({}, d.data(), S.angi || {}, { key: d.data().key }); return S.angi.key; }
     const key = Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, "0")).join("");
     await saveDoc("settings", "angi", { key, createdAt: new Date().toISOString() }, true);
     S.angi = Object.assign({}, S.angi, { key }); return key;
@@ -3112,10 +3220,13 @@ function keep_(raw) {
 function fits_(s) { return Utilities.newBlob(s).getBytes().length < 8500; }
 function waitingKeys_() { return Object.keys(PropertiesService.getScriptProperties().getProperties()).filter(function (k) { return k.indexOf("waiting_") === 0; }).sort(); }
 function retryWaiting_(most) {
-  const props = PropertiesService.getScriptProperties();
-  waitingKeys_().slice(0, most).forEach(function (k) {
-    try { const raw = JSON.parse(props.getProperty(k)); saveLead_(raw); props.deleteProperty(k); } catch (err) {}
-  });
+  const props = PropertiesService.getScriptProperties(), lock = LockService.getScriptLock();
+  if (!lock.tryLock(0)) return; // another lead is already retrying them
+  try {
+    waitingKeys_().slice(0, most).forEach(function (k) {
+      try { const v = props.getProperty(k); if (!v) return; saveLead_(JSON.parse(v)); props.deleteProperty(k); } catch (err) {}
+    });
+  } finally { lock.releaseLock(); }
 }
 // Firestore, tried up to 3 times when it's busy or can't be reached
 function post_(url, body) {
@@ -3231,7 +3342,7 @@ function saveLead_(raw) {
       const u = ($("#angi-url").value || "").trim().replace(/\?.*$/, "");
       if (!/^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/.test(u)) { toast("Paste the Web app URL from Deploy (it ends in /exec)", 5000); return; }
       await ensureKey(); await saveDoc("settings", "angi", { url: u, savedAt: new Date().toISOString() }, true);
-      S.angi = Object.assign({}, S.angi, { url: u }); toast("Link saved. Send a test lead next."); render();
+      S.angi = Object.assign({}, S.angi, { url: u }); forgetTyped(/^angi-url$/); toast("Link saved. Send a test lead next."); render();
     },
     "angi-test": async (t) => {
       const link = angiLink(); if (!link) return;
@@ -3253,7 +3364,7 @@ function saveLead_(raw) {
       const p = await makeDraft({ email: ANGI_EMAIL }, m.subject, m.body); t.disabled = false;
       if (!p) return;
       await saveDoc("settings", "angi", { angiId: id, emailedAt: new Date().toISOString() }, true);
-      S.angi = Object.assign({}, S.angi, { angiId: id, emailedAt: new Date().toISOString() });
+      S.angi = Object.assign({}, S.angi, { angiId: id, emailedAt: new Date().toISOString() }); forgetTyped(/^angi-id$/);
       if (p.viewUrl) toast("The email is in your Gmail drafts. Check it and press Send.", 6000, { label: "Open", fn: () => window.open(p.viewUrl, "_blank", "noopener") });
       else toast("The email opened in your email app. Check it and press Send.", 6000);
       render();
@@ -3283,6 +3394,10 @@ document.addEventListener("click", async (e) => {
   if (t.dataset.ltab) { e.preventDefault(); switchLeadTab(t.dataset.ltab); return; }
   if (t.dataset.calNav !== undefined) { if (t.dataset.calNav === "0") { S.calMonth = monthKey(today()); S.calDay = today(); } else S.calMonth = monthShift(S.calMonth || monthKey(today()), +t.dataset.calNav); render(); return; }
   if (t.dataset.calDay) { S.calDay = t.dataset.calDay; S.calMonth = monthKey(t.dataset.calDay); render(); return; }
+  // Book the job popup: a day, another month, a start time
+  if (t.dataset.bkDay) { bookPickDay(t.dataset.bkDay); return; }
+  if (t.dataset.bkNav !== undefined && S.book) { const n = +t.dataset.bkNav; S.book.month = n === 0 ? monthKey(today()) : monthShift(S.book.month, n); refreshBook(); return; }
+  if (t.dataset.bkTime) { const ti = $("#bk-time"); if (ti) { ti.value = t.dataset.bkTime; S.dirty = true; } refreshBook(); return; }
   if (t.dataset.stageTo) { const sl = leadById(openLeadId); if (sl && (sl.stage || "new") !== t.dataset.stageTo) moveStage(sl, t.dataset.stageTo).catch(() => {}); return; }
   if (t.dataset.openLead && !e.target.closest(".msgrow .row")) { openLead(t.dataset.openLead); return; }
   if (t.dataset.openQuote) { const q = S.quotes.find(x => x.id === t.dataset.openQuote); if (q) openQuoteEditor(q); return; }
@@ -3363,7 +3478,7 @@ document.addEventListener("click", async (e) => {
       case "toggle-filters": S.showFilters = !S.showFilters; render(); break;
       case "clear-filters": S.leadFilter.city = ""; S.leadFilter.group = ""; render(); break;
       case "promote": if (l) { await promote(l, "They replied. Moved from email outreach to Leads."); toast("Moved to Leads"); } break;
-      case "use-open-job": { const j = S.jobs.find(x => x.id === t.dataset.id); if (j) { S.money.form = ""; render(); setTimeout(() => payBox(j, "view"), 30); } break; }
+      case "use-open-job": { const j = S.jobs.find(x => x.id === t.dataset.id); if (j) { S.money.form = ""; forgetTyped(/^m[je]-/); render(); setTimeout(() => payBox(j, "view"), 30); } break; }
       case "undo-dispo": await undoDispo(); break;
       case "save-notes": { if (!l) break; const box = $("#ln-notes"), v = box.value.trim();
         // the box then shows exactly what's saved, so a trailing space or line doesn't leave it looking unsaved
@@ -3391,10 +3506,10 @@ document.addEventListener("click", async (e) => {
         if (l.dnc) { toast("This lead is marked do not contact"); break; }
         const subj = $("#em-subj").value.trim(), body = $("#em-body").value;
         if (!subj) { toast("Add a subject"); break; }
-        t.disabled = true; $("#em-status").textContent = "Sending…";
+        t.disabled = true; $("#em-status").textContent = "Sending…"; if (S.draftMsg && S.draftMsg.leadId === l.id) S.draftMsg = null;
         let r = null;
         try { r = await MAIL().send({ to: l.email, subject: subj, body }); }
-        catch (er) { $("#em-status").textContent = ""; t.disabled = false; toast((er.code === "expired" ? "Gmail needs a quick reconnect. Tap Reconnect under Recent emails; your email comes back with you." : gmailErr(er)) + (er.code === "expired" ? "" : " Your email is still here."), 7000); refreshLeadModal(); break; }
+        catch (er) { t.disabled = false; const es = $("#em-status"); if (es) es.textContent = ""; toast((er.code === "expired" ? "Gmail needs a quick reconnect. Tap Reconnect under Recent emails; your email comes back with you." : gmailErr(er)) + (er.code === "expired" ? "" : " Your email is still here."), 7000); refreshLeadModal(); break; }
         // it's sent: the form starts over, and saving the note on the lead is a separate step (its own message if it fails)
         S.draftMsg = { leadId: l.id, html: `Sent. <a href="${esc(r.viewUrl)}" target="_blank" rel="noopener">Open in Gmail</a>` };
         { const et = emailTemplate(l), se = $("#em-subj"), be = $("#em-body"), es = $("#em-status"); if (se) se.value = et.subj; if (be) be.value = et.body; if (es) es.innerHTML = S.draftMsg.html; } dropDraft(/^em-/);
@@ -3452,6 +3567,9 @@ document.addEventListener("click", async (e) => {
         if (ql2) await saveDoc("leads", ql2.id, { activity: activity(ql2, "email", `${qs.kind} ${qs.number} opened in your email app to send`), updatedAt: new Date().toISOString() }, true);
         break; }
       case "q-status": await quoteStatus(t.dataset.s); break;
+      case "bk-open": if (await saveQuote(true)) startBooking(); break;
+      case "bk-save": await bookSave(t); break;
+      case "bk-back": S.book = null; $("#modal .sheet").innerHTML = quoteEditorHTML(); renderItems(); updatePreview(); S.dirty = false; break;
       case "q-to-invoice": { await saveQuote(true); const src = QD; const inv = Object.assign(JSON.parse(JSON.stringify(src)), { id: "", docType: "INVOICE", date: today(), status: "draft", fromQuote: src.id }); inv.number = nextNumber(inv.date); QD = inv; $("#modal .sheet").innerHTML = quoteEditorHTML(); renderItems(); updatePreview(); toast("Invoice started from the estimate. Save it when ready."); break; }
       case "q-delete": $("#q-status-line").innerHTML = `<span class="row">Delete this quote? <button class="btn sm danger" data-act="q-delete-yes">Delete</button><button class="btn sm" data-act="q-delete-no">Keep</button></span>`; break;
       case "q-delete-no": $("#q-status-line").innerHTML = ""; break;
@@ -3460,7 +3578,7 @@ document.addEventListener("click", async (e) => {
         // The trip to Google leaves the page. What's typed in a lead or a Money form goes along and comes back; unsaved
         // settings, a backup loading or an Angi test can't, so they take a second tap. A waiting follow-up date is saved first.
         const setts = S.view === "settings" && S.setDirty;
-        const lose = setts ? "unsaved settings" : S.restore && !S.restore.done && !S.restore.err ? "a backup that hasn't finished loading" : S.angiTest && S.angiTest.busy ? "an Angi test still running" : "";
+        const lose = setts ? "unsaved settings" : S.restore && S.restore.busy ? "a backup that is still loading" : S.angiTest && S.angiTest.busy ? "an Angi test still running" : "";
         if (lose && !S.leaveOk) { S.leaveOk = true; setTimeout(() => { S.leaveOk = false; }, 8000); toast(`You have ${lose}. ${setts ? "Save them, or tap" : "Wait for it, or tap"} again to connect anyway.`, 8000, setts ? { label: "Save", fn: saveSettings } : undefined); break; }
         S.leaveOk = false;
         if (openLeadId) await flushFollowUp(openLeadId);
@@ -3509,6 +3627,8 @@ document.addEventListener("click", async (e) => {
 });
 document.addEventListener("input", (e) => {
   if (e.target.id === "mj-addr") delete e.target.dataset.auto; // typed by hand: picking another customer won't replace it
+  if (S.book && e.target.id === "bk-hrs") { const h = +e.target.value; if (h > 0) { S.book.dur = Math.round(h * 60); refreshBook(); } return; }
+  if (S.book && e.target.id === "bk-time") { refreshBook(); return; }
   const it = e.target.closest && e.target.closest(".qitem");
   if (it && QD) {
     const i = +it.dataset.i, k = e.target.dataset.k; if (!k) return;
@@ -3539,6 +3659,7 @@ document.addEventListener("change", async (e) => {
     fuQueue(openLeadId, v, 700);
   }
   if (e.target.id === "mj-lead") syncJobForm(true);
+  if (e.target.id === "bk-date" && e.target.value) bookPickDay(e.target.value);
   if (e.target.matches && e.target.matches('[data-dk="channel"]')) { S.setDraft = readSettingsForm(); S.setDirty = true; render(); } // shows or hides the email subject
 });
 // one waiting save per lead, so setting another lead's date right after doesn't drop this one
@@ -3599,7 +3720,7 @@ async function init() {
     const sub = (coll, key) => db.collection(coll).onSnapshot(snap => {
       S[key] = snap.docs.map(d => Object.assign({ id: d.id }, d.data())); loaded[key] = true;
       const all = loaded.leads && loaded.quotes && loaded.jobs; if (all) applyCarried();
-      schedule(); if (key === "leads" || key === "quotes" || key === "jobs") refreshLeadModal();
+      schedule(); if (key === "leads" || key === "quotes" || key === "jobs") refreshLeadModal(); if (key === "jobs") refreshBook();
       if (key === "leads") { autoPromote(); if (S.sweepAngi) S.sweepAngi(); }
       if (all && S.pendingOpen && leadById(S.pendingOpen) && !$("#modal").innerHTML) {
         const pid = S.pendingOpen, pt = S.pendingOpenTab; S.pendingOpen = null; S.pendingOpenTab = null; openLead(pid, pt || undefined);
