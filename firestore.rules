@@ -1,0 +1,26 @@
+rules_version = '2';
+// Get It Clean CRM: only the owner and the crew the owner adds (Settings > Account) can read or change anything.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null && request.auth.token.email != null; }
+    function email() { return request.auth.token.email.lower(); }
+    function isOwner() { return signedIn() && email() == 'getitclean.tb@gmail.com'; }
+    function isCrew() {
+      return signedIn() && exists(/databases/$(database)/documents/members/$(email()))
+        && get(/databases/$(database)/documents/members/$(email())).data.uid == request.auth.uid;
+    }
+    function isTeam() { return isOwner() || isCrew(); }
+
+    match /members/{memberEmail} {
+      allow read: if isOwner() || (isCrew() && memberEmail == email());
+      allow write: if isOwner();
+    }
+    match /profiles/{userId} {
+      allow read: if isTeam();
+      allow write: if isTeam() && request.auth.uid == userId;
+    }
+    match /{coll}/{docId} {
+      allow read, write: if isTeam() && coll in ['leads', 'quotes', 'jobs', 'expenses', 'settings'];
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "Get It Clean CRM",
+  "short_name": "GIC CRM",
+  "description": "Leads, estimates, jobs and money for Get It Clean Tampa Bay",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0a1f5c",
+  "theme_color": "#0a1f5c",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
