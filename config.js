@@ -3,6 +3,8 @@
 window.GIC_CONFIG = {
   owner: "getitclean.tb@gmail.com",
   ownerName: "Elias",
+  // Google Calendar: the OAuth client ID from the Google Cloud console (Clients > Web application). Empty = not set up.
+  googleClientId: "",
   firebase: {
     apiKey: "AIzaSyC0D3phQfpXWHMVbBWpNbKINVIQTHUD3XY",
     authDomain: "get-it-clean-tb-crm-5025b.firebaseapp.com",

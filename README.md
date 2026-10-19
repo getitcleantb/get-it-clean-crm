@@ -19,6 +19,19 @@ The settings in `config.js` are public by design. Firebase keeps the data safe w
 
 `firestore.rules` holds the rules for this site. They go in the Firebase console under Firestore Database > Rules: paste the whole file over what's there and tap Publish. They only need to be pasted again if this file changes.
 
+## Google Calendar and Gmail
+
+The CRM shows the owner's Google Calendar (three months back to a year ahead) on the Calendar and Today tabs and puts booked estimates and jobs on it. With Gmail connected, emails and quote PDFs go out from (or are saved as drafts in) the connected Gmail, and a lead's recent emails show on their Messages tab. It talks to Google straight from the browser, so there is no server and nothing to pay for.
+
+One-time setup in the Google Cloud console for the Firebase project (`get-it-clean-tb-crm-5025b`):
+
+1. Turn on the **Google Calendar API** and the **Gmail API** (APIs & Services > Library).
+2. **Google Auth Platform** > Overview > Get started: app name "Get It Clean CRM", your email, audience **External**. Under **Audience**, add the Google accounts that will connect as **test users**; the app can stay in Testing.
+3. **Clients** > Create client > **Web application**: authorized JavaScript origin `https://getitcleantb.github.io`, authorized redirect URI `https://getitcleantb.github.io/get-it-clean-crm/`.
+4. Put the client ID (ends in `.apps.googleusercontent.com`) in `config.js` as `googleClientId`. It is public by design, like the rest of that file.
+
+Each person connects their own Google account once per device from the Calendar tab (or Settings > Connections); one sign-in covers both Calendar and Gmail. Google's access lasts about an hour; the CRM quietly renews it when it's opened, and asks for one tap if Google wants a fresh sign-in. Google shows an "unverified app" notice because this is a private app; that's expected. Disconnect under Settings > Connections.
+
 ## Backups
 
 Settings > Account > Backup downloads every lead, quote, job, expense and setting as one file. The same screen loads a backup file back in.
