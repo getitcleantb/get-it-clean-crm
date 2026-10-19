@@ -20,7 +20,7 @@
 <style>
 /* Layout: navy sidebar on desktop, bottom tab bar on phone. Each page is one calm column: page title, a joined number strip, then panels with plenty of air. */
 :root {
-  --gold: #f2c230; --gold-ink: #3b2b00; --gold-dot: #d9a514;
+  --gold: #f2c230; --gold-ink: #3b2b00; --gold-dot: #b8860b;
   --bg: #f3f6f9;
   --surface: #ffffff;
   --surface-2: #f5f7fb;
@@ -2116,13 +2116,13 @@ const quoteTitle = () => `${QD.id ? "" : "New "}${isInvoice(QD) ? "Invoice" : "E
 function quoteEditorHTML() {
   const leads = S.leads.slice().sort((a, b) => (a.company || a.name || "").localeCompare(b.company || b.name || ""));
   const opt = (l) => `<option value="${esc(l.id)}" ${QD.leadId === l.id ? "selected" : ""}>${esc([l.company, l.name].filter(Boolean).join(" · ") || l.email || l.phone || "No name")}</option>`;
-  const out = leads.filter(isOutreach);
+  const out = leads.filter(isOutreach), picked = !!leadById(QD.leadId);
   return `<div class="sh"><h2 id="q-title" style="flex:1">${esc(quoteTitle())}</h2><span id="q-pill">${qPill(QD)}</span><button class="x" data-close="1" aria-label="Close">×</button></div>
   <div class="sb"><div class="qgrid">
     <div class="stack">
       <div class="form">
-        <label class="f full">Customer<select id="q-lead"><option value="">New customer (type the name below)</option><optgroup label="Leads">${leads.filter(l => !isOutreach(l)).map(opt).join("")}</optgroup>${out.length ? `<optgroup label="Email outreach contacts">${out.map(opt).join("")}</optgroup>` : ""}</select></label>
-        <label class="f full" id="q-newname-wrap" ${QD.leadId ? "hidden" : ""}>New customer's name<input type="text" id="q-newname" autocomplete="off" placeholder="Not in the list? Type their name" value="${esc(QD.leadId ? "" : (QD.newName || ""))}" data-prev="${esc(QD.leadId ? "" : (QD.newName || ""))}"></label>
+        <label class="f full">Customer<select id="q-lead" data-was="${esc(picked ? QD.leadId : "")}"><option value="">New customer (type the name below)</option><optgroup label="Leads">${leads.filter(l => !isOutreach(l)).map(opt).join("")}</optgroup>${out.length ? `<optgroup label="Email outreach contacts">${out.map(opt).join("")}</optgroup>` : ""}</select></label>
+        <label class="f full" id="q-newname-wrap" ${picked ? "hidden" : ""}>New customer's name<input type="text" id="q-newname" autocomplete="off" placeholder="Not in the list? Type their name" value="${esc(picked ? "" : (QD.newName || ""))}" data-prev="${esc(picked ? "" : (QD.newName || ""))}"></label>
         <label class="f">Type<select id="q-type"><option value="ESTIMATE" ${!isInvoice(QD) ? "selected" : ""}>Estimate</option><option value="INVOICE" ${isInvoice(QD) ? "selected" : ""}>Invoice</option></select></label>
         <label class="f">Number<input type="text" id="q-num" value="${esc(QD.number)}"></label>
         <label class="f full">Date<input type="date" id="q-date" value="${esc(QD.date)}"></label>
@@ -2228,28 +2228,52 @@ function blobToB64(blob) { return new Promise((res, rej) => { const r = new File
 async function quoteNewCustomer() {
   const box = $("#q-newname"); const name = box ? box.value.trim() : ""; if (QD.leadId || !name) return { ok: true };
   const norm = (x) => String(x || "").trim().toLowerCase().replace(/\s+/g, " ");
-  let same = leadsOnly().filter(l => [l.name, l.company].some(x => x && norm(x) === norm(name)));
+  const label = (l) => [l.company, l.name].filter(Boolean).join(" · ") || leadName(l);
+  // a lead is matched on the name the CRM shows for it: the company when it has one, otherwise the person
+  let same = leadsOnly().filter(l => l.company ? norm(l.company) === norm(name) : norm(l.name) === norm(name));
   if (!same.length) { const o = outreachOnly().filter(l => l.company && norm(l.company) === norm(name)); if (o.length === 1) same = o; }
   if (same.length > 1) { toast(`${same.length} customers are named ${name}. Pick the right one under Customer.`, 6000); const sel = $("#q-lead"); if (sel) sel.focus(); return { ok: false }; }
-  if (same.length === 1) { pickQuoteCust(same[0].id); return { ok: true, matched: leadName(same[0]) }; }
-  // what's typed in Bill To fills in their email, phone and address
+  if (same.length === 1) { pickQuoteCust(same[0].id, label(same[0])); return { ok: true, matched: leadName(same[0]) }; }
+  // what's typed in Bill To fills in their email, phone and address (a city, state and zip line goes with the street)
   const lines = (QD.billTo || []).filter(x => norm(x) !== norm(name));
-  const email = lines.find(x => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x)) || "";
-  const phone = lines.find(x => x !== email && /^[\d\s().+-]{7,}$/.test(x) && (x.match(/\d/g) || []).length >= 7) || "";
-  const address = lines.find(x => x !== email && x !== phone && /\d/.test(x)) || "";
+  const email = (lines.find(x => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x)) || "").toLowerCase();
+  const phone = lines.find(x => x.toLowerCase() !== email && /^[\d\s().+-]{7,}$/.test(x) && digits(x).length >= 7) || "";
+  const ai = lines.findIndex(x => x.toLowerCase() !== email && x !== phone && /\d/.test(x));
+  let address = ai >= 0 ? lines[ai] : "";
+  const nx = ai >= 0 ? lines[ai + 1] : "";
+  if (nx && nx.toLowerCase() !== email && nx !== phone && /\b\d{5}\b|,\s*(FL|Florida)\b/i.test(nx)) address += ", " + nx;
+  // someone already in the CRM with this email or phone: say so first, and a second tap adds them anyway
+  const dupe = S.leads.find(l => (email && String(l.email || "").toLowerCase() === email) || (digits(phone).length >= 10 && digits(l.phone).slice(-10) === digits(phone).slice(-10)));
+  const dk = dupe ? dupe.id + "|" + name + "|" + email + "|" + digits(phone) : "";
+  if (dupe && quoteNewCustomer.confirmed !== dk) { quoteNewCustomer.confirmed = dk; toast(`${leadName(dupe)} already has this ${email && String(dupe.email || "").toLowerCase() === email ? "email" : "phone"}. Pick them under Customer, or tap again to add ${name} as a new customer.`, 7000); return { ok: false }; }
+  quoteNewCustomer.confirmed = "";
+  const inv = isInvoice(QD), st = QD.status || "draft", total = quoteTotals(QD).total;
+  // their stage follows the document: a paid invoice is Paid, an accepted estimate is Scheduled, a declined one Lost
+  const stage = inv ? (st === "paid" ? "paid" : "completed") : st === "accepted" ? "scheduled" : st === "declined" ? "lost" : "working";
   const id = uid("lead"), now = new Date().toISOString();
-  const doc = { name, company: "", phone, email, address, city: "", type: "Residential", source: "Other", stage: isInvoice(QD) ? "completed" : "working", stageSince: today(), services: [], value: 0, nextFollowUp: "", dnc: false, list: "leads", notes: "", createdAt: now, updatedAt: now, activity: [{ at: now, type: "created", text: `Added from ${isInvoice(QD) ? "invoice" : "estimate"} ${QD.number}` }] };
+  const doc = { name, company: "", phone, email, address, city: "", type: "Residential", source: "Other", stage, stageSince: today(), services: [], value: inv || st === "accepted" ? total : 0, nextFollowUp: "", dnc: false, list: "leads", notes: "", createdAt: now, updatedAt: now, activity: [{ at: now, type: "created", text: `Added from ${inv ? "invoice" : "estimate"} ${QD.number}` }] };
+  if (blockedEmail(email)) doc.noAutoEmail = true;
   await saveDoc("leads", id, doc);
   pickQuoteCust(id, name); return { ok: true, made: Object.assign({ id }, doc) };
 }
-// shows the customer picked under Customer (adding them to the list if they're new) and takes the name box away
+// shows the customer picked under Customer (adding them to the list if they're missing) and takes the name box away
 function pickQuoteCust(id, name) {
   QD.leadId = id; delete QD.newName;
   const sel = $("#q-lead"), nb = $("#q-newname"), w = $("#q-newname-wrap");
   if (sel && name && !sel.querySelector(`option[value="${id}"]`)) (sel.querySelector("optgroup") || sel).appendChild(new Option(name, id));
-  if (sel) sel.value = id; if (nb) nb.value = ""; if (w) w.hidden = true;
+  if (sel) { sel.value = id; sel.dataset.was = id; } if (nb) nb.value = ""; if (w) w.hidden = true;
 }
+// a lead this editor just added, until the leads list catches up
+let quoteMadeLead = null;
+const quoteLead = () => leadById(QD.leadId) || (quoteMadeLead && quoteMadeLead.id === QD.leadId ? quoteMadeLead : null);
+// one save at a time: a second tap while it's saving waits for the first instead of saving a copy
+let quoteSaving = null;
 async function saveQuote(silent) {
+  if (quoteSaving) return quoteSaving;
+  quoteSaving = saveQuoteNow(silent);
+  try { return await quoteSaving; } finally { quoteSaving = null; }
+}
+async function saveQuoteNow(silent) {
   readQuoteHeader();
   if (!QD.number) { toast("Give it a number"); return false; }
   let nc; try { nc = await quoteNewCustomer(); } catch (e) { return false; }
@@ -2271,6 +2295,7 @@ async function saveQuote(silent) {
     }
     if (isOutreach(l)) Object.assign(upd, PROMOTE());
     await saveDoc("leads", l.id, upd, true);
+    if (nc.made) quoteMadeLead = Object.assign({}, nc.made, upd);
   }
   S.dirty = false;
   if (!silent) toast(nc.made ? `Saved, and ${nc.made.name} is added to your leads` : nc.matched ? `Saved on your existing customer ${nc.matched}` : "Saved");
@@ -2456,7 +2481,7 @@ function monthGrid(m, sel, dayAttr, compact) {
     const kind = (e) => e.src === "crm" ? e.kind : "g";
     cells.push(`<button class="mday${k === t ? " today" : ""}${k === sel ? " sel" : ""}${dim ? " dim" : ""}" ${dayAttr}="${k}" aria-label="${esc(fmtD(k, { weekday: "long", month: "long", day: "numeric" }))}${list.length ? ", " + plural(list.length, "event") : ""}"${k === sel ? ' aria-current="date"' : ""}>
       <span class="dn">${d.getDate()}</span>
-      <span class="mevs">${list.slice(0, 3).map(e => `<span class="mev ${kind(e)}">${e.allDay || (e.start || "").length <= 10 ? "" : esc(fmtT(e.start)) + " "}${esc(e.title)}</span>`).join("")}${list.length > 3 ? `<span class="more">+${list.length - 3} more</span>` : ""}</span>
+      <span class="mevs">${list.slice(0, 3).map(e => `<span class="mev ${kind(e)}">${e.allDay || (e.start || "").length <= 10 ? "" : ymd(new Date(e.start)) === k ? esc(fmtT(e.start)) + " " : "until " + esc(fmtT(e.end || e.start)) + " "}${esc(e.title)}</span>`).join("")}${list.length > 3 ? `<span class="more">+${list.length - 3} more</span>` : ""}</span>
       <span class="mdots">${list.slice(0, 4).map(e => `<i class="${kind(e)}"></i>`).join("")}</span></button>`);
   }
   return `<div class="mcal${compact ? " compact" : ""}" role="grid">${["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map(w => `<span class="wd">${w}</span>`).join("")}${cells.join("")}</div>`;
@@ -2626,6 +2651,7 @@ async function bookSave(btn) {
   const date = $("#bk-date").value; if (!date || !fuYearOk(date)) { toast(date ? "Finish typing the year in the date" : "Pick a date"); return; }
   const time = $("#bk-time").value; if (!time) { toast("Pick a start time"); return; }
   const hrs = +$("#bk-hrs").value; if (!(hrs > 0)) { toast("Put how many hours the job takes"); return; }
+  if (hrs > 12) { toast("A job here can be up to 12 hours. Book a second day for a longer one."); return; }
   btn.disabled = true; b.saving = true; // the popup can't be closed until it's saved, so the job can't be booked twice
   let r = false;
   try { r = await bookAppt(l, "job", { date, time, dur: Math.round(hrs * 60), title: $("#bk-title").value, addr: $("#bk-addr").value, amount: $("#bk-amt").value, service: $("#bk-svc").value, crew: crewVal("bk-crew"), cal: $("#bk-gcal").checked, quoteId: b.quoteId }, $("#bk-status")); }
@@ -3615,11 +3641,14 @@ document.addEventListener("click", async (e) => {
       case "q-pdf": { readQuoteHeader(); t.disabled = true; $("#q-status-line").textContent = "Making the PDF…"; try { const b = await quotePDFBlob(); await saveFile(quoteFileBase() + ".pdf", b); } catch (er) { toast(er.message || "Couldn't make the PDF"); } t.disabled = false; $("#q-status-line").textContent = ""; break; }
       case "q-png": { readQuoteHeader(); t.disabled = true; $("#q-status-line").textContent = "Making the picture…"; try { const c = await renderCanvas(); const b = await new Promise(r => c.toBlob(r, "image/png")); await saveFile(quoteFileBase() + ".png", b); } catch (er) { toast(er.message || "Couldn't make the picture"); } t.disabled = false; $("#q-status-line").textContent = ""; break; }
       case "q-email": {
-        readQuoteHeader(); const ql = leadById(QD.leadId); const to = (ql && ql.email) || (QD.billTo.find(x => /@/.test(x)) || "");
-        if (!to) { toast("Add an email to Bill To or pick a lead with an email"); break; }
-        if (ql && ql.dnc) { toast("This lead is marked do not contact"); break; }
+        readQuoteHeader(); const ql0 = leadById(QD.leadId);
+        if (ql0 && ql0.dnc) { toast("This lead is marked do not contact"); break; }
         t.disabled = true; $("#q-status-line").textContent = "Saving and making the PDF…";
-        if (!(await saveQuote(true))) { t.disabled = false; break; }
+        // saving first adds or links a customer typed under Customer, so the checks below go by them
+        if (!(await saveQuote(true))) { t.disabled = false; $("#q-status-line").textContent = ""; break; }
+        const ql = quoteLead(); const to = (ql && ql.email) || (QD.billTo.find(x => /@/.test(x)) || "");
+        if (ql && ql.dnc) { toast("This lead is marked do not contact"); t.disabled = false; $("#q-status-line").textContent = ""; break; }
+        if (!to) { toast("Add an email to Bill To or pick a lead with an email"); t.disabled = false; $("#q-status-line").textContent = ""; break; }
         let blob; try { blob = await quotePDFBlob(); } catch (er) { toast(er.message || "Couldn't make the PDF"); t.disabled = false; $("#q-status-line").textContent = ""; break; }
         const fname = quoteFileBase() + ".pdf";
         if (!S.mcp && STANDALONE && !mailConnected()) {
@@ -3658,7 +3687,7 @@ document.addEventListener("click", async (e) => {
       case "bk-open": if (await saveQuote(true)) startBooking(); break;
       case "bk-save": await bookSave(t); break;
       case "bk-back": S.book = null; $("#modal .sheet").innerHTML = quoteEditorHTML(); renderItems(); updatePreview(); S.dirty = false; break;
-      case "q-to-invoice": { await saveQuote(true); const src = QD; const inv = Object.assign(JSON.parse(JSON.stringify(src)), { id: "", docType: "INVOICE", date: today(), status: "draft", fromQuote: src.id }); inv.number = nextNumber(inv.date); QD = inv; $("#modal .sheet").innerHTML = quoteEditorHTML(); renderItems(); updatePreview(); toast("Invoice started from the estimate. Save it when ready."); break; }
+      case "q-to-invoice": { if (!(await saveQuote(true))) break; const src = QD; const inv = Object.assign(JSON.parse(JSON.stringify(src)), { id: "", docType: "INVOICE", date: today(), status: "draft", fromQuote: src.id }); inv.number = nextNumber(inv.date); QD = inv; $("#modal .sheet").innerHTML = quoteEditorHTML(); renderItems(); updatePreview(); toast("Invoice started from the estimate. Save it when ready."); break; }
       case "q-delete": $("#q-status-line").innerHTML = `<span class="row">Delete this quote? <button class="btn sm danger" data-act="q-delete-yes">Delete</button><button class="btn sm" data-act="q-delete-no">Keep</button></span>`; break;
       case "q-delete-no": $("#q-status-line").innerHTML = ""; break;
       case "q-delete-yes": await delDoc("quotes", QD.id); closeModal(); toast("Quote deleted"); break;
@@ -3715,7 +3744,7 @@ document.addEventListener("click", async (e) => {
 });
 document.addEventListener("input", (e) => {
   if (e.target.id === "mj-addr") delete e.target.dataset.auto; // typed by hand: picking another customer won't replace it
-  if (S.book && e.target.id === "bk-hrs") { const h = +e.target.value; if (h > 0) { S.book.dur = Math.round(h * 60); refreshBook(); } return; }
+  if (S.book && e.target.id === "bk-hrs") { const h = +e.target.value; if (h > 0 && h <= 12) { S.book.dur = Math.round(h * 60); refreshBook(); } return; }
   if (S.book && e.target.id === "bk-time") { S.book.auto = ""; refreshBook(); return; }
   const it = e.target.closest && e.target.closest(".qitem");
   if (it && QD) {
@@ -3739,6 +3768,9 @@ document.addEventListener("input", (e) => {
 document.addEventListener("change", async (e) => {
   if (e.target.id === "q-lead" && QD) {
     const w = $("#q-newname-wrap"); if (w) w.hidden = !!e.target.value;
+    const was = leadById(e.target.dataset.was || ""), bill = $("#q-bill"), nb = $("#q-newname");
+    if (!e.target.value && was && bill && bill.value.trim() === billToFor(was).join("\n").trim()) { const v = nb ? nb.value.trim() : ""; bill.value = v; if (nb) nb.dataset.prev = v; }
+    e.target.dataset.was = e.target.value;
     const l = leadById(e.target.value); if (l) { $("#q-bill").value = billToFor(l).join("\n"); }
     // a quote with no lines yet starts with the services the customer asked for
     if (l && l.services && l.services.length && !QD.items.some(isLine)) { QD.items = l.services.map(x => itemFromBook(x)); renderItems(); }
