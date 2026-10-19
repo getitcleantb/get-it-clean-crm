@@ -581,9 +581,12 @@ html.gated, html.gated body { overflow: hidden; }
   const ymd = (d) => d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
   const range = () => { const a = new Date(); a.setMonth(a.getMonth() - PAST_MONTHS); a.setHours(0, 0, 0, 0); const b = new Date(); b.setDate(b.getDate() + AHEAD_DAYS); b.setHours(23, 59, 59, 0); return { from: ymd(a), to: ymd(b), min: a.toISOString(), max: b.toISOString() }; };
   const tokenOk = () => !!(token && token.t && token.exp > Date.now());
-  // what Google allowed (people can untick Calendar or Gmail on the consent screen); an old token without a list had both
-  const has = (what) => !!token && (token.scope == null || token.scope.indexOf(what) >= 0);
-  const granted = (what) => !!L.get(K.on) && (token ? has(what) : (L.get(K.scope) == null || String(L.get(K.scope)).indexOf(what) >= 0));
+  // what Google allowed: the consent screen has a box for each of the four, and any can be unticked. A wider access
+  // given to this CRM before (all of Calendar, all of Gmail) counts too. An old token without a list had them all.
+  const NEEDS = { calRead: ["calendar.readonly", "calendar"], calWrite: ["calendar.events", "calendar"], mailSend: ["gmail.compose", "gmail.modify", "https://mail.google.com/"], mailRead: ["gmail.readonly", "gmail.modify", "https://mail.google.com/"] };
+  const inList = (list, what) => list == null || String(list).split(/\s+/).some(x => NEEDS[what].includes(x.replace(/^https:\/\/www\.googleapis\.com\/auth\//, "")));
+  const has = (what) => !!token && inList(token.scope, what);
+  const granted = (what) => !!L.get(K.on) && (token ? has(what) : inList(L.get(K.scope), what));
   const redirectUri = () => location.origin + location.pathname.replace(/index\.html$/, "");
   const nonce = () => Array.from(crypto.getRandomValues(new Uint8Array(12)), b => b.toString(16).padStart(2, "0")).join("");
 
@@ -595,7 +598,10 @@ html.gated, html.gated body { overflow: hidden; }
     if (ret) { SS.set(K.ret, ret); L.set(K.ret, ret); } else { SS.del(K.ret); L.del(K.ret); }
     if (silent) L.set(K.auto, Date.now());
     hint = String(hint || L.get(K.hint) || "").trim(); if (hint) L.set(K.hint, hint);
-    const q = new URLSearchParams({ client_id: CLIENT, redirect_uri: redirectUri(), response_type: "token", scope: SCOPES.join(" "), state: n, include_granted_scopes: "true" });
+    // a quick silent trip asks only for what was allowed before (asking for a box that was left unticked makes Google
+    // say no without asking); a tap on Connect asks for all four again
+    const had = String(L.get(K.scope) || "").trim();
+    const q = new URLSearchParams({ client_id: CLIENT, redirect_uri: redirectUri(), response_type: "token", scope: silent && had ? had : SCOPES.join(" "), state: n, include_granted_scopes: "true" });
     if (hint) q.set("login_hint", hint);
     if (silent) q.set("prompt", "none");
     location.replace(AUTH_URL + "?" + q.toString());
@@ -620,7 +626,7 @@ html.gated, html.gated body { overflow: hidden; }
     if (scope && !/calendar|gmail/.test(scope)) { status = L.get(K.on) ? "expired" : "idle"; msg = "You didn't allow calendar or email access, so Google isn't connected."; return true; }
     token = { t: p.get("access_token"), exp: Date.now() + (Math.max(60, +p.get("expires_in") || 3600) - 60) * 1000, scope: scope || null };
     L.set(K.tok, token); L.set(K.on, 1); L.set(K.scope, scope || null); L.del(K.quiet); msg = ""; status = "loading";
-    if (scope && !/calendar/.test(scope)) msg = "You didn't allow calendar access. Tap Reconnect and tick the calendar box to show it here.";
+    if (scope && !inList(scope, "calRead")) msg = "You didn't allow calendar access. Tap Reconnect and tick the calendar boxes to show it here.";
     return true;
   }
 
@@ -663,7 +669,9 @@ html.gated, html.gated body { overflow: hidden; }
     try { const r = await call("/users/me/profile?fields=emailAddress", null, GMAIL); if (r.emailAddress) { L.set(K.acct, r.emailAddress); fire(); } } catch (e) {}
     return L.get(K.acct) || "";
   }
-  const noMail = () => { const e = new Error(tokenOk() ? "You didn't allow Gmail. Tap Reconnect in Settings > Connections and tick the Gmail boxes." : "Gmail needs a quick reconnect."); e.code = tokenOk() ? "forbidden" : "expired"; return e; };
+  // Google's names for the two Gmail boxes on its consent screen
+  const BOX = { mailSend: "Manage drafts and send emails", mailRead: "View your email messages and settings" };
+  const noMail = (what) => { const e = new Error(tokenOk() ? `Google didn't allow this. Tap Reconnect in Settings > Connections and tick “${BOX[what || "mailSend"]}”.` : "Gmail needs a quick reconnect."); e.code = tokenOk() ? "forbidden" : "expired"; return e; };
   const hdrOf = (msg, n) => { const h = ((msg.payload || {}).headers || []).find(x => String(x.name).toLowerCase() === n); return h ? String(h.value || "") : ""; };
   const addrOf = (s) => { const m = String(s || "").match(/<([^>]+)>/); return (m ? m[1] : String(s || "")).trim().toLowerCase(); };
   const nameOf = (s) => { const m = String(s || "").match(/^\s*"?([^"<]*?)"?\s*</); return (m && m[1].trim()) || addrOf(s); };
@@ -685,7 +693,7 @@ html.gated, html.gated body { overflow: hidden; }
       if (!(status === "ready" && cache.events.length)) status = "loading"; // a refresh keeps what's shown; only the first load says loading
       fire();
       try {
-        if (!has("calendar")) { status = "error"; msg = "You didn't allow calendar access. Tap Reconnect and tick the calendar box to show it here."; loading = null; fire(); return; }
+        if (!has("calRead")) { status = "error"; msg = "You didn't allow calendar access. Tap Reconnect and tick the calendar boxes to show it here."; loading = null; fire(); return; }
         const rg = range();
         const cl = await call("/users/me/calendarList?minAccessRole=reader&fields=items(id,summary,primary,selected,backgroundColor)");
         // the calendars shown in Google Calendar, with the main one always in
@@ -695,7 +703,7 @@ html.gated, html.gated body { overflow: hidden; }
         const lists = await Promise.all(cals.map(c => listEvents(c, rg)));
         const events = [].concat(...lists).sort((a, b) => String(a.start.dateTime || a.start.date).localeCompare(String(b.start.dateTime || b.start.date)));
         cache = { at: Date.now(), cals, events, from: rg.from, to: rg.to }; L.set(K.ev, cache);
-        status = "ready"; msg = "";
+        status = "ready"; msg = has("calWrite") ? "" : "Google lets the CRM see your calendar but not add to it. Tap Reconnect and tick the box to add events, so booked estimates and jobs go on it.";
       } catch (e) {
         if (e.code === "expired") { status = "expired"; msg = "Google Calendar needs a quick reconnect."; }
         else if (e.code === "forbidden") { status = "error"; msg = "Google wouldn't share the calendar. " + (/not been used|disabled|enable/i.test(e.message) ? "The Calendar API isn't turned on for this CRM's Google project yet." : e.message); }
@@ -711,7 +719,7 @@ html.gated, html.gated body { overflow: hidden; }
     available: !!CLIENT,
     status: () => status, message: () => msg,
     events: () => cache.events, calendars: () => cache.cals, loadedAt: () => cache.at,
-    connected: () => tokenOk() && (status === "ready" || status === "loading"), // can write to the calendar right now
+    connected: () => tokenOk() && has("calWrite") && (status === "ready" || status === "loading"), // can write to the calendar right now
     busy: () => !!loading,
     range: () => ({ from: cache.from || range().from, to: cache.to || range().to }),
     takeReturn: () => { const r = returned; returned = null; return r; },
@@ -736,18 +744,21 @@ html.gated, html.gated body { overflow: hidden; }
 
   window.GICMAIL = Object.freeze({
     available: !!CLIENT,
-    connected: () => tokenOk() && has("gmail"),
-    allowed: () => granted("gmail"), // connected at some point with Gmail ticked (the token may have run out since)
+    connected: () => tokenOk() && has("mailSend"), // can make drafts and send right now
+    canRead: () => tokenOk() && has("mailRead"), // can show a lead's emails right now
+    allowed: () => granted("mailSend") || granted("mailRead"), // connected at some point with a Gmail box ticked (the token may have run out since)
+    // a Gmail box that was left unticked while the other one is on: what to tell them
+    missing: () => !tokenOk() ? "" : has("mailSend") && !has("mailRead") ? BOX.mailRead : !has("mailSend") && has("mailRead") ? BOX.mailSend : "",
     account: () => L.get(K.acct) || "",
     createDraft: async (m) => {
-      if (!(tokenOk() && has("gmail"))) throw noMail();
+      if (!(tokenOk() && has("mailSend"))) throw noMail("mailSend");
       const r = await call("/users/me/drafts", { method: "POST", body: JSON.stringify({ message: { raw: mime(m) } }) }, GMAIL);
       account().catch(() => {});
       const mid = (r.message || {}).id || "";
       return { id: r.id || "", messageId: mid, threadId: (r.message || {}).threadId || "", viewUrl: gmailLink(mid ? "drafts?compose=" + mid : "drafts") };
     },
     send: async (m) => {
-      if (!(tokenOk() && has("gmail"))) throw noMail();
+      if (!(tokenOk() && has("mailSend"))) throw noMail("mailSend");
       const r = await call("/users/me/messages/send", { method: "POST", body: JSON.stringify({ raw: mime(m) }) }, GMAIL);
       account().catch(() => {}); delete histCache[String(m.to || "").toLowerCase()];
       return { id: r.id || "", threadId: r.threadId || "", viewUrl: gmailLink("sent/" + (r.threadId || r.id || "")) };
@@ -756,7 +767,7 @@ html.gated, html.gated body { overflow: hidden; }
     history: async (email, force) => {
       const k = String(email || "").trim().toLowerCase(); if (!k) return [];
       const c = histCache[k]; if (c && !force && Date.now() - c.at < 3 * 60 * 1000) return c.items;
-      if (!(tokenOk() && has("gmail"))) throw noMail();
+      if (!(tokenOk() && has("mailRead"))) throw noMail("mailRead");
       const me = (await account()).toLowerCase();
       const q = new URLSearchParams({ q: `from:(${k}) OR to:(${k}) OR cc:(${k})`, maxResults: "10", fields: "messages(id,threadId)" });
       const list = await call("/users/me/messages?" + q.toString(), null, GMAIL);
@@ -779,7 +790,7 @@ html.gated, html.gated body { overflow: hidden; }
   }
   if (!CLIENT) return;
   token = L.get(K.tok);
-  if (takeFromAddress()) { if (tokenOk()) load(); else fire(); }
+  if (takeFromAddress()) { if (tokenOk()) { load(); if ((has("mailSend") || has("mailRead")) && !has("calRead")) account(); } else fire(); }
   else if (tokenOk()) { status = cache.events.length ? "ready" : "loading"; load(); }
   else if (L.get(K.on) && !L.get(K.quiet) && Date.now() - (+L.get(K.auto) || 0) > AUTO_GAP_MS && navigator.onLine !== false) {
     // the token ran out: a quick silent trip to Google for a new one, before the rest of the CRM starts.
@@ -1320,12 +1331,15 @@ function renderNav() {
 // ---------- render with focus preservation ----------
 // half-filled forms (money forms, the payment box) keep what was typed when the page redraws, and when you go to
 // another tab and come back
-const keptTyped = {}; let drawnView = "", forgetRe = null;
+const keptTyped = {}; let drawnView = "", forgetRe = null, carriedKept = null; // carriedKept: brought back from a trip to Google
 // a form that starts over (a new Add job for another customer) drops what was typed into the earlier one on the next draw
 function forgetTyped(re) { forgetRe = re; }
+// what's typed in the forms on screen, into keptTyped
+function keepTyped() { if (drawnView) { const typed = {}; document.querySelectorAll("#view [data-keep] input[id], #view [data-keep] select[id], #view [data-keep] textarea[id]").forEach(el => { if (typedIn(el)) typed[el.id] = shownVal(el); }); keptTyped[drawnView] = typed; } }
 function render() {
   const a = document.activeElement; const keep = a && a.id && $("#view").contains(a) ? { id: a.id, s: a.selectionStart, e: a.selectionEnd } : null;
-  if (drawnView) { const typed = {}; document.querySelectorAll("#view [data-keep] input[id], #view [data-keep] select[id], #view [data-keep] textarea[id]").forEach(el => { if (typedIn(el)) typed[el.id] = shownVal(el); }); keptTyped[drawnView] = typed; }
+  keepTyped();
+  if (carriedKept) { const c = carriedKept; carriedKept = null; Object.keys(c).forEach(v => { keptTyped[v] = Object.assign({}, keptTyped[v] || {}, c[v]); }); }
   if (forgetRe) { const re = forgetRe; forgetRe = null; Object.values(keptTyped).forEach(t => Object.keys(t).forEach(id => { if (re.test(id)) delete t[id]; })); }
   renderNav();
   const fn = VIEWS[S.view] || VIEWS.today;
@@ -1683,11 +1697,14 @@ const LEAD_TABS = {
     const tpls = settings().texts.map((tp, i) => ({ tp, i })); const top = tpls.filter(x => fit.test(x.tp.name)), rest = tpls.filter(x => !fit.test(x.tp.name));
     const tplRow = ({ tp, i }) => { const m = fill(tp.body, l); return `<div class="msgrow"><div class="top"><b>${esc(tp.name)}</b><span class="row"><a class="btn sm primary" href="${smsHref(l, m)}" data-act="log-text" data-i="${i}">Send text</a><button class="btn sm" data-copy="${esc(m)}" data-copy-label="Message">Copy</button></span></div><details class="mprev"><summary class="msg clamp" title="Show the whole message">${esc(m)}</summary></details></div>`; };
     const texts = !l.phone ? `<div class="pad note">Add a phone number under Edit to text them.</div>` : `<div class="list">${(top.length ? top : rest).map(tplRow).join("")}</div>${top.length && rest.length ? `<details class="more-tpl"><summary>More templates (${rest.length})</summary><div class="list">${rest.map(tplRow).join("")}</div></details>` : ""}${S.cal.status !== "ready" ? `<div class="pad note">The open times in the follow-up text only skip jobs in this CRM until you show your Google Calendar on the Calendar tab.</div>` : ""}`;
-    const et = emailTemplate(l);
-    const email = !l.email ? `<p class="note">Add an email address under Edit to email them.</p>` : `<p class="note">Creates a draft in your Gmail to <b>${esc(l.email)}</b>. Nothing is sent until you press Send in Gmail.</p>
+    const et = emailTemplate(l); const gm = MAIL(), live = mailConnected();
+    const emailNote = live ? `Sends from your Gmail${gm.account() ? ` (${esc(gm.account())})` : ""} to <b>${esc(l.email)}</b>. Save as draft puts it in your Gmail drafts instead.`
+      : gm && gm.allowed() ? `Gmail needs a quick reconnect (Settings > Connections). Until then this opens your email app to <b>${esc(l.email)}</b>.`
+      : `Creates a draft in your Gmail to <b>${esc(l.email)}</b>. Nothing is sent until you press Send in Gmail.`;
+    const email = !l.email ? `<p class="note">Add an email address under Edit to email them.</p>` : `<p class="note">${emailNote}</p>
       <label class="f">Subject<input type="text" id="em-subj" value="${esc(et.subj)}"></label>
       <label class="f">Message<textarea id="em-body" rows="6">${esc(et.body)}</textarea></label>
-      <div class="row"><button class="btn primary" data-act="make-draft">Create Gmail draft</button><span id="em-status" class="note">${S.draftMsg && S.draftMsg.leadId === l.id ? S.draftMsg.html : ""}</span></div>`;
+      <div class="row">${live ? `<button class="btn primary" data-act="send-mail">Send</button><button class="btn" data-act="make-draft">Save as draft</button>` : `<button class="btn primary" data-act="make-draft">Create Gmail draft</button>`}<span id="em-status" class="note">${S.draftMsg && S.draftMsg.leadId === l.id ? S.draftMsg.html : ""}</span></div>`;
     const drip = isOutreach(l) ? `<div class="pad note">Outreach contacts get the HOA follow-up emails instead. Drip messages start once they move to Leads.</div>`
       : l.dripOff ? `<div class="pad note">Drip messages are off for this lead.${l.dripNote ? " " + esc(l.dripNote) : ""}</div>`
       : later.length ? `<div class="list">${later.map(x => `<div class="item static"><div class="main-col"><span class="t">${esc(x.st.name)}</span><span class="s">${x.st.channel === "email" ? "Email" : "Text"} · ${esc(fmtD(x.date, { month: "short", day: "numeric", year: "numeric" }))}</span></div></div>`).join("")}</div>`
@@ -1695,6 +1712,7 @@ const LEAD_TABS = {
     return `${due.length ? `<section class="panel flush"><div class="panel-h"><h2>Due now</h2><span class="note">Drip for ${esc(STAGE_LABEL[l.stage] || "this stage")}</span></div><div class="list">${due.map(x => dripRow(x, true)).join("")}</div></section>` : ""}
       <section class="panel flush"><div class="panel-h"><h2>Text messages</h2>${l.phone ? `<span class="note">To ${esc(l.phone)}</span>` : ""}</div>${texts}</section>
       <section class="panel"><div class="panel-h"><h2>Email</h2></div>${email}</section>
+      ${mailHistHTML(l)}
       <section class="panel flush"><div class="panel-h"><h2>${due.length ? "Coming up" : "Drip for " + esc(STAGE_LABEL[l.stage] || "this stage")}</h2>${isOutreach(l) ? "" : `<button class="btn sm" data-act="drip-toggle">${l.dripOff ? "Turn drip on" : "Turn drip off"}</button>`}</div>${drip}</section>`;
   },
   work: (l, qs, js) => `${nextSteps()}
@@ -1916,13 +1934,21 @@ function openCompose(to, subject, body) {
 }
 async function makeDraft(l, subject, body, attachments) {
   const mcp = S.mcp;
-  if (!mcp && STANDALONE) { openCompose(l.email, subject, body); return { viaApp: true }; }
+  if (!mcp && STANDALONE) {
+    // Gmail connected on the website: the draft goes straight into Gmail
+    if (mailConnected()) {
+      try { const r = await MAIL().createDraft({ to: l.email, subject, body, attachments }); return { viewUrl: r.viewUrl }; }
+      catch (e) { if (attachments || (e.code !== "expired" && e.code !== "offline")) { toast(gmailErr(e), 6000); return null; } }
+    }
+    openCompose(l.email, subject, body); return { viaApp: true };
+  }
   if (!mcp) { toast("Gmail isn't available in this view"); return null; }
   const input = { to: [l.email], subject, body };
   if (attachments) input.attachments = attachments;
   try { const r = await mcp.callTool("Gmail", "create_draft", input); return r.payload || {}; }
   catch (e) { mcpToast("Gmail", e); return null; }
 }
+const gmailErr = (e) => e.code === "expired" ? "Gmail needs a quick reconnect (Settings > Connections)." : e.code === "offline" ? "Couldn't reach Gmail. Check the connection and try again." : "Gmail said: " + (e.message || "no");
 function mcpToast(server, e) { toast(mcpMsg(server, e), 5000); }
 function mcpMsg(server, e) {
   const c = e && e.code;
@@ -2261,6 +2287,60 @@ function syncGcal() {
   schedule(); if (was.status !== S.cal.status || (S.leadTab === "messages" && was.at !== S.cal.at)) refreshLeadModal();
 }
 const calConnected = () => { const gc = GC(); return !!gc && gc.connected(); };
+// Gmail on the website: the same Google sign-in as the calendar (sa/src/gcal.js)
+const MAIL = () => (STANDALONE && window.GICMAIL && window.GICMAIL.available) ? window.GICMAIL : null;
+const mailConnected = () => { const m = MAIL(); return !!m && m.connected(); };
+// gcal.js checks this before a quick trip to Google for a new token, and comes back to GIC_WHERE: only when nothing is
+// typed anywhere, including forms kept from another tab, and nothing is under way (a payment box, a backup loading,
+// an Angi test, a quote PDF waiting to be sent, a popup other than a lead's)
+const workUnderWay = () => Object.values(keptTyped).some(t => Object.keys(t).length) || !!S.payOpen || !!(S.restore && !S.restore.done && !S.restore.err) || !!(S.angiTest && S.angiTest.busy) || !!S.carried || !!(!openLeadId && $("#modal").innerHTML);
+window.GIC_CAN_LEAVE = () => !S.dirty && !S.setDirty && !formEls(document).some(typedIn) && !(openLeadId && (fuTimers[openLeadId] || leadUnsaved())) && !workUnderWay();
+window.GIC_WHERE = () => calReturn();
+// A tap on Connect or Reconnect leaves for Google and comes back: what's typed goes along and is put back. That's the
+// open lead's boxes on every tab (an email being written), half-filled Money forms and the payment box.
+const CARRY = "gic-carry";
+function carryTyped() {
+  try {
+    keepTyped();
+    const sheet = $("#modal .sheet"), l = openLeadId && leadById(openLeadId);
+    if (l && sheet) collectDraft(sheet, leadDraft(l));
+    sessionStorage.setItem(CARRY, JSON.stringify({ at: Date.now(), kept: keptTyped, money: { form: S.money.form || "", formLead: S.money.formLead || "", dropPaid: S.money.dropPaid || "" }, pay: S.payOpen || null, draft: l ? S.tabDraft : null }));
+  } catch (e) {}
+}
+function bringBackTyped(ret) {
+  let c = null; try { c = JSON.parse(sessionStorage.getItem(CARRY) || "null"); sessionStorage.removeItem(CARRY); } catch (e) {}
+  if (!ret || !c || Date.now() - (+c.at || 0) > 30 * 60 * 1000) return;
+  if (c.money && c.money.form) Object.assign(S.money, c.money);
+  if (c.draft && c.draft.leadId && c.draft.leadId === ret.lead) S.tabDraft = c.draft;
+  // the boxes and the payment box wait for the customers and jobs to load, so their choices exist when they're put back
+  S.carried = { kept: c.kept || {}, pay: c.pay && c.pay.id ? c.pay : null };
+}
+function applyCarried() { const c = S.carried; if (!c) return; S.carried = null; if (c.pay) S.payOpen = c.pay; carriedKept = c.kept; }
+// a lead's recent emails from Gmail, shown on their Messages tab
+const mailHist = {}; // email -> { status: loading | ready | error, items, msg, at }
+// a list is looked at again after 3 minutes (a reply may have come in), a failed one after a minute
+const histStale = (h) => !h || (h.status !== "loading" && Date.now() - (+h.at || 0) > (h.status === "error" ? 60 : 180) * 1000);
+function loadMailHist(l, force) {
+  const m = MAIL(), k = String((l && l.email) || "").trim().toLowerCase(); if (!m || !k || !m.canRead()) return;
+  const cur = mailHist[k]; if (cur && cur.status === "loading") return;
+  mailHist[k] = { status: "loading", items: (cur && cur.items) || [], at: Date.now() };
+  m.history(k, force).then(items => { mailHist[k] = { status: "ready", items, at: Date.now() }; },
+    e => { mailHist[k] = { status: "error", items: (cur && cur.items) || [], at: Date.now(), msg: e.code === "expired" ? "Gmail needs a quick reconnect." : e.code === "forbidden" ? e.message : e.code === "offline" ? "Couldn't reach Gmail just now." : "Gmail said: " + e.message }; })
+    .then(() => { const ol = openLeadId && leadById(openLeadId); if (ol && String(ol.email || "").trim().toLowerCase() === k && S.leadTab === "messages") refreshLeadModal(); });
+}
+function mailHistHTML(l) {
+  const m = MAIL(); if (!m || !l.email) return "";
+  const head = (extra) => `<div class="panel-h"><h2>Recent emails</h2>${extra || ""}</div>`;
+  if (!m.canRead()) {
+    const why = m.connected() ? `To show your emails with them here, tap Reconnect and tick “${m.missing() || "View your email messages and settings"}”.` : m.allowed() ? "Gmail needs a quick reconnect to show your emails with them." : "";
+    return why ? `<section class="panel flush">${head()}<div class="pad note spread"><span>${esc(why)}</span><button class="btn sm" data-act="cal-connect">Reconnect</button></div></section>` : "";
+  }
+  const k = l.email.trim().toLowerCase(); let h = mailHist[k];
+  if (histStale(h)) { loadMailHist(l); h = mailHist[k] || { status: "loading", items: [] }; }
+  const rows = h.items.map(x => `<button class="item" data-href="${esc(x.link)}"><div class="main-col"><span class="t">${esc(x.subject)}</span><span class="s">${esc(x.who)} · ${esc(fmtDT(new Date(x.at).toISOString()))}${x.snippet ? " · " + esc(x.snippet) : ""}</span></div><div class="r"><span class="pill ${x.mine ? "" : "s-scheduled"}">${x.mine ? "Sent" : "Received"}</span></div></button>`).join("");
+  const body = rows ? `<div class="list">${rows}</div>` : h.status === "loading" ? `<div class="pad note">Loading your emails with them…</div>` : h.status === "error" ? "" : `<div class="pad note">No emails with ${esc(l.email)} yet.</div>`;
+  return `<section class="panel flush">${head(`<button class="btn sm ghost" data-act="mail-hist-refresh">Refresh</button>`)}${h.status === "error" ? `<div class="pad note">${esc(h.msg)}</div>` : ""}${body}</section>`;
+}
 function applyCal(r) { const p = r.payload || {}; S.cal = { status: "ready", events: (p.events || []).filter(e => e.status !== "cancelled"), msg: "", at: r.cache ? r.cache.storedAt : Date.now(), range: { from: today(), to: addDays(21) } }; schedule(); }
 function calError(e) {
   const c = e && e.code; const deny = ["needs_reauth", "server_not_connected", "blocked_by_policy", "approval_required", "not_in_manifest"].includes(c);
@@ -2298,7 +2378,7 @@ function calBanner() {
   if (st === "idle") return gc ? "" : `<div class="banner info spread"><span>Show your Google Calendar next to the estimates and jobs in your CRM.</span><button class="btn primary sm" data-act="cal-connect">Show my Google Calendar</button></div>`;
   if (st === "loading") return `<div class="banner info">Loading your Google Calendar…</div>`;
   if (st === "expired") return `<div class="banner warn spread"><span>${esc(S.cal.msg || "Google Calendar needs a quick reconnect.")}${S.cal.events.length ? " Showing what was loaded last." : ""}</span><button class="btn primary sm" data-act="cal-connect">Reconnect</button></div>`;
-  if (S.cal.msg) return `<div class="banner ${st === "off" ? "info" : "warn"}">${esc(S.cal.msg)}</div>`;
+  if (S.cal.msg) return st === "ready" && gc ? `<div class="banner warn spread"><span>${esc(S.cal.msg)}</span><button class="btn primary sm" data-act="cal-connect">Reconnect</button></div>` : `<div class="banner ${st === "off" ? "info" : "warn"}">${esc(S.cal.msg)}</div>`;
   return "";
 }
 // ---------- month view ----------
@@ -2752,7 +2832,10 @@ function syncJobForm(fromChange) {
   const sel = $("#mj-lead"); if (!sel) return; const l = leadById(sel.value);
   const w = $("#mj-name-wrap"); if (w) w.style.display = l ? "none" : "";
   if (l && fromChange && $("#mj-src")) $("#mj-src").value = SOURCES.includes(l.source) ? l.source : "Other";
-  const ad = $("#mj-addr"); if (ad && fromChange && (!ad.value.trim() || ad.dataset.auto === "1")) { ad.value = l ? leadAddr(l) : ""; ad.dataset.auto = "1"; }
+  // another customer picked: their address goes in, unless one was typed by hand (an address that's some customer's
+  // own came from picking them, even after a redraw lost the mark)
+  const ad = $("#mj-addr"), was = ad ? ad.value.trim() : "";
+  if (ad && fromChange && (!was || ad.dataset.auto === "1" || S.leads.some(x => leadAddr(x) === was))) { ad.value = l ? leadAddr(l) : ""; ad.dataset.auto = "1"; }
   const box = $("#mj-open"); if (!box) return;
   const open = l ? S.jobs.filter(j => j.leadId === l.id && j.kind === "job" && ["scheduled", "completed"].includes(j.status)) : [];
   box.innerHTML = open.length ? `<div class="banner warn spread"><span>${esc(leadName(l))} already has ${open.length === 1 ? `a ${money(open[0].amount)} job that's ${open[0].status === "completed" ? "done but not paid" : "scheduled"}` : `${open.length} open jobs`}. If this is that job, record the payment on it instead.</span><button class="btn sm" data-act="use-open-job" data-id="${esc(open[0].id)}">Record payment on it</button></div>` : "";
@@ -2765,9 +2848,20 @@ VIEWS.settings = () => {
   const st = S.setDraft || settings(); const tab = S.setTab; // unsaved edits live in setDraft, so quotes keep using the saved prices
   const gc = GC();
   const calPill = { ready: ["s-scheduled", "Connected"], ask: ["s-quoted", gc ? "Not connected" : "Needs your OK on the Calendar tab"], expired: ["s-quoted", "Needs a reconnect"], loading: ["", "Loading"], off: ["s-lost", gc ? "Not connected" : "Not set up"], error: ["s-lost", "Couldn't reach it"] }[S.cal.status] || ["", "Checking"];
-  const calText = gc ? (S.cal.status === "ready" ? `Showing ${plural((S.cal.cals || []).length || 1, "calendar")}, three months back to a year ahead. Estimates and jobs you book go on it.` : S.cal.status === "expired" ? "Connected, but Google needs a quick reconnect to keep showing it." : S.cal.status === "error" ? S.cal.msg : S.cal.status === "ask" && S.cal.msg ? S.cal.msg : "Connect it to see your schedule here and put estimates and jobs on it.")
+  const calText = gc ? (S.cal.status === "ready" ? (S.cal.msg || `Showing ${plural((S.cal.cals || []).length || 1, "calendar")}, three months back to a year ahead. Estimates and jobs you book go on it.`) : S.cal.status === "expired" ? "Connected, but Google needs a quick reconnect to keep showing it." : S.cal.status === "error" ? S.cal.msg : S.cal.status === "ask" && S.cal.msg ? S.cal.msg : "Connect it to see your schedule here and put estimates and jobs on it.")
     : S.mcp || !STANDALONE ? "Estimates and jobs you schedule are added to your calendar" : "Not set up yet. After you schedule something, tap Add to Google Calendar to save it there";
-  const calBtn = !gc ? "" : S.cal.status === "ready" ? `<button class="btn sm" data-act="cal-disconnect">Disconnect</button>` : S.cal.status === "loading" ? "" : `<button class="btn sm primary" data-act="cal-connect">${S.cal.status === "expired" ? "Reconnect" : "Connect"}</button>`;
+  const calBtn = !gc ? "" : S.cal.status === "ready" ? (S.cal.msg ? `<button class="btn sm primary" data-act="cal-connect">Reconnect</button>` : "") + `<button class="btn sm" data-act="cal-disconnect">Disconnect</button>` : S.cal.status === "loading" ? "" : `<button class="btn sm primary" data-act="cal-connect">${S.cal.status === "expired" ? "Reconnect" : "Connect"}</button>`;
+  // Angi: leads with an Angi id came in through the link; Settings > Angi sets it up (website only)
+  const angiN = S.leads.filter(l => l.angiId && !/^angi-test-/.test(l.id)).length, ang = S.angi || {};
+  const angiRow = angiN ? [["s-scheduled", "Working"], `${plural(angiN, "Angi lead")} came in so far`, "Settings"] : ang.emailedAt ? [["s-quoted", "Waiting on Angi"], "Angi's team is connecting your link", "Settings"]
+    : ang.url ? [["s-quoted", "Link ready"], "Test it, then ask Angi to send your leads there", "Finish"] : [["s-lost", "Not set up"], "New Angi leads come in once the lead forwarding is set up", "Set up"];
+  const gm = MAIL(), mOn = !!gm && gm.connected(), mWas = !!gm && gm.allowed(), mMiss = gm ? gm.missing() : "";
+  const mailPill = !gm ? (S.mcp ? ["s-scheduled", "Available"] : ["s-lost", "Not connected"]) : mOn ? ["s-scheduled", "Connected"] : mWas ? ["s-quoted", "Needs a reconnect"] : ["s-lost", "Not connected"];
+  const mailText = !gm ? (S.mcp || !STANDALONE ? "Quote emails and drafts go to your Gmail drafts for you to send" : "Not connected yet. Emails open in your email app (or Gmail on a computer) for you to send")
+    : mOn ? `Sending from ${gm.account() || "your Gmail"}. Emails and quote PDFs go out from it${mMiss ? `. To also show each lead's recent emails, tap Reconnect and tick “${mMiss}”.` : ", and each lead's recent emails show on their Messages tab."}`
+    : mMiss ? `Google lets the CRM read your email but not send it. Tap Reconnect and tick “${mMiss}”. Until then, emails open in your email app.`
+    : mWas ? "Connected, but Google needs a quick reconnect." : "Connect your Google account to send emails and quote PDFs from Gmail and see each lead's recent emails. Until then, emails open in your email app.";
+  const mailBtn = !gm ? "" : mOn ? (mMiss ? `<button class="btn sm primary" data-act="cal-connect">Reconnect</button>` : "") + `<button class="btn sm" data-act="cal-disconnect">Disconnect</button>` : `<button class="btn sm primary" data-act="cal-connect">${mWas ? "Reconnect" : "Connect"}</button>`;
   let body = "";
   if (tab === "prices") body = `<section class="panel flush"><div class="panel-h"><h2>Price book</h2><button class="btn sm" data-act="pb-add">+ Add service</button></div>
     <p class="pad note">These fill in quote prices. Per sq ft and per linear ft services multiply the size by the rate. Each services multiply by the quantity. The minimum is the least one quote line can come to.</p>
@@ -2783,10 +2877,10 @@ VIEWS.settings = () => {
     ${st.texts.map((t, i) => `<div class="tpl" data-ti="${i}"><input type="text" data-tk="name" value="${esc(t.name)}" aria-label="Template name"><textarea data-tk="body" rows="3" aria-label="Message">${esc(t.body)}</textarea><div><button class="btn sm ghost" data-act="tx-del" data-i="${i}">Remove</button></div></div>`).join("")}</section>`;
   else if (tab === "sources") body = `<section class="panel flush"><div class="panel-h"><h2>Lead sources and connections</h2></div><div class="list">
     <div class="item static"><div class="main-col"><span class="t">Upload a spreadsheet</span><span class="s">CSV or Excel from any source, on the Leads tab</span></div><div class="r"><span class="pill s-scheduled">Ready</span></div></div>
-    <div class="item static"><div class="main-col"><span class="t">Angi</span><span class="s">New Angi leads come in once the lead forwarding is set up</span></div><div class="r"><span class="pill s-quoted">Setting up</span></div></div>
+    <div class="item static flow"><div class="main-col"><span class="t">Angi</span><span class="s">${angiRow[1]}</span></div><div class="r"><span class="row"><span class="pill ${angiRow[0][0]}">${angiRow[0][1]}</span>${STANDALONE && window.GIC ? `<button class="btn sm" data-stab="angi">${angiRow[2]}</button>` : ""}</span></div></div>
     <div class="item static"><div class="main-col"><span class="t">Facebook / Meta lead ads</span><span class="s">New lead form entries come in once the lead forwarding is set up</span></div><div class="r"><span class="pill s-quoted">Setting up</span></div></div>
     <div class="item static flow"><div class="main-col"><span class="t">Google Calendar</span><span class="s">${esc(calText)}</span></div><div class="r"><span class="row"><span class="pill ${calPill[0]}">${calPill[1]}</span>${calBtn}</span></div></div>
-    <div class="item static"><div class="main-col"><span class="t">Gmail</span><span class="s">${S.mcp || !STANDALONE ? "Quote emails and drafts go to your Gmail drafts for you to send" : "Not connected yet. Emails open in your email app (or Gmail on a computer) for you to send"}</span></div><div class="r">${S.mcp ? `<span class="pill s-scheduled">Available</span>` : `<span class="pill s-lost">Not connected</span>`}</div></div>
+    <div class="item static flow"><div class="main-col"><span class="t">Gmail</span><span class="s">${esc(mailText)}</span></div><div class="r"><span class="row"><span class="pill ${mailPill[0]}">${mailPill[1]}</span>${mailBtn}</span></div></div>
   </div></section>`;
   else if (SET_EXTRA[tab]) body = SET_EXTRA[tab]();
   else body = `<section class="panel"><div class="panel-h"><h2>Appearance</h2></div><div class="seg" role="group" aria-label="Theme"><button data-theme-set="" aria-pressed="${!document.documentElement.dataset.theme}">Match device</button><button data-theme-set="light" aria-pressed="${document.documentElement.dataset.theme === "light"}">Light</button><button data-theme-set="dark" aria-pressed="${document.documentElement.dataset.theme === "dark"}">Dark</button></div></section>`;
@@ -2959,6 +3053,214 @@ if (STANDALONE && window.GIC) {
   window.addEventListener("gic-write-failed", (e) => { toast((e.detail || {}).code === "revoked" ? "A change couldn't be saved: your login doesn't have access anymore." : "A change made while offline couldn't be saved. Check that it's still there.", 7000); });
 }
 
+// ---------- STANDALONE WEBSITE: Angi leads ----------
+// Angi posts each new lead (JSON) to a link the pro gives them (crmintegrations@angi.com). The link is a small Google
+// Apps Script web app in the owner's own Google account: it checks a key and writes the lead into Firestore as a New
+// lead with source Angi. Nothing to pay for, no server. The CRM hands out the script, tests it and drafts the email.
+if (STANDALONE && window.GIC) {
+  const G = window.GIC;
+  const PROJECT = ((window.GIC_CONFIG || {}).firebase || {}).projectId || "";
+  const ANGI_EMAIL = "crmintegrations@angi.com";
+  S.angi = null; S.angiTest = null;
+  SET_TABS.splice(SET_TABS.length - 1, 0, ["angi", "Angi"]);
+  const angiKey = () => (S.angi && S.angi.key) || "";
+  const angiLink = () => S.angi && S.angi.url ? S.angi.url + (S.angi.url.includes("?") ? "&" : "?") + "key=" + angiKey() : "";
+  async function ensureKey() {
+    if (angiKey()) return angiKey();
+    // the saved Angi settings may not have loaded on this device yet: look first, so a key Angi already has is never replaced
+    try { const d = await S.db.doc("settings/angi").get(); if (d.exists && d.data().key) { S.angi = Object.assign({}, d.data(), S.angi || {}, { key: d.data().key }); return S.angi.key; } } catch (e) {}
+    const key = Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, "0")).join("");
+    await saveDoc("settings", "angi", { key, createdAt: new Date().toISOString() }, true);
+    S.angi = Object.assign({}, S.angi, { key }); return key;
+  }
+  // the Apps Script the owner pastes at script.google.com (key and Firebase project filled in)
+  const angiScript = (key) => `// Get It Clean CRM: Angi leads. Angi sends each new lead here and it shows up in the CRM as a New lead.
+// Made by the CRM (Settings > Angi). Paste it into a new project at script.google.com and deploy it as a Web app.
+const PROJECT = ${JSON.stringify(PROJECT)};
+const KEY = ${JSON.stringify(key)};
+
+function doPost(e) {
+  const text = String((e && e.postData && e.postData.contents) || "").replace(/^\\uFEFF/, "");
+  if (!e || !e.parameter || e.parameter.key !== KEY) { note_("lastRejected", text); return out_({ ok: false, error: "wrong key" }); }
+  note_("lastPost", text);
+  let data; try { data = JSON.parse(text); } catch (err) { data = Object.assign({}, e.parameter); delete data.key; if (!Object.keys(data).length && text) data = { rawText: text }; }
+  const list = Array.isArray(data) ? data : Array.isArray(data && data.leads) ? data.leads : [data];
+  const saved = list.map(keep_);
+  retryWaiting_(3);
+  return out_({ ok: saved.every(function (x) { return !x.waiting; }), saved: saved });
+}
+function doGet(e) {
+  const ok = !!(e && e.parameter && e.parameter.key === KEY);
+  if (ok) retryWaiting_(3);
+  return out_({ ok: ok, app: "Get It Clean CRM: Angi leads", waiting: ok ? waitingKeys_().length : undefined });
+}
+function out_(o) { return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }
+// the latest post (and the latest one with a wrong key), to look at under Project Settings > Script Properties
+function note_(k, text) { try { PropertiesService.getScriptProperties().setProperty(k, new Date().toISOString() + " " + String(text).slice(0, 2000)); } catch (err) {} }
+
+// A lead Firestore couldn't take right now is kept here and tried again with the next post, so none is lost.
+function keep_(raw) {
+  try { return saveLead_(raw); }
+  catch (err) {
+    const full = JSON.stringify(raw); let s = full;
+    for (let n = 4000; !fits_(s) && n > 0; n = Math.floor(n / 2)) s = JSON.stringify({ rawText: full.slice(0, n) });
+    try { PropertiesService.getScriptProperties().setProperty("waiting_" + Date.now() + "_" + Math.floor(Math.random() * 1e6), s); } catch (e2) {}
+    console.error(String((err && err.message) || err) + " Lead: " + full.slice(0, 4000));
+    return { waiting: true };
+  }
+}
+function fits_(s) { return Utilities.newBlob(s).getBytes().length < 8500; }
+function waitingKeys_() { return Object.keys(PropertiesService.getScriptProperties().getProperties()).filter(function (k) { return k.indexOf("waiting_") === 0; }).sort(); }
+function retryWaiting_(most) {
+  const props = PropertiesService.getScriptProperties();
+  waitingKeys_().slice(0, most).forEach(function (k) {
+    try { const raw = JSON.parse(props.getProperty(k)); saveLead_(raw); props.deleteProperty(k); } catch (err) {}
+  });
+}
+// Firestore, tried up to 3 times when it's busy or can't be reached
+function post_(url, body) {
+  const opts = { method: "post", contentType: "application/json", headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() }, payload: body, muteHttpExceptions: true };
+  let r = null, last = null;
+  for (let i = 0; i < 3; i++) {
+    if (i > 0) Utilities.sleep(1000 * Math.pow(2, i));
+    try { r = UrlFetchApp.fetch(url, opts); } catch (err) { last = err; r = null; continue; }
+    const code = r.getResponseCode();
+    // if Google wants to know which project is using Firestore, it's the CRM's Firebase project
+    if (code === 403 && !opts.headers["X-Goog-User-Project"] && /has not been used|is disabled|SERVICE_DISABLED|USER_PROJECT|quota project/i.test(r.getContentText())) { opts.headers["X-Goog-User-Project"] = PROJECT; i--; continue; }
+    if (code === 429 || code >= 500) continue;
+    return r;
+  }
+  if (r) return r;
+  throw last || new Error("Couldn't reach Firestore");
+}
+
+// every value in the lead, by its name in lower case without spaces or punctuation; question lists become lines
+function flat_(o, f, qa) {
+  Object.keys(o || {}).forEach(function (k) {
+    const v = o[k], n = String(k).toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (v == null || v === "") return;
+    if (Array.isArray(v)) v.forEach(function (x) {
+      if (x && typeof x === "object") { const q = x.question || x.Question || x.label || x.name, a = x.answer || x.Answer || x.value || x.answers; if (q && a) qa.push(q + ": " + (Array.isArray(a) ? a.join(", ") : a)); else flat_(x, f, qa); }
+    });
+    else if (typeof v === "object") flat_(v, f, qa);
+    else if (!(n in f)) f[n] = String(v).trim();
+  });
+  return f;
+}
+function pick_(f, names) { for (var i = 0; i < names.length; i++) if (f[names[i]]) return f[names[i]]; return ""; }
+function fs_(v) {
+  if (v == null) return { nullValue: null };
+  if (Array.isArray(v)) return { arrayValue: { values: v.map(fs_) } };
+  if (typeof v === "boolean") return { booleanValue: v };
+  if (typeof v === "number") return Number.isInteger(v) ? { integerValue: String(v) } : { doubleValue: v };
+  if (typeof v === "object") { const m = {}; Object.keys(v).forEach(function (k) { m[k] = fs_(v[k]); }); return { mapValue: { fields: m } }; }
+  return { stringValue: String(v) };
+}
+function saveLead_(raw) {
+  const qa = [], f = flat_(raw, {}, qa);
+  const first = pick_(f, ["firstname", "fname", "customerfirstname", "homeownerfirstname", "consumerfirstname"]);
+  const last = pick_(f, ["lastname", "lname", "customerlastname", "homeownerlastname", "consumerlastname"]);
+  const name = [first, last].filter(String).join(" ") || pick_(f, ["name", "fullname", "customername", "homeownername", "consumername", "contactname"]) || "Angi lead";
+  const phone = pick_(f, ["phone1", "primaryphone", "phone", "phonenumber", "mobilephone", "cellphone", "homephone", "customerphone", "consumerphone"]);
+  const phone2 = pick_(f, ["phone2", "secondaryphone", "alternatephone", "altphone"]);
+  const email = pick_(f, ["email", "emailaddress", "customeremail", "homeowneremail", "consumeremail"]);
+  const street = [pick_(f, ["address1", "address", "streetaddress", "street", "addressline1"]), pick_(f, ["address2", "addressline2", "unit"])].filter(String).join(" ");
+  const city = pick_(f, ["city"]), state = pick_(f, ["stateprovince", "state", "province"]), zip = pick_(f, ["postalcode", "zip", "zipcode", "postal"]);
+  const task = pick_(f, ["taskname", "homeadvisortaskname", "task", "categoryname", "category", "servicename", "service", "product", "jobtype"]);
+  const comments = pick_(f, ["comments", "comment", "leaddescription", "homeadvisorleaddescription", "description", "details", "message", "notes"]);
+  const now = new Date(), at = now.toISOString(), day = Utilities.formatDate(now, "America/New_York", "yyyy-MM-dd");
+  let id = pick_(f, ["leadid", "leadoid", "sroid", "srid", "homeadvisorsrid", "reference", "referenceid", "id"]);
+  if (!id) id = Utilities.base64EncodeWebSafe(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, JSON.stringify(raw))).replace(/=+$/, "");
+  const docId = ("angi-" + String(id).replace(/[^A-Za-z0-9_-]/g, "")).slice(0, 120);
+  const notes = [task && "Angi request: " + task, comments, qa.join("\\n"), phone2 && "Other phone: " + phone2, [state, zip].filter(String).join(" "), raw && raw.rawText ? "What Angi sent:\\n" + String(raw.rawText).slice(0, 2000) : ""].filter(String).join("\\n\\n");
+  const lead = { name: name, company: "", phone: phone, email: email, address: street, city: city, type: "Residential", source: "Angi", stage: "new", stageSince: day,
+    services: [], value: 0, nextFollowUp: day, dnc: false, list: "leads", notes: notes, angiId: String(id), angiRaw: JSON.stringify(raw).slice(0, 8000),
+    createdAt: at, updatedAt: at, activity: [{ at: at, type: "created", text: "New Angi lead" + (task ? ": " + task : "") }] };
+  const fields = {}; Object.keys(lead).forEach(function (k) { fields[k] = fs_(lead[k]); });
+  const url = "https://firestore.googleapis.com/v1/projects/" + PROJECT + "/databases/(default)/documents/leads?documentId=" + encodeURIComponent(docId);
+  const r = post_(url, JSON.stringify({ fields: fields }));
+  const code = r.getResponseCode();
+  if (code === 409) return { id: docId, already: true };
+  if (code >= 300) { console.error("Couldn't save the lead: " + code + " " + r.getContentText().slice(0, 500)); throw new Error("Couldn't save the lead (" + code + ")"); }
+  return { id: docId };
+}
+`;
+  const ANGI_MANIFEST = JSON.stringify({ timeZone: "America/New_York", runtimeVersion: "V8", exceptionLogging: "STACKDRIVER",
+    oauthScopes: ["https://www.googleapis.com/auth/datastore", "https://www.googleapis.com/auth/script.external_request"],
+    webapp: { executeAs: "USER_DEPLOYING", access: "ANYONE_ANONYMOUS" } }, null, 2);
+  const angiLeads = () => S.leads.filter(l => l.angiId && !/^angi-test-/.test(l.id));
+  // a test lead left behind (the page was closed or reloaded during a test) is removed once it's 2 minutes old
+  const sweeping = new Set();
+  S.sweepAngi = () => {
+    if (!(G.me() || {}).isOwner || (S.angiTest && S.angiTest.busy)) return;
+    S.leads.filter(l => /^angi-test-/.test(l.id) && !sweeping.has(l.id) && Date.now() - (Date.parse(l.createdAt) || 0) > 120000)
+      .forEach(l => { sweeping.add(l.id); S.db.collection("leads").doc(l.id).delete().catch(() => {}).finally(() => sweeping.delete(l.id)); });
+  };
+  SET_EXTRA.angi = () => {
+    const me = G.me() || {};
+    if (!me.isOwner) return `<section class="panel"><p class="note">Only the owner can set up the Angi connection.</p></section>`;
+    const a = S.angi || {}, link = angiLink(), got = angiLeads(), last = got.map(l => l.createdAt || "").sort().pop();
+    const st = got.length ? ["s-scheduled", "Working"] : a.emailedAt ? ["s-quoted", "Waiting on Angi"] : a.url ? ["s-quoted", "Link ready"] : ["s-lost", "Not set up"];
+    const tst = S.angiTest;
+    const step = (n, title, body) => `<div class="tpl"><b>${n}. ${title}</b>${body}</div>`;
+    return `<section class="panel" data-keep><div class="panel-h"><h2>Angi leads</h2><span class="pill ${st[0]}">${st[1]}</span></div>
+      <p class="note">Angi sends each new lead to a link you give them, and it shows up on your Leads tab as New, with source Angi and their request in the notes. The link is a small script in your own Google account, so there's nothing to pay for.${got.length ? ` ${plural(got.length, "Angi lead")} so far, the last on ${esc(fmtD(last, { month: "short", day: "numeric", year: "numeric" }))}.` : ""}</p>
+      ${step(1, "Make the link (once, on a computer)", `<ol class="note" style="margin:6px 0 8px 18px;display:grid;gap:4px">
+        <li>Open <a href="https://script.google.com/home/projects/create" target="_blank" rel="noopener">script.google.com</a> signed in to the Google account that owns your Firebase project. A new project opens.</li>
+        <li>Select everything in the editor, delete it, and paste the code. <button class="btn sm" data-act="angi-copy-code">Copy the code</button></li>
+        <li>Tap the gear (Project Settings), tick <b>Show "appsscript.json" manifest file in editor</b>, go back to the editor, open <b>appsscript.json</b>, and replace it with these settings. <button class="btn sm" data-act="angi-copy-manifest">Copy the settings</button></li>
+        <li>Tap the save icon, then <b>Deploy &gt; New deployment</b>. Pick <b>Web app</b>, Execute as <b>Me</b>, Who has access <b>Anyone</b>, then Deploy.</li>
+        <li>Tap Authorize access and pick your account. Google warns the app isn't verified because it's yours: tap Advanced, then Go to the project, then Allow.</li>
+        <li>Copy the <b>Web app URL</b> it shows and paste it here.</li></ol>
+        <div class="row"><input type="url" id="angi-url" placeholder="https://script.google.com/macros/s/…/exec" value="${esc(a.url || "")}" style="flex:1;min-width:220px" aria-label="Web app URL"><button class="btn primary" data-act="angi-save-url">Save</button></div>`)}
+      ${step(2, "Test it", `<p class="note">Sends a pretend lead through your link. It shows up for a moment and is then removed.</p>
+        <div class="row"><button class="btn" data-act="angi-test" ${a.url && !(tst && tst.busy) ? "" : "disabled"}>Send a test lead</button><span class="note" id="angi-test-status">${tst ? esc(tst.msg) : ""}</span></div>`)}
+      ${step(3, "Ask Angi to send your leads there", `<p class="note">Angi's CRM team (${ANGI_EMAIL}) connects it. They need your Angi ID, which is next to your city and state when you tap your company name at the top right of the Angi for Pros site (in the app: the person icon, then Account credentials).</p>
+        <div class="row"><input type="text" id="angi-id" placeholder="Angi ID" value="${esc(a.angiId || "")}" style="width:160px" aria-label="Angi ID"><button class="btn primary" data-act="angi-email" ${link ? "" : "disabled"}>${mailConnected() ? "Make the email in Gmail" : "Write the email"}</button>${link ? `<button class="btn" data-copy="${esc(link)}" data-copy-label="Link">Copy the link</button>` : ""}</div>
+        ${a.emailedAt ? `<p class="note">Email drafted ${esc(fmtD(a.emailedAt, { month: "short", day: "numeric" }))}. Angi usually replies once it's set up, and can send a test lead.</p>` : ""}`)}
+    </section>`;
+  };
+  function angiEmail(id) {
+    return { subject: `CRM lead integration for Get It Clean Tampa Bay${id ? ` (Angi ID ${id})` : ""}`,
+      body: `Hi Angi team,\n\nPlease send our new Angi leads to our CRM:\n\nAngi ID: ${id || "(add it here)"}\nCompany: Get It Clean Tampa Bay\nEmail connected to the CRM: ${BUSINESS.email}\nWebhook URL: ${angiLink()}\nAuthentication: none (the key is part of the URL)\nData format: JSON\nCRM: our own\n\nA test lead is welcome once it's set up.\n\nThank you,\nElias\nGet It Clean Tampa Bay\n${BUSINESS.phone}\n${BUSINESS.email}` };
+  }
+  Object.assign(EXTRA_ACTS, {
+    "angi-copy-code": async () => { try { await copy(angiScript(await ensureKey()), "Code"); } catch (e) {} },
+    "angi-copy-manifest": async () => { await copy(ANGI_MANIFEST, "Settings"); },
+    "angi-save-url": async () => {
+      const u = ($("#angi-url").value || "").trim().replace(/\?.*$/, "");
+      if (!/^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/.test(u)) { toast("Paste the Web app URL from Deploy (it ends in /exec)", 5000); return; }
+      await ensureKey(); await saveDoc("settings", "angi", { url: u, savedAt: new Date().toISOString() }, true);
+      S.angi = Object.assign({}, S.angi, { url: u }); toast("Link saved. Send a test lead next."); render();
+    },
+    "angi-test": async (t) => {
+      const link = angiLink(); if (!link) return;
+      if (S.angiTest && S.angiTest.busy) return;
+      const id = "test-" + Date.now(); t.disabled = true; S.angiTest = { msg: "Sending… (this can take up to 30 seconds)", busy: true }; $("#angi-test-status").textContent = S.angiTest.msg;
+      const sample = { leadOid: id, firstName: "Test", lastName: "Angi lead", primaryPhone: "727-555-0100", email: "", address: "1 Test St", city: "Palm Harbor", stateProvince: "FL", postalCode: "34683", taskName: "Pressure washing", comments: "A test from your CRM. It removes itself." };
+      try { await fetch(link, { method: "POST", mode: "no-cors", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify(sample) }); } catch (e) {}
+      const docId = "angi-" + id; const until = Date.now() + 30000;
+      while (Date.now() < until && !S.leads.some(l => l.id === docId)) await new Promise(r => setTimeout(r, 1000));
+      const came = S.leads.some(l => l.id === docId);
+      if (came) { try { await delDoc("leads", docId); } catch (e) {} }
+      S.angiTest = { msg: came ? "It works. The test lead came through and was removed." : "The test lead didn't arrive. Check the link, that Who has access is Anyone, and that you allowed access when deploying. The script's Executions page (left side at script.google.com) shows what went wrong." };
+      const bt = $("#view [data-act='angi-test']"); if (bt) bt.disabled = false; const el = $("#angi-test-status"); if (el) el.textContent = S.angiTest.msg; toast(came ? "Angi link works" : "Test lead didn't arrive", 5000);
+    },
+    "angi-email": async (t) => {
+      const id = ($("#angi-id").value || "").trim();
+      if (!id) { toast("Add your Angi ID first"); $("#angi-id").focus(); return; }
+      const m = angiEmail(id); t.disabled = true;
+      const p = await makeDraft({ email: ANGI_EMAIL }, m.subject, m.body); t.disabled = false;
+      if (!p) return;
+      await saveDoc("settings", "angi", { angiId: id, emailedAt: new Date().toISOString() }, true);
+      S.angi = Object.assign({}, S.angi, { angiId: id, emailedAt: new Date().toISOString() });
+      if (p.viewUrl) toast("The email is in your Gmail drafts. Check it and press Send.", 6000, { label: "Open", fn: () => window.open(p.viewUrl, "_blank", "noopener") });
+      else toast("The email opened in your email app. Check it and press Send.", 6000);
+      render();
+    }
+  });
+}
+
 // ---------- CSV export ----------
 function toCSV(rows) { return rows.map(r => r.map(v => { const s = String(v ?? ""); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }).join(",")).join("\n"); }
 
@@ -3085,6 +3387,21 @@ document.addEventListener("click", async (e) => {
           await saveDoc("leads", l.id, { activity: activity(l, "email", p.viaApp ? `Email opened in your email app: ${subj}` : `Email drafted: ${subj}`), updatedAt: new Date().toISOString() }, true);
         } else $("#em-status").textContent = "";
       } break;
+      case "send-mail": if (l) {
+        if (l.dnc) { toast("This lead is marked do not contact"); break; }
+        const subj = $("#em-subj").value.trim(), body = $("#em-body").value;
+        if (!subj) { toast("Add a subject"); break; }
+        t.disabled = true; $("#em-status").textContent = "Sending…";
+        let r = null;
+        try { r = await MAIL().send({ to: l.email, subject: subj, body }); }
+        catch (er) { $("#em-status").textContent = ""; t.disabled = false; toast((er.code === "expired" ? "Gmail needs a quick reconnect. Tap Reconnect under Recent emails; your email comes back with you." : gmailErr(er)) + (er.code === "expired" ? "" : " Your email is still here."), 7000); refreshLeadModal(); break; }
+        // it's sent: the form starts over, and saving the note on the lead is a separate step (its own message if it fails)
+        S.draftMsg = { leadId: l.id, html: `Sent. <a href="${esc(r.viewUrl)}" target="_blank" rel="noopener">Open in Gmail</a>` };
+        { const et = emailTemplate(l), se = $("#em-subj"), be = $("#em-body"), es = $("#em-status"); if (se) se.value = et.subj; if (be) be.value = et.body; if (es) es.innerHTML = S.draftMsg.html; } dropDraft(/^em-/);
+        delete mailHist[l.email.trim().toLowerCase()]; toast("Email sent"); t.disabled = false;
+        try { await saveDoc("leads", l.id, { activity: activity(l, "email", `Email sent: ${subj}`), lastContact: today(), stage: l.stage === "new" ? "contacted" : l.stage, updatedAt: new Date().toISOString() }, true); } catch (er) {}
+      } break;
+      case "mail-hist-refresh": if (l) { loadMailHist(l, true); refreshLeadModal(); } break;
       case "quote-lead": if (l) openQuoteEditor(null, l); break;
       case "schedule-lead": if (l) scheduleForm(l, t.dataset.kind); break;
       case "save-schedule": await saveSchedule(t); break;
@@ -3102,7 +3419,7 @@ document.addEventListener("click", async (e) => {
         if (!(await saveQuote(true))) { t.disabled = false; break; }
         let blob; try { blob = await quotePDFBlob(); } catch (er) { toast(er.message || "Couldn't make the PDF"); t.disabled = false; $("#q-status-line").textContent = ""; break; }
         const fname = quoteFileBase() + ".pdf";
-        if (!S.mcp && STANDALONE) {
+        if (!S.mcp && STANDALONE && !mailConnected()) {
           // no Gmail connection here: a phone shares the PDF straight into its email app, a computer downloads it and opens Gmail
           const nm0 = (ql && firstName(ql)) || String(QD.billTo[0] || "").split(/\s+/)[0] || "there"; const kind0 = QD.docType === "INVOICE" ? "invoice" : "estimate";
           const file = new File([blob], fname, { type: "application/pdf" });
@@ -3120,9 +3437,9 @@ document.addEventListener("click", async (e) => {
         const nm = (ql && firstName(ql)) || String(QD.billTo[0] || "").split(/\s+/)[0] || "there";
         const kind = QD.docType === "INVOICE" ? "invoice" : "estimate";
         const body = `Hi ${nm},\n\nThank you for the opportunity${ql && ql.company ? " to work on " + ql.company : ""}. Your ${kind} from Get It Clean Tampa Bay is attached (${kind} #${QD.number}, total ${money(quoteTotals(QD).total, true)}).\n\n${kind === "invoice" ? "Payment by check or Zelle is welcome. " : "If everything looks good, just reply to this email and I'll get you on the schedule. "}Feel free to call or text me with any questions.\n\nThank you,\nElias\nGet It Clean Tampa Bay\n727-254-1391\ngetitclean.tb@gmail.com`;
-        const p = await makeDraft(ql || { email: to }, `Your ${kind} from Get It Clean Tampa Bay (#${QD.number})`, body, att);
+        const p = await makeDraft(Object.assign({}, ql || {}, { email: to }), `Your ${kind} from Get It Clean Tampa Bay (#${QD.number})`, body, att);
         t.disabled = false;
-        if (p) { $("#q-status-line").innerHTML = `Draft with the PDF is in your Gmail. ${p.viewUrl ? `<a href="${esc(p.viewUrl)}" target="_blank" rel="noopener">Open it to send</a>` : ""}`; if (ql) await saveDoc("leads", ql.id, { activity: activity(ql, "email", `${kind} ${QD.number} drafted in Gmail`), updatedAt: new Date().toISOString() }, true); }
+        if (p) { $("#q-status-line").innerHTML = `Draft to ${esc(to)} with the PDF is in your Gmail. ${p.viewUrl ? `<a href="${esc(p.viewUrl)}" target="_blank" rel="noopener">Open it to send</a>` : ""}`; if (ql) await saveDoc("leads", ql.id, { activity: activity(ql, "email", `${kind} ${QD.number} drafted in Gmail`), updatedAt: new Date().toISOString() }, true); }
         else $("#q-status-line").textContent = "";
         break; }
       case "q-share": case "q-mail-pc": {
@@ -3139,12 +3456,16 @@ document.addEventListener("click", async (e) => {
       case "q-delete": $("#q-status-line").innerHTML = `<span class="row">Delete this quote? <button class="btn sm danger" data-act="q-delete-yes">Delete</button><button class="btn sm" data-act="q-delete-no">Keep</button></span>`; break;
       case "q-delete-no": $("#q-status-line").innerHTML = ""; break;
       case "q-delete-yes": await delDoc("quotes", QD.id); closeModal(); toast("Quote deleted"); break;
-      case "cal-connect":
-        // the trip to Google leaves the page, so unsaved settings take a second tap and a waiting follow-up date is saved first
-        if (S.view === "settings" && S.setDirty && !S.leaveOk) { S.leaveOk = true; setTimeout(() => { S.leaveOk = false; }, 8000); toast("You have unsaved settings. Save them, or tap again to connect without saving.", 8000, { label: "Save", fn: saveSettings }); break; }
+      case "cal-connect": {
+        // The trip to Google leaves the page. What's typed in a lead or a Money form goes along and comes back; unsaved
+        // settings, a backup loading or an Angi test can't, so they take a second tap. A waiting follow-up date is saved first.
+        const setts = S.view === "settings" && S.setDirty;
+        const lose = setts ? "unsaved settings" : S.restore && !S.restore.done && !S.restore.err ? "a backup that hasn't finished loading" : S.angiTest && S.angiTest.busy ? "an Angi test still running" : "";
+        if (lose && !S.leaveOk) { S.leaveOk = true; setTimeout(() => { S.leaveOk = false; }, 8000); toast(`You have ${lose}. ${setts ? "Save them, or tap" : "Wait for it, or tap"} again to connect anyway.`, 8000, setts ? { label: "Save", fn: saveSettings } : undefined); break; }
+        S.leaveOk = false;
         if (openLeadId) await flushFollowUp(openLeadId);
-        startCalendar(true); break;
-      case "cal-disconnect": if (GC()) { GC().disconnect(); toast("Google Calendar disconnected"); } break;
+        carryTyped(); startCalendar(true); break; }
+      case "cal-disconnect": if (GC()) { GC().disconnect(); Object.keys(mailHist).forEach(k => delete mailHist[k]); toast("Google disconnected (Calendar and Gmail)"); } break;
       case "cal-refresh": if (GC()) GC().refresh(true); else S.mcp && S.mcp.invalidate("Google Calendar", "list_events").catch(() => {}); toast("Refreshing"); break;
       case "copy-emails": copy(emailList().filter(r => r.state === "On list").map(r => r.l.email).join(", "), "Emails"); break;
       case "export-emails": saveFile("Get_It_Clean_email_list.csv", toCSV([["Name", "Company", "Email", "City", "Group", "Status"], ...emailList().map(r => [r.l.name, r.l.company, r.l.email, r.l.city, isOutreach(r.l) ? "Outreach" : "Lead", r.state])])); break;
@@ -3158,7 +3479,7 @@ document.addEventListener("click", async (e) => {
       case "import": importModal(); break;
       case "do-import": await doImport(t); break;
       case "mf-open": if (S.money.form !== t.dataset.f || S.money.formLead) forgetTyped(/^m[je]-/); S.money.form = t.dataset.f; S.money.formLead = ""; S.money.dropPaid = ""; render(); { const f = $("#view .panel input[autofocus], #mj-lead"); if (f) f.focus(); } window.scrollTo({ top: 0, behavior: "smooth" }); break;
-      case "mf-close": S.money.form = ""; S.money.dropPaid = ""; render(); break;
+      case "mf-close": S.money.form = ""; S.money.dropPaid = ""; forgetTyped(/^m[je]-/); render(); break;
       case "save-mjob": await saveMoneyJob(t); break;
       case "save-mexp": await saveMoneyExpense(t); break;
       case "save-pay": {
@@ -3274,13 +3595,26 @@ async function init() {
   S.db = db; S.mcp = mcp; S.files = files; S.downloads = downloads; S.user = user; S.dbChecked = true;
   if (user) { try { S.myId = await user.id(); } catch (e) {} }
   if (db) {
+    const loaded = {};
     const sub = (coll, key) => db.collection(coll).onSnapshot(snap => {
-      S[key] = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
+      S[key] = snap.docs.map(d => Object.assign({ id: d.id }, d.data())); loaded[key] = true;
+      const all = loaded.leads && loaded.quotes && loaded.jobs; if (all) applyCarried();
       schedule(); if (key === "leads" || key === "quotes" || key === "jobs") refreshLeadModal();
-      if (key === "leads") { autoPromote(); if (S.pendingOpen && leadById(S.pendingOpen) && !$("#modal").innerHTML) { const pid = S.pendingOpen, pt = S.pendingOpenTab; S.pendingOpen = null; S.pendingOpenTab = null; openLead(pid, pt || undefined); } }
+      if (key === "leads") { autoPromote(); if (S.sweepAngi) S.sweepAngi(); }
+      if (all && S.pendingOpen && leadById(S.pendingOpen) && !$("#modal").innerHTML) {
+        const pid = S.pendingOpen, pt = S.pendingOpenTab; S.pendingOpen = null; S.pendingOpenTab = null; openLead(pid, pt || undefined);
+        if (S.tabDraft && S.tabDraft.leadId === pid) showTab(S.leadTab); // puts back what was typed before the trip to Google
+      }
     }, err => { if (err.code === "revoked") { S.db = null; } toast("Lost the connection to your CRM data. Reload the page."); schedule(); });
     sub("leads", "leads"); sub("quotes", "quotes"); sub("jobs", "jobs"); sub("expenses", "expenses");
+    if (STANDALONE) db.doc("settings/angi").onSnapshot(s => { S.angi = s.exists ? s.data() : null; if (S.view === "settings" && ["angi", "sources"].includes(S.setTab)) schedule(); }, () => {});
     db.doc("settings/main").onSnapshot(s => { S.settings = s.exists ? Object.assign({}, DEFAULT_SETTINGS, s.data()) : null; if (S.view !== "settings") schedule(); }, () => {});
+  }
+  if (GC()) {
+    // back from the trip to Google: open the same tab and lead as before, with what was typed
+    const ret = GC().takeReturn();
+    if (ret) { if (ret.view && VIEWS[ret.view]) { S.view = ret.view; try { localStorage.setItem("gic-view", S.view); } catch (_) {} } if (ret.lead) { S.pendingOpen = ret.lead; S.pendingOpenTab = ret.tab || "overview"; } }
+    bringBackTyped(ret);
   }
   render();
   if (mcp) {
@@ -3288,12 +3622,7 @@ async function init() {
     if (st === "granted") startCalendar(false); else if (st === "unavailable" || st === "denied") S.cal = { status: "ask", events: [], msg: "This page needs your OK to show your Google Calendar." };
     schedule();
   } else { S.cal = { status: "off", events: [], msg: STANDALONE ? CAL_OFF_MSG : "Google Calendar shows here when this page is opened in claude.ai." }; }
-  if (GC()) {
-    // back from the trip to Google: open the same tab and lead as before
-    const ret = GC().takeReturn();
-    if (ret) { if (ret.view && VIEWS[ret.view]) { S.view = ret.view; try { localStorage.setItem("gic-view", S.view); } catch (_) {} } if (ret.lead) { S.pendingOpen = ret.lead; S.pendingOpenTab = ret.tab || "overview"; } }
-    window.addEventListener("gic-gcal", syncGcal); syncGcal();
-  }
+  if (GC()) { window.addEventListener("gic-gcal", syncGcal); syncGcal(); }
   loadMail();
 }
 init();
