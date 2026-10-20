@@ -399,6 +399,49 @@ div.item[role="button"]:focus-visible { outline: 2px solid var(--accent); outlin
 .small { font-size: 13px; }
 .offscreen { position: fixed; left: -12000px; top: 0; }
 
+/* Email > Inbox: the list on the left, the open conversation on the right (one at a time on a phone) */
+.ib { display: grid; grid-template-columns: minmax(300px, 400px) minmax(0, 1fr); gap: 20px; align-items: start; }
+.ib-ctl { display: flex; flex-direction: column; gap: 10px; padding: 16px 16px 12px; }
+.ib-search { flex-wrap: nowrap; }
+.ib-search input { flex: 1 1 auto; min-width: 0; }
+.ib-ctl .seg button { padding-inline: 10px; font-size: 13.5px; }
+.ib-row.sel { background: var(--accent-soft); }
+.ib-row .ib-subj { color: var(--ink-2); font-weight: 500; }
+.ib-foot { padding: 12px 16px 16px; gap: 10px; }
+.ib-conv { position: sticky; top: 16px; max-height: calc(100vh - 32px); overflow: auto; }
+.ib-head { padding: 16px 20px 10px; flex-wrap: nowrap; align-items: flex-start; }
+.ib-head h2 { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 18px; }
+.ib-head .btn { flex: none; }
+.ib-back { display: none; }
+.panel.flush > .ib-top { display: flex; flex-direction: column; gap: 10px; padding: 0 20px 16px; }
+.ib-people { display: flex; flex-wrap: wrap; gap: 8px; }
+.ib-who { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: inherit; text-align: left; cursor: pointer; font-size: 14px; max-width: 100%; overflow-wrap: anywhere; }
+.ib-who.static { cursor: default; }
+button.ib-who:hover { background: var(--surface-2); }
+.ib-res select { width: auto; max-width: 100%; }
+.ib-res select.show { flex: 0 1 380px; }
+.ib-logged { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; }
+.ib-msgs { display: flex; flex-direction: column; border-top: 1px solid var(--line); }
+.ib-msg { padding: 14px 20px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ib-msg.mine { background: var(--surface-2); }
+.ib-mh { display: flex; justify-content: space-between; gap: 4px 10px; flex-wrap: wrap; align-items: baseline; }
+.ib-from, .ib-to { min-width: 0; overflow-wrap: anywhere; }
+.ib-body { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14.5px; line-height: 1.5; }
+.ib-q > summary, .ib-older > summary { cursor: pointer; color: var(--accent); font-size: 13px; font-weight: 600; }
+.ib-q .ib-body { color: var(--muted); border-left: 3px solid var(--line); padding-left: 10px; margin-top: 6px; }
+.ib-older > summary { padding: 10px 20px; border-bottom: 1px solid var(--line); }
+.ib-reply { padding: 16px 20px 20px; display: flex; flex-direction: column; gap: 10px; }
+.ib-reply textarea { width: 100%; min-height: 160px; }
+.tabbar button { position: relative; }
+.tb-n { position: absolute; top: 3px; left: calc(50% + 5px); background: var(--bad); color: #fff; font-size: 10.5px; font-weight: 700; border-radius: 999px; padding: 0 5px; line-height: 16px; min-width: 16px; text-align: center; }
+@media (max-width: 900px) {
+  .ib { grid-template-columns: minmax(0, 1fr); }
+  .ib.has-sel .ib-list, .ib:not(.has-sel) .ib-conv { display: none; }
+  .ib-conv { position: static; max-height: none; overflow: visible; }
+  .ib-back { display: inline-flex; flex: none; }
+  .ib-head { flex-wrap: wrap; }
+}
+@media (max-width: 640px) { .ib-msg { padding: 12px 16px; } .ib-head { padding: 14px 16px 8px; } .panel.flush > .ib-top { padding: 0 16px 14px; } .ib-reply { padding: 14px 16px 18px; } .ib-older > summary { padding: 10px 16px; } .ib-res select.show { flex: 1 1 100%; } }
 @media (max-width: 1000px) { .kpis { grid-template-columns: repeat(2, minmax(0,1fr)); } .qgrid { grid-template-columns: minmax(0, 1fr); } .preview-box { position: static; } .today-grid { grid-template-columns: 1fr; } }
 @media (max-width: 860px) {
   .app { grid-template-columns: 1fr; }
@@ -670,9 +713,12 @@ html.gated, html.gated body { overflow: hidden; }
   const lines76 = (b) => String(b || "").replace(/\s+/g, "").replace(/.{76}(?=.)/g, "$&\r\n");
   const head = (s) => /^[\x20-\x7e]*$/.test(s) ? s : "=?UTF-8?B?" + utf8b64(s) + "?=";
   const safeName = (s) => String(s || "file").replace(/[\r\n"\\]/g, "").slice(0, 120) || "file";
-  // the email as Gmail wants it: MIME text, base64url; attachments are { filename, mimeType, content (base64) }
+  // the email as Gmail wants it: MIME text, base64url; attachments are { filename, mimeType, content (base64) }.
+  // A reply also has cc, inReplyTo and references, so it lands in the same conversation for them too.
+  const one = (s) => String(s || "").replace(/[\r\n]+/g, " ").trim();
   function mime(m) {
-    const top = ["To: " + String(m.to || "").replace(/[\r\n]/g, ""), "Subject: " + head(String(m.subject || "").replace(/[\r\n]+/g, " ")), "MIME-Version: 1.0"];
+    const top = ["To: " + String(m.to || "").replace(/[\r\n]/g, ""), m.cc ? "Cc: " + one(m.cc) : "", "Subject: " + head(String(m.subject || "").replace(/[\r\n]+/g, " ")),
+      m.inReplyTo ? "In-Reply-To: " + one(m.inReplyTo) : "", m.references ? "References: " + one(m.references) : "", "MIME-Version: 1.0"].filter(Boolean);
     const text = ["Content-Type: text/plain; charset=UTF-8", "Content-Transfer-Encoding: base64", "", lines76(utf8b64(String(m.body || "").replace(/\r?\n/g, "\r\n")))].join("\r\n");
     const att = (m.attachments || []).filter(a => a && typeof a.content === "string");
     let out;
@@ -694,9 +740,134 @@ html.gated, html.gated body { overflow: hidden; }
   const BOX = { mailSend: "Manage drafts and send emails", mailRead: "View your email messages and settings" };
   const noMail = (what) => { const e = new Error(tokenOk() ? `Google didn't allow this. Tap Reconnect in Settings > Connections and tick “${BOX[what || "mailSend"]}”.` : "Gmail needs a quick reconnect."); e.code = tokenOk() ? "forbidden" : "expired"; return e; };
   const hdrOf = (msg, n) => { const h = ((msg.payload || {}).headers || []).find(x => String(x.name).toLowerCase() === n); return h ? String(h.value || "") : ""; };
-  const addrOf = (s) => { const m = String(s || "").match(/<([^>]+)>/); return (m ? m[1] : String(s || "")).trim().toLowerCase(); };
-  const nameOf = (s) => { const m = String(s || "").match(/^\s*"?([^"<]*?)"?\s*</); return (m && m[1].trim()) || addrOf(s); };
+  const addrOf = (s) => { const a = addrList(s)[0]; return a ? a.email : String(s || "").trim().toLowerCase(); };
+  const nameOf = (s) => { const a = addrList(s)[0]; return a ? a.name : addrOf(s); };
   const histCache = {};
+
+  // ---------- conversations (Email > Inbox) ----------
+  // Gmail's text comes base64url-encoded in the part's own character set
+  const fromB64 = (s) => { const b = atob(String(s || "").replace(/-/g, "+").replace(/_/g, "/").replace(/\s+/g, "")); const u = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return u; };
+  const hdrIn = (hs, n) => { const h = (hs || []).find(x => String(x.name).toLowerCase() === n); return h ? String(h.value || "") : ""; };
+  const charsetOf = (p) => (hdrIn(p.headers, "content-type").match(/charset="?([^";\s]+)/i) || [])[1] || "utf-8";
+  function textOf(data, charset) {
+    let by; try { by = fromB64(data); } catch (e) { return ""; }
+    try { return new TextDecoder(charset).decode(by); } catch (e) { return new TextDecoder("utf-8").decode(by); }
+  }
+  // an HTML-only email as plain text: line breaks where the blocks were, no styles or scripts (DOMParser doesn't run or load anything)
+  function htmlText(h) {
+    const s = String(h || "").replace(/<(style|script|head|title)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, "").replace(/<br\s*\/?>/gi, "\n").replace(/<\/(p|div|li|tr|h[1-6]|blockquote|table)\s*>/gi, "\n").replace(/<li\b[^>]*>/gi, "• ");
+    let t = ""; try { const d = new DOMParser().parseFromString(s, "text/html"); t = d.body ? d.body.textContent || "" : ""; } catch (e) { t = s.replace(/<[^>]+>/g, ""); }
+    return t.replace(/ /g, " ").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  }
+  // The readable text of an email and the names of its attachments. A small picture inside the email's own layout
+  // (a signature logo) isn't counted; a photo sent along is, even when the phone marks it "inline".
+  // An iPhone puts photos between pieces of text in one multipart/mixed: those pieces are joined, in order.
+  function walk(p, out, up) {
+    if (!p) return out;
+    const type = String(p.mimeType || "").toLowerCase(), disp = hdrIn(p.headers, "content-disposition"), body = p.body || {};
+    const upType = up ? String(up.mimeType || "").toLowerCase() : "";
+    if (p.filename || /^\s*attachment/i.test(disp) || (/^image\//.test(type) && body.attachmentId)) {
+      const logo = /^image\//.test(type) && upType === "multipart/related" && !/^\s*attachment/i.test(disp) && (+body.size || 0) < 30000;
+      if (!logo) out.files.push({ name: p.filename || "attachment", size: +body.size || 0 }); return out;
+    }
+    const add = (k) => { const t = textOf(body.data, charsetOf(p)); if (out[k] == null) { out[k] = t; out[k + "Up"] = up; } else if (up && up === out[k + "Up"] && upType === "multipart/mixed") out[k] += "\n" + t; };
+    if (type === "text/plain" && body.data) add("plain");
+    else if (type === "text/html" && body.data) add("html");
+    (p.parts || []).forEach(x => walk(x, out, p));
+    return out;
+  }
+  // "Ann Lee <ann@x.com>, bob@y.com, "Lee, Ann" <ann@x.com>, ann@x.com (Ann)" → [{ email, name }].
+  // Read one character at a time, so no header, however odd, can make it slow.
+  function addrParts(s) {
+    const out = []; let cur = "", q = false, ang = false;
+    for (let i = 0; i < s.length; i++) {
+      const ch = s[i];
+      if (q) { cur += ch; if (ch === "\\" && i + 1 < s.length) cur += s[++i]; else if (ch === '"') q = false; continue; }
+      if (ch === '"') q = true; else if (ch === "<") ang = true; else if (ch === ">") ang = false;
+      else if ((ch === "," || ch === ";") && !ang) { out.push(cur); cur = ""; continue; }
+      cur += ch;
+    }
+    out.push(cur); return out;
+  }
+  const EMAIL_RE = /^[^\s@<>()",;:]+@[^\s@<>()",;:]+$/;
+  const unq = (n) => { n = n.trim(); return n.length > 1 && n[0] === '"' && n[n.length - 1] === '"' ? n.slice(1, -1).replace(/\\(.)/g, "$1").trim() : n; };
+  // one comma-separated piece: [{ email, name }] (more than one when addresses are only split by spaces)
+  function addrOne(p) {
+    p = p.trim(); const g = p.indexOf(":"); if (g > 0 && !/[<"@(]/.test(p.slice(0, g))) p = p.slice(g + 1).trim(); // a group: "Team: a@x.com"
+    if (!p) return [];
+    const lt = p.lastIndexOf("<"), gt = lt >= 0 ? p.indexOf(">", lt) : -1;
+    let email, name;
+    if (lt >= 0 && gt > lt) { email = p.slice(lt + 1, gt); name = p.slice(0, lt); }
+    else { const c = p.indexOf("("), e = p.lastIndexOf(")"); email = c >= 0 ? p.slice(0, c) : p; name = c >= 0 ? p.slice(c + 1, e > c ? e : p.length) : ""; }
+    email = email.trim().toLowerCase().replace(/^mailto:/, "");
+    if (EMAIL_RE.test(email)) { name = unq(name); return [{ email, name: name || email }]; }
+    if (lt >= 0) return [];
+    // no angle brackets: the words that are addresses, and the rest as the name when there's just one
+    const words = p.split(" "), found = [], rest = [];
+    const strip = (w) => { let i = 0, j = w.length; while (i < j && "\"'([".includes(w[i])) i++; while (j > i && "\"'),;.]".includes(w[j - 1])) j--; return w.slice(i, j); };
+    words.forEach(w => { const a = strip(w).toLowerCase().replace(/^mailto:/, ""); if (EMAIL_RE.test(a)) found.push(a); else rest.push(w); });
+    const nm = found.length === 1 ? unq(rest.join(" ")) : "";
+    return found.map(a => ({ email: a, name: nm || a }));
+  }
+  function addrList(s) {
+    const out = [];
+    addrParts(String(s || "").replace(/\s+/g, " ")).forEach(p => addrOne(p).forEach(a => { if (!out.some(x => x.email === a.email)) out.push(a); }));
+    return out;
+  }
+  const clean = (s) => String(s || "").replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+  const AUTO_SUBJ = /^\s*(?:auto(?:matic)?[ -]?(?:reply|response)|autoreply|out of (?:the )?office|away from (?:the )?office)\b/i;
+  const BOUNCE_SUBJ = /^\s*(?:delivery status notification|undeliverable|undelivered mail|mail delivery (?:failed|subsystem)|returned mail|delivery (?:failure|has failed))/i;
+  // a delay or delivery receipt, by the wording the mail system starts its subject with (not the original subject it repeats)
+  const NOT_FAILED = /^\s*(?:delivery status notification\s*\((?:delay|delayed|success|relayed|delivered)\)|delivery (?:delay(?:ed)?|notification: delay)\b|delayed mail\b|warning:\s*(?:message \S+ delayed|could not send message for past))/i;
+  // the addresses named in a bounce's preview ("wasn't delivered to bob@x.com"): which of yours didn't get it
+  const MAIL_IN_TEXT = /[^\s@<>()\[\]",;:'`]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+/gi;
+  const CATS = { CATEGORY_PERSONAL: "personal", CATEGORY_UPDATES: "updates", CATEGORY_PROMOTIONS: "promotions", CATEGORY_SOCIAL: "social", CATEGORY_FORUMS: "forums" };
+  function msgOf(m, me) {
+    const hs = (m.payload || {}).headers || [], h = (n) => hdrIn(hs, n), labels = m.labelIds || [];
+    const fromH = h("from"), from = addrOf(fromH), mine = labels.includes("SENT") || (!!me && from === me), subject = h("subject");
+    const autoReply = /auto-replied/i.test(h("auto-submitted")) || !!h("x-autoreply") || !!h("x-autorespond") || /auto_reply/i.test(h("precedence")) || AUTO_SUBJ.test(subject);
+    const auto = autoReply || (!!h("auto-submitted") && !/^\s*no\b/i.test(h("auto-submitted")));
+    const bounce = !mine && !NOT_FAILED.test(subject) && (/^(?:mailer-daemon|postmaster)@/i.test(from) || BOUNCE_SUBJ.test(subject)), snippet = clean(m.snippet);
+    return { id: m.id, at: +m.internalDate || 0, from, fromName: nameOf(fromH), mine, to: addrList(h("to")), cc: addrList(h("cc")), replyTo: addrList(h("reply-to")), subject,
+      snippet, auto: !mine && auto, autoReply: !mine && autoReply, bounce,
+      failed: bounce ? addrList(h("x-failed-recipients")).map(p => p.email).concat((snippet.match(MAIL_IN_TEXT) || []).map(a => a.toLowerCase())) : [],
+      bulk: !mine && (!!h("list-unsubscribe") || /\b(?:bulk|list|junk)\b/i.test(h("precedence"))), cat: labels.map(x => CATS[x]).find(Boolean) || "",
+      msgId: h("message-id"), refs: h("references") };
+  }
+  const shown = (m) => !(m.labelIds || []).some(x => x === "DRAFT" || x === "TRASH" || x === "SPAM");
+  // one line of the inbox for a conversation: who it's with (not you), the latest email, and what kind it is
+  function summary(t, me) {
+    const ms = (t.messages || []).filter(shown).map(m => msgOf(m, me)).sort((a, b) => a.at - b.at); if (!ms.length) return null;
+    const mine = new Set([me].concat(ms.filter(x => x.mine).map(x => x.from)).filter(Boolean)), people = [];
+    ms.forEach(x => (x.mine ? [] : x.replyTo).concat([{ email: x.from, name: x.fromName }], x.to, x.cc).forEach(p => { if (p.email && !mine.has(p.email) && !people.some(y => y.email === p.email)) people.push(p); }));
+    const last = ms[ms.length - 1];
+    // ask: the latest email someone wrote to you (not a bounce, an out-of-office or a robot's notice; a web form's notice
+    // counts when it names someone to answer), and whether you wrote after it
+    const ai = ms.map(x => !x.mine && !x.bounce && !x.autoReply && !(x.auto && !x.replyTo.length)).lastIndexOf(true), a = ms[ai];
+    // failed: who of the people you emailed a bounce says didn't get it
+    const sentTo = new Set([].concat(...ms.filter(x => x.mine).map(x => x.to.concat(x.cc))).map(p => p.email)), failed = [];
+    ms.forEach(x => x.failed.forEach(e => { if (sentTo.has(e) && !failed.includes(e)) failed.push(e); }));
+    return { id: t.id, historyId: t.historyId || "", subject: (ms.find(x => x.subject) || {}).subject || "(no subject)", snippet: last.snippet, at: last.at, count: ms.length,
+      lastMine: last.mine, last: { from: last.from, name: last.fromName, replyTo: last.mine ? [] : last.replyTo.map(x => x.email), auto: last.auto, autoReply: last.autoReply, bounce: last.bounce, bulk: last.bulk, cat: last.cat }, people, anyMine: ms.some(x => x.mine),
+      ask: a ? { from: a.from, name: a.fromName, replyTo: a.replyTo.map(x => x.email), at: a.at, bulk: a.bulk, cat: a.cat } : null, askAnswered: !!a && ms.slice(ai + 1).some(x => x.mine), failed,
+      link: gmailLink("all/" + t.id) };
+  }
+  const metaCache = {}, fullCache = {};
+  const META = "?format=metadata&" + ["From", "To", "Cc", "Subject", "Reply-To", "Auto-Submitted", "X-Autoreply", "X-Autorespond", "Precedence", "List-Unsubscribe", "X-Failed-Recipients"].map(h => "metadataHeaders=" + h).join("&")
+    + "&fields=" + encodeURIComponent("id,historyId,messages(id,labelIds,internalDate,snippet,payload/headers)");
+  // Google asks to slow down now and then (too many at once): wait a moment and try once more
+  async function twice(fn) { try { return await fn(); } catch (e) { if (e.code === "http" && (e.status === 429 || e.status >= 500)) { await new Promise(r => setTimeout(r, 900)); return fn(); } throw e; } }
+  async function meta(id, hid, me) {
+    const c = metaCache[id]; if (c && hid && c.h === hid) return c.s;
+    const t = await twice(() => call(`/users/me/threads/${encodeURIComponent(id)}` + META, null, GMAIL));
+    const s = summary(t, me); metaCache[id] = { h: t.historyId || hid, s }; return s;
+  }
+  // a few at a time, in order
+  async function pool(xs, n, fn) {
+    const out = new Array(xs.length); let i = 0;
+    await Promise.all(Array.from({ length: Math.min(n, xs.length) }, async () => { while (i < xs.length) { const k = i++; out[k] = await fn(xs[k]); } }));
+    return out;
+  }
   async function listEvents(cal, rg) {
     const out = []; let pageToken = "";
     do {
@@ -749,7 +920,7 @@ html.gated, html.gated body { overflow: hidden; }
     connect: (ret, hint) => { if (!CLIENT) return; goToGoogle(false, ret || null, hint || ""); },
     disconnect: () => {
       if (token && token.t) { try { fetch("https://oauth2.googleapis.com/revoke?token=" + encodeURIComponent(token.t), { method: "POST", mode: "no-cors" }).catch(() => {}); } catch (e) {} }
-      token = null; cache = { at: 0, cals: [], events: [] }; [K.tok, K.ev, K.on, K.quiet, K.auto, K.hint, K.ret, K.acct, K.scope].forEach(L.del); Object.keys(histCache).forEach(k => delete histCache[k]); status = "idle"; msg = ""; fire();
+      token = null; cache = { at: 0, cals: [], events: [] }; [K.tok, K.ev, K.on, K.quiet, K.auto, K.hint, K.ret, K.acct, K.scope].forEach(L.del); [histCache, metaCache, fullCache].forEach(c => Object.keys(c).forEach(k => delete c[k])); status = "idle"; msg = ""; fire();
     },
     refresh: (force) => { if (!tokenOk()) { if (status === "ready") { status = "expired"; msg = "Google Calendar needs a quick reconnect."; fire(); } return Promise.resolve(); } if (!force && Date.now() - cache.at < 60000) return Promise.resolve(); return load(); },
     createEvent: async ({ summary, location, description, start, end }) => {
@@ -800,7 +971,59 @@ html.gated, html.gated body { overflow: hidden; }
       histCache[k] = { at: Date.now(), items };
       return items;
     },
-    cached: (email) => { const c = histCache[String(email || "").trim().toLowerCase()]; return c ? c.items : null; }
+    cached: (email) => { const c = histCache[String(email || "").trim().toLowerCase()]; return c ? c.items : null; },
+    // a page of conversations, newest first (q is a Gmail search). A conversation that hasn't changed isn't read again.
+    threads: async ({ q, pageToken, max } = {}) => {
+      if (!(tokenOk() && has("mailRead"))) throw noMail("mailRead");
+      const me = (await account()).toLowerCase();
+      const p = new URLSearchParams({ maxResults: String(Math.min(100, max || 25)), fields: "threads(id,historyId),nextPageToken" });
+      if (q) p.set("q", q); if (pageToken) p.set("pageToken", pageToken);
+      const r = await twice(() => call("/users/me/threads?" + p.toString(), null, GMAIL));
+      // one deleted a moment ago is left out; one Google couldn't read just now keeps its last copy, or is named in
+      // missed to try again later; a sign-in that ran out stops the lot
+      const missed = [], gone = [];
+      const got = await pool(r.threads || [], 5, t => meta(t.id, t.historyId, me).then(x => { if (!x) gone.push(t.id); return x; }, e => {
+        if (e.code === "expired" || e.code === "offline") throw e;
+        if (e.code === "gone") { gone.push(t.id); return null; }
+        if (metaCache[t.id]) return metaCache[t.id].s;
+        missed.push(t.id); return null;
+      }));
+      return { items: got.filter(Boolean), next: r.nextPageToken || "", missed, gone };
+    },
+    // conversations named by id (ones missed earlier): { items, gone, missed }
+    summaries: async (ids) => {
+      if (!(tokenOk() && has("mailRead"))) throw noMail("mailRead");
+      const me = (await account()).toLowerCase(), gone = [], missed = [];
+      const got = await pool(ids || [], 5, id => meta(id, "", me).catch(e => { if (e.code === "expired" || e.code === "offline") throw e; (e.code === "gone" ? gone : missed).push(id); return null; }));
+      got.forEach((x, i) => { if (!x && !gone.includes(ids[i]) && !missed.includes(ids[i])) gone.push(ids[i]); }); // only drafts, trash or spam left
+      return { items: got.filter(Boolean), gone, missed };
+    },
+    // a whole conversation to read: each email's text (oldest first), who it was from and to, and its attachments' names
+    thread: async (id, force) => {
+      const c = fullCache[id]; if (c && !force && Date.now() - c.at < 60000) return c.t;
+      if (!(tokenOk() && has("mailRead"))) throw noMail("mailRead");
+      const me = (await account()).toLowerCase();
+      const t = await twice(() => call(`/users/me/threads/${encodeURIComponent(id)}?format=full&fields=` + encodeURIComponent("id,historyId,messages(id,labelIds,internalDate,snippet,payload)"), null, GMAIL));
+      const msgs = (t.messages || []).filter(shown).map(m => {
+        const x = msgOf(m, me), b = walk(m.payload, { plain: null, html: null, files: [] });
+        x.text = String(b.plain != null && b.plain.trim() ? b.plain : b.html != null ? htmlText(b.html) : x.snippet).replace(/\r\n?/g, "\n"); x.files = b.files;
+        return x;
+      }).sort((a, b) => a.at - b.at);
+      const s = summary(t, me); if (s) metaCache[id] = { h: t.historyId || "", s };
+      const out = { id: t.id || id, msgs, summary: s, link: gmailLink("all/" + (t.id || id)) };
+      fullCache[id] = { at: Date.now(), t: out };
+      const ks = Object.keys(fullCache); if (ks.length > 40) ks.sort((a, b) => fullCache[a].at - fullCache[b].at).slice(0, ks.length - 40).forEach(k => delete fullCache[k]);
+      return out;
+    },
+    // a reply in a conversation: { threadId, to, cc, subject, body, inReplyTo, references }
+    reply: async (m) => {
+      if (!(tokenOk() && has("mailSend"))) throw noMail("mailSend");
+      const refs = String(m.references || "").split(/\s+/).filter(Boolean).slice(-10).join(" ");
+      const r = await call("/users/me/messages/send", { method: "POST", body: JSON.stringify({ raw: mime(Object.assign({}, m, { references: refs })), threadId: m.threadId }) }, GMAIL);
+      delete fullCache[m.threadId]; delete metaCache[m.threadId];
+      String([m.to, m.cc].join(",")).split(/[\s,;]+/).forEach(a => { delete histCache[a.toLowerCase()]; });
+      return { id: r.id || "", threadId: r.threadId || m.threadId, viewUrl: gmailLink("all/" + (r.threadId || m.threadId)) };
+    }
   });
 
   // ---------- start ----------
@@ -1367,7 +1590,7 @@ function dripSteps(l) {
   if (l.dnc || l.dripOff || isOutreach(l)) return [];
   const steps = (settings().drips || {})[l.stage] || []; const since = l.stageSince || (l.createdAt || "").slice(0, 10) || today(); const done = new Set(l.dripDone || []);
   return steps.map((st, i) => ({ st, i, key: `${l.stage}:${i}:${since}`, date: addDays(+st.day || 0, since), l }))
-    .filter(x => !done.has(x.key) && !(x.st.channel === "email" && (!l.email || l.noAutoEmail || l.unsubscribed || blockedEmail(l.email))) && !(x.st.channel !== "email" && (!l.phone || l.phoneBad)));
+    .filter(x => !done.has(x.key) && !(x.st.channel === "email" && (!l.email || l.noAutoEmail || l.unsubscribed || l.emailBounced || blockedEmail(l.email))) && !(x.st.channel !== "email" && (!l.phone || l.phoneBad)));
 }
 function dripDueAll() { const t = today(); return S.leads.map(l => dripSteps(l)[0]).filter(x => x && x.date <= t).sort((a, b) => a.date.localeCompare(b.date)); }
 async function markDrip(l, key, how) {
@@ -1395,8 +1618,9 @@ const icon = (k) => `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[k]}</sv
 
 function renderNav() {
   const due = S.leads.filter(l => dueState(l)).length + dripDueAll().length;
-  $("#sideNav").innerHTML = NAV.map(([k, t]) => `<button class="nav-btn" data-nav="${k}" ${S.view === k ? 'aria-current="page"' : ""}>${icon(k)}${t}${k === "today" && due ? `<span class="count num">${due}</span>` : ""}</button>`).join("");
-  $("#tabbar").innerHTML = NAV.filter(n => n[0] !== "settings").map(([k, t]) => `<button data-nav="${k}" ${S.view === k ? 'aria-current="page"' : ""}>${icon(k)}${t}</button>`).join("");
+  const mails = typeof ibCount === "function" ? ibCount() : 0; S.navMails = mails; // emails waiting on you (Email > Inbox)
+  $("#sideNav").innerHTML = NAV.map(([k, t]) => `<button class="nav-btn" data-nav="${k}" ${S.view === k ? 'aria-current="page"' : ""}>${icon(k)}${t}${k === "today" && due ? `<span class="count num">${due}</span>` : ""}${k === "email" && mails ? `<span class="count num">${mails}</span>` : ""}</button>`).join("");
+  $("#tabbar").innerHTML = NAV.filter(n => n[0] !== "settings").map(([k, t]) => `<button data-nav="${k}" ${S.view === k ? 'aria-current="page"' : ""}>${icon(k)}${t}${k === "email" && mails ? `<span class="tb-n num" aria-label="${mails} waiting">${mails}</span>` : ""}</button>`).join("");
 }
 
 // ---------- render with focus preservation ----------
@@ -1491,7 +1715,7 @@ VIEWS.today = () => {
       <section class="panel flush"><div class="panel-h"><h2>New leads</h2><button class="btn ghost sm" data-nav="leads" data-show="new">See all</button></div>
         ${fresh.length ? `<div class="list">${fresh.map(leadRow).join("")}</div>` : `<div class="pad note">New Angi, Facebook and phone leads show here. Add one with “+ New lead”.</div>`}
       </section>
-      <section class="panel"><div class="panel-h"><h2>Email outreach</h2><button class="btn ghost sm" data-nav="email">Open</button></div>${mailSummary()}</section>
+      <section class="panel"><div class="panel-h"><h2>Email outreach</h2><button class="btn ghost sm" data-nav="email" data-etab="outreach">Open</button></div>${mailSummary()}</section>
     </div>
   </div>`;
 };
@@ -1565,7 +1789,7 @@ VIEWS.leads = () => {
   } else body = `<section class="panel flush"><div class="list">${list.map(leadRow).join("")}</div></section>`;
   const opt = (arr, cur, all) => `<option value="">${all}</option>` + arr.map(v => { const [k, t] = Array.isArray(v) ? v : [v, v]; return `<option value="${esc(k)}" ${cur === k ? "selected" : ""}>${esc(t)}</option>`; }).join("");
   return `
-  ${pageHead("Leads", searching ? `${plural(list.length, "lead")} found. Searching all your leads.` : `${plural(list.length, "lead")} shown. HOA outreach contacts are under <a href="#" data-nav="email">Email</a> until they reply.`, `<details class="menu"><summary class="btn" aria-label="More actions">More</summary><div class="menu-box"><button class="btn" data-act="import">Upload leads</button><button class="btn" data-act="export-leads">Export</button></div></details><button class="btn primary hide-mob" data-act="new-lead">+ New lead</button>`)}
+  ${pageHead("Leads", searching ? `${plural(list.length, "lead")} found. Searching all your leads.` : `${plural(list.length, "lead")} shown. HOA outreach contacts are under <a href="#" data-nav="email" data-etab="outreach">Email</a> until they reply.`, `<details class="menu"><summary class="btn" aria-label="More actions">More</summary><div class="menu-box"><button class="btn" data-act="import">Upload leads</button><button class="btn" data-act="export-leads">Export</button></div></details><button class="btn primary hide-mob" data-act="new-lead">+ New lead</button>`)}
   ${noDbBanner()}
   <div class="controls">
     ${sel}
@@ -1725,7 +1949,8 @@ function leadInfo(l) {
   const emailActs = l.email ? `${l.dnc ? "" : `<button class="btn sm" data-ltab="messages">Email</button>`}<button class="btn sm icon-btn" data-copy="${esc(l.email)}" data-copy-label="Email" aria-label="Copy email">${icon("copy")}</button>` : "";
   const addr = [l.address, l.city].filter(Boolean).join(", ");
   const addrActs = addr ? `<a class="btn sm" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent([l.address || l.company, l.city, "FL"].filter(Boolean).join(", "))}">${icon("map")}Map</a>` : "";
-  const last = l.lastDisposition ? `${esc(l.lastDisposition)}${l.lastContact ? ` · ${esc(fmtD(l.lastContact, dLong))}` : ""}` : "";
+  const last = [l.lastDisposition ? `${esc(l.lastDisposition)}${l.lastContact ? ` · ${esc(fmtD(l.lastContact, dLong))}` : ""}` : "",
+    l.lastEmailDispo ? `<span class="note">Email: ${esc(l.lastEmailDispo)}${l.lastEmailAt ? ` · ${esc(fmtD(l.lastEmailAt, dLong))}` : ""}</span>` : ""].filter(Boolean).join("<br>");
   const notes = l.notes ? `<div class="cnotes"><span class="k">Notes</span><div class="clamp">${esc(l.notes)}</div>${l.notes.length > 140 || /\n/.test(l.notes) ? `<button class="btn ghost sm" data-ltab="notes">Read all</button>` : ""}</div>` : "";
   return `<div class="info-grid">
     ${infoCell("Company", esc(l.company))}${infoCell("Contact", esc(l.name))}${infoCell("Type", esc(l.type))}
@@ -1748,7 +1973,7 @@ function leadBanners(l) {
     + (l.phoneBad ? `<div class="banner warn">The phone number was marked wrong. Fix it under Edit.</div>` : "")
     + (l.noAutoEmail && !l.dnc ? `<div class="banner warn">You contact them personally. They stay off email blasts.</div>` : "")
     + (l.unsubscribed && !l.dnc ? `<div class="banner warn">They asked to be taken off your emails, so they stay off email blasts. You can still call or email them yourself.</div>` : "")
-    + (l.emailBounced && !l.dnc ? `<div class="banner warn">Their email bounced, so they stay off email blasts. Fix the address under Edit to put them back.</div>` : "");
+    + (l.emailBounced && !l.dnc ? `<div class="banner warn">${l.emailWrong ? "Their email reached the wrong person" : "Their email bounced"}, so they stay off email blasts. Fix the address under Edit to put them back.</div>` : "");
 }
 // which text templates fit each stage, matched on the template name
 const STAGE_TPL = { new: /intro|follow/i, contacted: /follow|intro/i, working: /confirm|estimate|follow/i, selling: /quote/i, scheduled: /way|confirm/i, completed: /done|review/i, paid: /review|done|again|year/i, lost: /follow/i };
@@ -1922,10 +2147,10 @@ function showTab(k) {
   $("#modal .scrim").scrollTop = 0;
 }
 const stageOrder = (s) => STAGES.findIndex(x => x[0] === s);
-async function logDispo(k) {
-  const l = leadById(openLeadId); if (!l) return; const d = DISPOSITIONS.find(x => x.k === k); if (!d) return;
-  const upd = { lastDisposition: k, lastContact: today() };
-  let text = `Call: ${k}`;
+// what a call result (or an email result, from Email > Inbox) changes on a lead, its line in the history, and what Undo puts back
+function dispoChange(l, d, k, via) {
+  const email = via === "email", upd = email ? { lastEmailDispo: k, lastEmailAt: today(), lastContact: today() } : { lastDisposition: k, lastContact: today() };
+  let text = `${email ? "Email" : "Call"}: ${k}`;
   // a call result only moves a lead forward (or to Lost); past customers stay Paid so their history stays put
   // a Lost lead who calls back wanting a quote is open again
   if (l.stage !== "paid") { if (d.stage && (d.stage === "lost" || stageOrder(d.stage) > stageOrder(l.stage) || (l.stage === "lost" && !l.dnc))) upd.stage = d.stage; else if (!l.stage || l.stage === "new") upd.stage = "contacted"; }
@@ -1935,14 +2160,22 @@ async function logDispo(k) {
   if (d.dnc) upd.dnc = true;
   if (d.crash) upd.crashOut = true;
   if (d.flagPhone) { upd.phoneBad = true; text += " · phone number marked wrong"; }
+  // a wrong person's address stays off blasts the way a bounced one does, until the address is changed
+  if (d.flagEmail) { upd.emailBounced = true; upd.emailWrong = true; text += " · email marked wrong"; }
+  if (d.unsub) { upd.unsubscribed = true; text += " · off email blasts and drip emails"; }
   if (d.promote && isOutreach(l)) { Object.assign(upd, PROMOTE()); text += " · moved from outreach to Leads"; }
   if (upd.nextFollowUp) text += ` · follow up ${fmtD(upd.nextFollowUp)}`;
   if (upd.stage && upd.stage !== l.stage) text += ` · moved to ${STAGE_LABEL[upd.stage]}`;
-  // remember only what this call result changed, so Undo can put exactly that back
+  // remember only what this result changed, so Undo can put exactly that back
   const prev = {}; Object.keys(upd).forEach(f => { prev[f] = l[f] === undefined ? (typeof upd[f] === "boolean" ? false : "") : l[f]; });
   if (upd.stage) prev.stageSince = l.stageSince || "";
   upd.updatedAt = new Date().toISOString();
-  upd.activity = activity(l, "call", text);
+  upd.activity = activity(l, email ? "email" : "call", text);
+  return { upd, prev };
+}
+async function logDispo(k) {
+  const l = leadById(openLeadId); if (!l) return; const d = DISPOSITIONS.find(x => x.k === k); if (!d) return;
+  const { upd, prev } = dispoChange(l, d, k, "call");
   await saveDoc("leads", l.id, upd, true);
   S.lastDispo = { leadId: l.id, prev, actAt: upd.activity[0].at, stamp: upd.updatedAt, opensForm: k === "Wants quote" || k === "Booked" };
   S.dispoMsg = { leadId: l.id, text: `Logged “${k}”.` + (upd.nextFollowUp ? ` Next follow-up ${fmtD(upd.nextFollowUp, { weekday: "short", month: "short", day: "numeric" })}.` : "") + (upd.stage && upd.stage !== l.stage ? ` Now ${STAGE_LABEL[upd.stage]}.` : "") + (upd.list === "leads" && isOutreach(l) ? " Moved to Leads." : "") };
@@ -1974,7 +2207,7 @@ async function saveLead() {
   if ("phone" in d && d.phone !== (l.phone || "") && l.phoneBad) d.phoneBad = false; // a new number clears the "wrong number" flag
   if ("dnc" in d && !d.dnc && l.crashOut) d.crashOut = false; // unblocking clears the crash-out too
   if (("email" in d || "noAutoEmail" in d) && blockedEmail("email" in d ? d.email : l.email)) d.noAutoEmail = true; // a blocked address stays off automatic emails
-  if ("email" in d && l.emailBounced && d.email !== String(l.email || "").toLowerCase()) d.emailBounced = false; // a fixed address can get blasts again
+  if ("email" in d && l.emailBounced && d.email !== String(l.email || "").toLowerCase()) { d.emailBounced = false; if (l.emailWrong) d.emailWrong = false; } // a fixed address can get blasts again
   const toLeads = "list" in d && d.list !== "outreach" && isOutreach(l), toOut = d.list === "outreach" && !isOutreach(l);
   if (toLeads) { Object.assign(d, PROMOTE()); if (!("stage" in d) && (!l.stage || l.stage === "new")) d.stage = "contacted"; }
   // a reply that was already handled won't move them back to Leads, but a new reply will
@@ -2476,7 +2709,7 @@ function carryTyped() {
     keepTyped();
     const sheet = $("#modal .sheet"), l = openLeadId && leadById(openLeadId);
     if (l && sheet) collectDraft(sheet, leadDraft(l));
-    sessionStorage.setItem(CARRY, JSON.stringify({ at: Date.now(), kept: keptTyped, money: { form: S.money.form || "", formLead: S.money.formLead || "", dropPaid: S.money.dropPaid || "" }, pay: S.payOpen || null, draft: l ? S.tabDraft : null }));
+    sessionStorage.setItem(CARRY, JSON.stringify({ at: Date.now(), kept: keptTyped, money: { form: S.money.form || "", formLead: S.money.formLead || "", dropPaid: S.money.dropPaid || "" }, pay: S.payOpen || null, draft: l ? S.tabDraft : null, inbox: S.inbox ? { sel: S.inbox.sel, drafts: S.inbox.drafts } : null }));
   } catch (e) {}
 }
 function bringBackTyped(ret) {
@@ -2484,6 +2717,8 @@ function bringBackTyped(ret) {
   if (!ret || !c || Date.now() - (+c.at || 0) > 30 * 60 * 1000) return;
   if (c.money && c.money.form) Object.assign(S.money, c.money);
   if (c.draft && c.draft.leadId && c.draft.leadId === ret.lead) S.tabDraft = c.draft;
+  // the conversation that was open in Email > Inbox, and the replies being written
+  if (c.inbox && S.inbox) { S.inbox.drafts = Object.assign({}, c.inbox.drafts || {}, S.inbox.drafts); if (ret.view === "email" && c.inbox.sel) { S.inbox.sel = c.inbox.sel; S.emailTab = "inbox"; } }
   // the boxes and the payment box wait for the customers and jobs to load, so their choices exist when they're put back
   S.carried = { kept: c.kept || {}, pay: c.pay && c.pay.id ? c.pay : null };
 }
@@ -2509,7 +2744,8 @@ function mailHistHTML(l) {
   }
   const k = l.email.trim().toLowerCase(); let h = mailHist[k];
   if (histStale(h)) { loadMailHist(l); h = mailHist[k] || { status: "loading", items: [] }; }
-  const rows = h.items.map(x => `<button class="item" data-href="${esc(x.link)}"><div class="main-col"><span class="t">${esc(x.subject)}</span><span class="s">${esc(x.who)} · ${esc(fmtDT(new Date(x.at).toISOString()))}${x.snippet ? " · " + esc(x.snippet) : ""}</span></div><div class="r"><span class="pill ${x.mine ? "" : "s-scheduled"}">${x.mine ? "Sent" : "Received"}</span></div></button>`).join("");
+  // a tap opens the conversation in Email > Inbox (or in Gmail where the inbox isn't)
+  const rows = h.items.map(x => `<button class="item" ${typeof ibGo === "function" && x.threadId ? `data-ib-go="${esc(x.threadId)}" data-ib-go-lead="${esc(l.id)}"` : `data-href="${esc(x.link)}"`}><div class="main-col"><span class="t">${esc(x.subject)}</span><span class="s">${esc(x.who)} · ${esc(fmtDT(new Date(x.at).toISOString()))}${x.snippet ? " · " + esc(x.snippet) : ""}</span></div><div class="r"><span class="pill ${x.mine ? "" : "s-scheduled"}">${x.mine ? "Sent" : "Received"}</span></div></button>`).join("");
   const body = rows ? `<div class="list">${rows}</div>` : h.status === "loading" ? `<div class="pad note">Loading your emails with them…</div>` : h.status === "error" ? "" : `<div class="pad note">No emails with ${esc(l.email)} yet.</div>`;
   return `<section class="panel flush">${head(`<button class="btn sm ghost" data-act="mail-hist-refresh">Refresh</button>`)}${h.status === "error" ? `<div class="pad note">${esc(h.msg)}</div>` : ""}${body}</section>`;
 }
@@ -2896,16 +3132,20 @@ function groupSummary(arr) {
   return [plural(arr.length, "contact"), c.emailing ? `${c.emailing} getting emails` : "", c.call ? `${c.call} to call` : "", due ? `${due} call-back due` : "", c.stopped ? `${c.stopped} stopped` : ""].filter(Boolean).join(" · ");
 }
 function emailList() {
-  return S.leads.filter(l => l.email).map(l => ({ l, state: l.dnc ? "Do not contact" : l.noAutoEmail || blockedEmail(l.email) ? "Personal only" : l.unsubscribed ? "Unsubscribed" : l.emailBounced ? "Bounced" : "On list" }));
+  return S.leads.filter(l => l.email).map(l => ({ l, state: l.dnc ? "Do not contact" : l.noAutoEmail || blockedEmail(l.email) ? "Personal only" : l.unsubscribed ? "Unsubscribed" : l.emailBounced ? (l.emailWrong ? "Wrong person" : "Bounced") : "On list" }));
 }
 VIEWS.email = () => {
   // the HOA email schedule lives in the Claude project's files, so the standalone website can't show it
   const noSched = STANDALONE && !S.files; if (noSched && S.emailTab === "scheduled") S.emailTab = "outreach";
   const tab = S.emailTab;
   if (S.emailTab === "blasts" && !BL_ON()) S.emailTab = "outreach";
-  const tabs = `<div class="seg" role="group" aria-label="Email section"><button data-etab="outreach" aria-pressed="${tab === "outreach"}">Outreach contacts</button>${BL_ON() ? `<button data-etab="blasts" aria-pressed="${tab === "blasts"}">Blasts</button>` : ""}${noSched ? "" : `<button data-etab="scheduled" aria-pressed="${tab === "scheduled"}">Scheduled sends</button>`}<button data-etab="list" aria-pressed="${tab === "list"}">Email list</button></div>`;
+  if (S.emailTab === "inbox" && !MAIL()) S.emailTab = "outreach";
+  const ib = !!MAIL(), need = ib ? ibCount() : 0;
+  const tabs = `<div class="seg" role="group" aria-label="Email section">${ib ? `<button data-etab="inbox" aria-pressed="${tab === "inbox"}">Inbox${need ? ` <span class="num">(${need})</span>` : ""}</button>` : ""}<button data-etab="outreach" aria-pressed="${tab === "outreach"}">Outreach<span class="hide-mob"> contacts</span></button>${BL_ON() ? `<button data-etab="blasts" aria-pressed="${tab === "blasts"}">Blasts</button>` : ""}${noSched ? "" : `<button data-etab="scheduled" aria-pressed="${tab === "scheduled"}">Scheduled sends</button>`}<button data-etab="list" aria-pressed="${tab === "list"}">Email list</button></div>`;
   let body = "";
-  if (tab === "outreach") {
+  if (tab === "inbox") {
+    body = inboxTabHTML();
+  } else if (tab === "outreach") {
     const O = outreachOnly(); const shows = outShows(); const f = S.outFilter;
     const sh = shows.find(x => x[0] === f.show) || shows[0]; const q = f.q.trim().toLowerCase();
     const list = O.filter(l => sh[2](l) && outreachMatch(l, q));
@@ -2952,9 +3192,10 @@ VIEWS.email = () => {
         <div class="list only-narrow" style="flex-direction:column">${rows.map(r => `<button class="item flow" data-open-lead="${esc(r.l.id)}"><div class="main-col"><span class="t">${esc(leadName(r.l))}</span><span class="s" style="white-space:normal;overflow-wrap:anywhere">${esc(r.l.email)}</span></div><div class="r">${pill(r)}</div></button>`).join("")}</div>`; })() : `<div class="empty">Contacts with an email address show here.</div>`}
     </section>`;
   }
-  return `${pageHead("Email", BL_ON() ? "Outreach to HOAs and property managers, email blasts, and your email list" : "Outreach to HOAs and property managers, what's scheduled to send, and your email list", tabs)}${noDbBanner()}${body}`;
+  return `${pageHead("Email", ib ? "Your Gmail conversations, outreach to HOAs and property managers, email blasts, and your email list" : BL_ON() ? "Outreach to HOAs and property managers, email blasts, and your email list" : "Outreach to HOAs and property managers, what's scheduled to send, and your email list", tabs)}${noDbBanner()}${body}`;
 };
 after.email = () => {
+  if (S.emailTab === "inbox" && MAIL()) ibAfter();
   const s = $("#of-show"); if (s) s.addEventListener("change", () => { S.outFilter.show = s.value; schedule(); });
   const q = $("#of-q"); if (q) q.addEventListener("input", () => { S.outFilter.q = q.value; schedule(); });
 };
@@ -3792,6 +4033,7 @@ function blastListen(db) {
     S.blastSender = docs.find(d => d.id === "blast-sender") || null; S.blastTest = docs.find(d => d.id === "blast-test") || null;
     const t = docs.find(d => d.id === "blast-templates"); S.blastTpl = t && Array.isArray(t.list) ? t.list : null;
     const al = docs.find(d => d.id === "blast-allow"); S.blastAllow = (al && al.allow) || {};
+    const ib = docs.find(d => d.id === "inbox"); S.inboxDone = (ib && ib.done) || {}; // Email > Inbox: the conversations dealt with
     // an address you allowed again is off this list at once, before the sender catches up
     const o = docs.find(d => d.id === "blast-out"), out = (o && o.out) || {}; S.blastOut = {};
     Object.keys(out).forEach(k => { if (!(Date.parse(S.blastAllow[k] || 0) >= Date.parse((out[k] || {}).at || 0))) S.blastOut[k] = out[k]; });
@@ -3836,7 +4078,7 @@ function blastOwnBlock(l) {
   if (!oneAddr(l.email)) return "Email needs fixing";
   if (l.dnc) return "Do not contact";
   if (l.unsubscribed) return "Asked to be removed";
-  if (l.emailBounced) return "Email bounced";
+  if (l.emailBounced) return l.emailWrong ? "Wrong person" : "Email bounced";
   if (l.noAutoEmail || blockedEmail(l.email) || BL_HASH.get(emailKey(l.email))) return "You email them yourself";
   return "";
 }
@@ -3850,7 +4092,7 @@ function blastAddrs() {
     const k = emailKey(l.email); if (!k) return;
     // an email box holding several addresses blocks each of them
     const ks = [k].concat(k.split(/[\s,;<>()"']+/).filter(x => x !== k && /@/.test(x)));
-    const why = l.dnc ? "Do not contact" : l.unsubscribed ? "Asked to be removed" : l.emailBounced ? "Email bounced"
+    const why = l.dnc ? "Do not contact" : l.unsubscribed ? "Asked to be removed" : l.emailBounced ? (l.emailWrong ? "Wrong person" : "Email bounced")
       : l.noAutoEmail || blockedEmail(l.email) || BL_HASH.get(k) || isKylemont(l) ? "You email them yourself" : "";
     if (why) ks.forEach(x => { if (!bad.has(x)) bad.set(x, { why, id: isKylemont(l) ? "" : l.id }); });
     if (onHoaFollowups(l)) ks.forEach(x => fu.add(x));
@@ -5007,6 +5249,464 @@ if (BL_ON()) {
     }
   });
 }
+// ---------- EMAIL INBOX ----------
+// Email > Inbox: the connected Gmail's conversations (what went out, what came back, new emails), newest first, to read and
+// answer here and to log what each person said on their contact, the way a call result is logged. Gmail is read through
+// window.GICMAIL (sa/src/gcal.js). Which conversations were dealt with is kept in settings/inbox, so every device agrees.
+// Promotions, social and forum emails are left out.
+const IB_QUERY = "newer_than:180d -in:chats -category:promotions -category:social -category:forums";
+const IB_PAGE = 25, IB_FIRST_PAGES = 4; // the first look reads 4 pages, so replies from contacts show even after a busy week
+// What an email said, grouped like the call results. byAddr: it goes for everyone who uses that address (a manager
+// with several communities who asks to be taken off is off for all of them).
+const EMAIL_DISPO_GROUPS = [
+  { name: "Interested", tone: "good", items: [
+    { k: "Wants quote", stage: "working", next: 1, promote: true, hint: "Schedule the estimate" },
+    { k: "Booked", promote: true, hint: "Book the job" }] },
+  { name: "Keep in touch", tone: "", items: [
+    { k: "Follow up later", next: 14, promote: true, hint: "Follow up in 2 weeks" },
+    { k: "Budget next year", nextYear: true, promote: true, hint: "Follow up in January" }] },
+  { name: "Not right now", tone: "warn", items: [
+    { k: "Not interested", stage: "lost", clear: true, hint: "Moves to Lost" },
+    { k: "Wrong person", flagEmail: true, byAddr: true, hint: "Flags the email so you can fix it" }] },
+  { name: "Stop emailing", tone: "bad", items: [
+    { k: "Remove from emails", unsub: true, byAddr: true, hint: "No more blasts or drip emails" },
+    { k: "Do not contact", stage: "lost", dnc: true, clear: true, byAddr: true, hint: "Blocks texts and emails" },
+    { k: "Crash out", stage: "lost", dnc: true, clear: true, crash: true, byAddr: true, hint: "Angry. Blocks everything" }] }
+];
+const EMAIL_DISPOS = EMAIL_DISPO_GROUPS.flatMap(g => g.items.map(d => Object.assign({ tone: g.tone }, d)));
+const IB_TONE = { good: "s-scheduled", warn: "s-quoted", bad: "s-lost", "": "s-new" };
+// lists: one per search ("" is the inbox itself); conv: the conversations read; open: folded parts left open;
+// drafts: replies being written, by conversation (kept when the box isn't on screen, and on a trip to Google)
+S.inbox = { show: "needs", q: "", typed: "", sel: "", lists: {}, conv: {}, forLead: {}, open: new Set(), msg: null, last: null, scroll: 0, listY: 0, drafts: {} };
+const ibSending = new Set(); // conversations with a reply on its way
+S.inboxDone = {}; // settings/inbox: thread id -> { at, msgAt, k, lead, by } (null once put back)
+if (MAIL()) S.emailTab = "inbox";
+["ib-dispo", "ib-for"].forEach(id => LIVE_IDS.add(id));
+const ibErr = (e) => e.code === "expired" ? "Gmail needs a quick reconnect." : e.code === "forbidden" ? e.message : e.code === "offline" ? "Couldn't reach Gmail just now." : "Gmail said: " + (e.message || "no");
+const ibCanRead = () => { const m = MAIL(); return !!m && m.canRead(); };
+
+// ---------- who is who ----------
+// every address in the CRM, to the contacts that have it (an old address of theirs counts when no one has it now)
+let IB_IDX = { leads: null, map: null };
+function ibIndex() {
+  if (IB_IDX.leads === S.leads) return IB_IDX.map;
+  const map = new Map(), add = (k, l, old) => { k = emailKey(k); if (!/@/.test(k)) return; const a = map.get(k) || []; if (!a.some(x => x.l.id === l.id)) a.push({ l, old }); map.set(k, a); };
+  S.leads.forEach(l => { String(l.email || "").split(/[\s,;<>()"']+/).forEach(k => add(k, l, false)); (l.oldEmails || []).forEach(k => add(k, l, true)); });
+  IB_IDX = { leads: S.leads, map }; return map;
+}
+function ibLeadsFor(email) { const a = ibIndex().get(emailKey(email)) || [], now = a.filter(x => !x.old); return (now.length ? now : a).map(x => x.l); }
+// the people in a conversation who are in the CRM: [{ email, name, leads }]
+const ibContacts = (t) => (t.people || []).map(p => ({ email: p.email, name: p.name, leads: ibLeadsFor(p.email) })).filter(x => x.leads.length);
+const ibAllLeads = (t) => { const out = []; ibContacts(t).forEach(c => c.leads.forEach(l => { if (!out.includes(l)) out.push(l); })); return out; };
+// the addresses of whoever wrote to you last, not counting bounces and out-of-offices (their Reply-To too: a form or lead
+// site writes from a no-reply address)
+const ibWriter = (t) => t.ask ? [t.ask.from].concat(t.ask.replyTo || []) : [];
+// who the conversation is about: someone waiting on you; else, after a bounce, who didn't get your email; else who wrote;
+// else whoever sent the last email (an out-of-office that's all that came back)
+function ibAbout(t) {
+  const w = ibWriter(t), f = t.failed || [], l = t.last || {};
+  if (w.length && !t.askAnswered && !ibDone(t)) return w;
+  if (f.length && (l.bounce || !w.length)) return f;
+  return w.length ? w : f.length ? f : !t.lastMine && !l.bounce && l.from ? [l.from].concat(l.replyTo || []) : [];
+}
+// of several contacts, the one the subject names ("Pressure washing for Pinewinds"): the longest name found in it, if only one
+function ibBySubject(ls, subject) {
+  const key = commKey(subject); if (!key || ls.length < 2) return null;
+  const fit = ls.map(l => ({ l, n: Math.max(0, ...[l.mailCommunity, l.company || l.name].concat(l.oldNames || []).map(commKey).filter(k => k.length >= 4 && key.includes(k)).map(k => k.length)) })).filter(x => x.n);
+  if (!fit.length) return null; const top = Math.max(...fit.map(x => x.n)), best = fit.filter(x => x.n === top);
+  return best.length === 1 ? best[0].l : null;
+}
+// whose result it is unless another is picked: of the contacts it's about (or everyone in it), the one the subject
+// names, else the first
+function ibForLead(t) {
+  const all = ibAllLeads(t), picked = S.inbox.forLead[t.id];
+  if (picked && all.some(l => l.id === picked)) return leadById(picked);
+  const w = []; ibAbout(t).forEach(a => ibLeadsFor(a).forEach(l => { if (!w.includes(l)) w.push(l); }));
+  const pool = w.length ? w : all;
+  return ibBySubject(pool, t.subject) || pool[0] || null;
+}
+function ibWho(t) {
+  const names = [];
+  (t.people || []).forEach(p => { const ls = ibLeadsFor(p.email), n = ls.length ? leadName(ls[0]) + (ls.length > 1 ? ` +${ls.length - 1}` : "") : p.name; if (n && !names.includes(n)) names.push(n); });
+  return names.length ? names.slice(0, 2).join(", ") + (names.length > 2 ? ` +${names.length - 2}` : "") : "You";
+}
+const NOREPLY = /(?:^|[-_.+])(?:no[-_.]?reply|do[-_.]?not[-_.]?reply)[@+._-]|^(?:notifications?|notify|alerts?|mailer-daemon|postmaster|bounces?)[@+._-]/i; // noreply@, voice-noreply@ …
+// dealt with (answered, logged or marked done) since the email that asked for it
+const ibDone = (t) => { const d = S.inboxDone[t.id]; return d && +d.msgAt >= (t.ask ? t.ask.at : t.at) ? d : null; };
+// waiting on you: someone wrote (the ask: not a bounce, an out-of-office or a robot's notice; a web form's notice counts when
+// it names someone to answer), and it wasn't answered or logged since. A bounce or an out-of-office coming in after it
+// doesn't change that. Someone not in the CRM counts when it's a person writing (Gmail's Primary tab, not a newsletter or a
+// notification).
+function ibNeeds(t) {
+  const a = t.ask; if (!a || t.askAnswered || ibDone(t)) return false;
+  if (ibWriter(t).some(x => ibLeadsFor(x).length)) return true;
+  return (a.cat === "personal" || !a.cat) && !a.bulk && (!NOREPLY.test(a.from) || (a.replyTo || []).some(x => !NOREPLY.test(x)));
+}
+const IB_SHOWS = [["needs", "Needs you", ibNeeds], ["contacts", "Your contacts", t => ibContacts(t).length > 0], ["sent", "Sent", t => t.anyMine], ["all", "All email", () => true]];
+// the conversation's line, from the list or from reading it
+function ibFind(id) {
+  const c = S.inbox.conv[id]; if (c && c.t && c.t.summary) return c.t.summary;
+  for (const L of Object.values(S.inbox.lists)) { const t = L.items.find(x => x.id === id); if (t) return t; }
+  return null;
+}
+function ibCount() { if (!ibCanRead()) return 0; const L = S.inbox.lists[""]; return L ? L.items.filter(ibNeeds).length : 0; }
+
+// ---------- reading Gmail ----------
+const ibKey = () => S.inbox.q.trim();
+function ibList(k) { k = k == null ? ibKey() : k; return S.inbox.lists[k] || (S.inbox.lists[k] = { status: "idle", items: [], next: "", pages: 0, at: 0, msg: "" }); }
+const ibStale = (L) => L.status !== "loading" && Date.now() - L.at > (L.status === "error" ? 60 : 120) * 1000;
+// only the Email page shows the conversations; anywhere else just the count on the Email button changes
+function ibNav() { if (ibCount() === S.navMails) return; if (pressed) { setTimeout(ibNav, 200); return; } renderNav(); }
+const ibDraw = () => { if (S.view === "email") schedule(); else ibNav(); };
+// deleted or marked spam in Gmail: off every list, and an open conversation says it's gone (what was typed stays, to copy)
+const ibGone = (id) => ({ status: "ready", t: { id, msgs: [], summary: null, link: "" }, at: Date.now() });
+const ibDrop = (id) => { Object.values(S.inbox.lists).forEach(L => { L.items = L.items.filter(x => x.id !== id); }); if (S.inbox.conv[id]) S.inbox.conv[id] = ibGone(id); };
+// the newest page again (new and changed conversations come to the top, older ones stay), or the next older page
+async function ibLoad(o) {
+  o = o || {}; const m = MAIL(); if (!m || !m.canRead()) return;
+  const k = o.key == null ? ibKey() : o.key, L = ibList(k); if (L.status === "loading" || (o.more && !L.next)) return;
+  L.status = "loading"; L.at = Date.now(); ibDraw();
+  try {
+    const r = await m.threads({ q: IB_QUERY + (k ? " " + k : ""), pageToken: o.more ? L.next : "", max: IB_PAGE });
+    // ones Google couldn't read on an earlier look are tried again with the newest page
+    const got = new Set(r.items.map(t => t.id)), before = (L.missed || []).filter(id => !got.has(id)), missed = new Set(before.concat(r.missed || []));
+    if (!o.more && before.length) { try { const x = await m.summaries(before); x.items.forEach(t => { r.items.push(t); missed.delete(t.id); }); x.gone.forEach(id => { missed.delete(id); ibDrop(id); }); } catch (e) {} }
+    (r.gone || []).forEach(id => { missed.delete(id); ibDrop(id); });
+    // ones shown but not on the newest page, asked about one by one: newer than the page reaches (deleted or marked spam
+    // in Gmail since, or only moved by a draft); and, a few each time in turn, older ones still waiting on you (any, when
+    // the page is all there is), so one deleted in Gmail doesn't stay on the count
+    if (!o.more) {
+      const ids = new Set(r.items.map(t => t.id)), floor = r.items.length ? Math.min(...r.items.map(t => t.at)) : Infinity;
+      const off = L.items.filter(t => !ids.has(t.id) && !missed.has(t.id)), odd = off.filter(t => t.at > floor).slice(0, 8);
+      const old = off.filter(t => !odd.includes(t) && (!r.next || ibNeeds(t))), room = 4;
+      const k0 = old.length ? (L.turn || 0) % old.length : 0, turn = old.slice(k0).concat(old.slice(0, k0)).slice(0, room); L.turn = k0 + turn.length;
+      const ask = odd.concat(turn).map(t => t.id);
+      if (ask.length) { try { const x = await m.summaries(ask); x.items.forEach(t => r.items.push(t)); x.gone.forEach(id => ibDrop(id)); } catch (e) {} }
+    }
+    const by = new Map(L.items.map(t => [t.id, t])); r.items.forEach(t => by.set(t.id, t));
+    L.items = [...by.values()].sort((a, b) => b.at - a.at);
+    if (o.more || !L.pages) { L.next = r.next; L.pages++; }
+    L.missed = [...missed]; L.status = "ready"; L.msg = ""; L.failAt = 0;
+  } catch (e) { L.status = L.items.length ? "ready" : "error"; L.msg = ibErr(e); L.failAt = Date.now(); }
+  L.at = Date.now(); ibDraw();
+}
+const ibConvStale = (c) => !c || (c.status !== "loading" && Date.now() - c.at > (c.status === "error" ? 60 : 120) * 1000);
+function ibConvLoad(id, force) {
+  const m = MAIL(); if (!m || !m.canRead()) return; const c = S.inbox.conv[id];
+  if (c && c.status === "loading") return;
+  S.inbox.conv[id] = { status: "loading", t: c && c.t, at: Date.now() }; ibDraw();
+  m.thread(id, force).then(t => {
+    S.inbox.conv[id] = { status: "ready", t, at: Date.now() };
+    // deleted or marked spam in Gmail since: off the lists too
+    const s = t.summary; if (!s || !t.msgs.length) { ibDrop(id); return; }
+    // its line in the lists shows what was just read (a reply sent from here puts it at the top). One that isn't in the
+    // inbox's list yet goes in only if the list reaches back that far (an old one opened from a lead's page doesn't)
+    Object.keys(S.inbox.lists).forEach(k => {
+      const L = S.inbox.lists[k], i = L.items.findIndex(x => x.id === id);
+      if (i >= 0) L.items[i] = s;
+      else if (k === "" && L.pages && (!L.next || (L.items.length && s.at >= L.items[L.items.length - 1].at)) && Date.now() - s.at < 180 * 864e5 && !["promotions", "social", "forums"].includes(s.last.cat)) L.items.push(s);
+      else return;
+      L.items.sort((a, b) => b.at - a.at);
+    });
+  }, e => {
+    if (e.code === "gone") { S.inbox.conv[id] = ibGone(id); ibDrop(id); }
+    else S.inbox.conv[id] = { status: "error", t: c && c.t, at: Date.now(), msg: ibErr(e) };
+  }).then(ibDraw);
+}
+// a quick look at the newest page now and then while the CRM is open, for the count on Email
+function ibBackground() { if (document.visibilityState !== "visible" || !ibCanRead()) return; const L = ibList(""); if (ibStale(L)) ibLoad({ key: "" }); }
+setInterval(ibBackground, 60000);
+document.addEventListener("visibilitychange", ibBackground);
+window.addEventListener("gic-gcal", () => { if (ibCanRead() && ibList("").status === "idle") ibLoad({ key: "" }); });
+setTimeout(ibBackground, 4000);
+// folded parts (earlier emails, quoted text) stay open when the page redraws
+document.addEventListener("toggle", (e) => { const d = e.target, k = d && d.dataset && d.dataset.ibOpen; if (k) { if (d.open) S.inbox.open.add(k); else S.inbox.open.delete(k); } }, true);
+
+// ---------- one email ----------
+// the new part of an email, and what it quoted from earlier ("On … wrote:", "-----Original Message-----", "> …"), in the
+// languages mail apps here use most. Answers typed under or between the quoted lines, and a forwarded email (the request
+// being passed on), aren't folded away.
+const IB_FWD_SUBJ = /^\s*(?:fwd?|fw|wg|tr|rv|enc)\s*:/i;
+const IB_ATTR = /^(?:on|el|le|am|em|il|op)\b.{0,300}(?:\b(?:wrote|escribi[oó]|a [ée]crit|escreveu|ha scritto)\s*:|\b(?:schrieb|schreef)\b.{0,200}:)$/i;
+const IB_FWD = /^(?:-{4,}\s*(?:forwarded message|mensaje reenviado|message transf[ée]r[ée]|weitergeleitete nachricht|mensagem encaminhada|messaggio inoltrato)\s*-{4,}|(?:begin forwarded message|inicio del mensaje reenviado|d[ée]but du message r[ée]exp[ée]di[ée]):?)$/i;
+const IB_ORIG = /^-{2,}\s*(?:original message|mensaje original|message d'origine|urspr[üu]ngliche nachricht|mensagem original|messaggio originale)\s*-{2,}$/i;
+const IB_HFROM = /^(?:from|de|von|da|van):\s.+/i, IB_HSENT = /^(?:sent|date|enviado|enviada|fecha|gesendet|datum|envoy[ée]|inviato|verzonden|data):\s/i;
+// what comes after a quote that isn't an answer: a signature, a list's footer, a disclaimer, "Sent from my iPhone"
+const IB_FOOT = /^(?:--\s*$|_{5,}\s*$|-{5,}\s*$|(?:confidential(?:ity)?|disclaimer|privileged)\b|this (?:e-?mail|message|communication)\b.{0,80}\b(?:intended|confidential|privileged)\b|sent from my\b|get outlook for\b)/i;
+function splitQuoted(text, subject) {
+  const all = String(text || "").trim();
+  if (IB_FWD_SUBJ.test(subject || "")) return [all, ""]; // a forward: what's passed on is the point
+  const lines = String(text || "").split("\n"); let cut = -1, fwd = false;
+  // the "On … wrote:" line (Gmail wraps a long one onto 2 or 3 lines): how many lines it takes, or 0
+  const attr = (i) => {
+    let x = lines[i].trim(); if (!/^(?:on|el|le|am|em|il|op)\b/i.test(x) || !/\d/.test(x)) return 0;
+    for (let n = 1; n <= 3; n++) {
+      if (x.length > 400) return 0;
+      if (IB_ATTR.test(x)) return /\d:\d\d|@/.test(x) ? n : 0; // a mail app's line has a time or an address; a typed one doesn't
+      const y = (lines[i + n] || "").trim(); if (!y || /[.!?]$/.test(lines[i + n - 1].trim())) return 0;
+      x += " " + y;
+    }
+    return 0;
+  };
+  // after it: an answer typed under or in between the quoted lines (a line that isn't quoted after one that is, unless
+  // it's a signature, footer or disclaimer)
+  const answered = (j) => { let q = false; for (; j < lines.length; j++) { const y = lines[j].trim(); if (!y) continue; if (/^>/.test(y)) { q = true; continue; } if (q) return !IB_FOOT.test(y); } return false; };
+  // rest[i]: every line from i on is quoted or blank (worked out once, so a long email stays quick)
+  const rest = new Array(lines.length + 1); rest[lines.length] = true; for (let i = lines.length - 1; i >= 0; i--) { const y = lines[i].trim(); rest[i] = (!y || /^>/.test(y)) && rest[i + 1]; }
+  for (let i = 0; i < lines.length; i++) {
+    const x = lines[i].trim(), nx = (lines[i + 1] || "").trim();
+    if (IB_FWD.test(x)) fwd = true;
+    if (fwd) continue;
+    const on = attr(i);
+    if ((on && !answered(i + on)) || IB_ORIG.test(x) || (/^_{8,}$/.test(x) && IB_HFROM.test(nx)) || (IB_HFROM.test(x) && IB_HSENT.test(nx))
+      || (/^>/.test(x) && rest[i])) { cut = i; break; }
+  }
+  const fresh = (cut < 0 ? lines : lines.slice(0, cut)).join("\n").trimEnd().replace(/^\s*\n/, "");
+  if (cut <= 0 || !fresh.trim()) return [all, ""];
+  return [fresh, lines.slice(cut).join("\n").trim()];
+}
+const ibNames = (a) => a.map(p => p.name && p.name !== p.email ? p.name : p.email).join(", ");
+function ibMsgHTML(x) {
+  const [fresh, quoted] = splitQuoted(x.text, x.subject), key = "q:" + x.id;
+  return `<article class="ib-msg${x.mine ? " mine" : ""}">
+    <div class="ib-mh"><span class="ib-from"><b>${esc(x.mine ? "You" : x.fromName)}</b>${x.mine || x.fromName === x.from ? "" : ` <span class="note">${esc(x.from)}</span>`}</span><span class="note">${esc(fmtDT(new Date(x.at).toISOString()))}</span></div>
+    <div class="note ib-to">To ${esc(ibNames(x.to) || "no one")}${x.cc.length ? ` · Cc ${esc(ibNames(x.cc))}` : ""}</div>
+    ${x.bounce ? `<div class="banner warn">This email bounced: it couldn't be delivered.</div>` : x.auto ? `<div><span class="pill">Automatic reply</span></div>` : ""}
+    <div class="ib-body">${esc(fresh)}</div>
+    ${quoted ? `<details class="ib-q" data-ib-open="${esc(key)}"${S.inbox.open.has(key) ? " open" : ""}><summary>Show the earlier email</summary><div class="ib-body">${esc(quoted)}</div></details>` : ""}
+    ${x.files.length ? `<div class="note">Attached: ${esc(x.files.map(f => f.name).join(", "))} (open it in Gmail to see ${x.files.length === 1 ? "it" : "them"})</div>` : ""}
+  </article>`;
+}
+
+// ---------- answering ----------
+function ibMe(t) { const a = String((MAIL() && MAIL().account()) || "").toLowerCase(); return new Set([a].concat(t.msgs.filter(x => x.mine).map(x => x.from)).filter(Boolean)); }
+// who a reply goes to: the one who wrote last (their Reply-To if they set one), with everyone else on it as Cc; after your
+// own email, the same people again. An out-of-office isn't the one answered, unless it's all there is; a robot's email (a
+// bounce or delay notice, a no-reply notification, automatic mail that names no one to answer) never is.
+// An address a bounce says didn't get your email (one you'd emailed before it) is left off (dead), unless you emailed it
+// again since without another bounce, or they wrote since (from it, or with it as their Reply-To). Someone marked do not contact
+// is left off the Cc (held); blocked: the reply would reach someone marked do not contact
+// (who it goes to, or whoever wrote the email being answered, whatever their Reply-To says)
+function ibReplyTo(t) {
+  const me = ibMe(t), rev = [...t.msgs].reverse();
+  const robot = (x) => !x.mine && (x.bounce || (x.auto && !x.autoReply && !x.replyTo.length) || (NOREPLY.test(x.from) && !x.replyTo.some(p => !NOREPLY.test(p.email))));
+  const last = rev.find(x => !robot(x) && !x.autoReply) || rev.find(x => !robot(x));
+  if (!last) return { to: [], cc: [], held: [], dead: [], last: t.msgs[t.msgs.length - 1], blocked: null };
+  let to = last.mine ? last.to : (last.replyTo.length ? last.replyTo : [{ email: last.from, name: last.fromName }]);
+  let cc = last.mine ? last.cc : last.to.concat(last.cc);
+  const not = (a, b) => a.filter(p => p.email && !me.has(p.email) && !b.some(y => y.email === p.email));
+  to = not(to, []); to = to.filter((p, i) => to.findIndex(y => y.email === p.email) === i); cc = not(cc, to); cc = cc.filter((p, i) => cc.findIndex(y => y.email === p.email) === i);
+  const sentTo = (y, e) => y.mine && y.to.concat(y.cc).some(q => q.email === e);
+  const isDead = (p) => t.msgs.some(x => x.bounce && (x.failed || []).includes(p.email) && t.msgs.some(y => y.at < x.at && sentTo(y, p.email))
+    && !t.msgs.some(y => y.at > x.at && (y.from === p.email || y.replyTo.some(q => q.email === p.email) || sentTo(y, p.email))));
+  const dead = to.concat(cc).filter(isDead); to = to.filter(p => !isDead(p)); cc = cc.filter(p => !isDead(p));
+  const dnc = (p) => ibLeadsFor(p.email).find(l => l.dnc), held = cc.filter(dnc); cc = cc.filter(p => !dnc(p));
+  if (!to.length && cc.length) { to = cc; cc = []; }
+  const blocked = to.concat(last.mine ? [] : [{ email: last.from }], to.length ? [] : held).map(dnc).find(Boolean) || null;
+  return { to, cc, held, dead, last, blocked };
+}
+// a first name from the name on an email ("Mark Lindberg" or "Lindberg, Mark"), not an office's or a board's
+function ibFirstOf(p) {
+  const n = p && p.name && p.name !== p.email ? p.name.trim() : "";
+  if (!n || /\b(board|manager|management|office|association|hoa|condo|community|info|team|staff|admin|support|services?|llc|inc|company)\b/i.test(n)) return "";
+  const f = (n.includes(",") ? n.split(",")[1] : n).trim().split(/\s+/)[0] || "";
+  return /^[A-Za-z][A-Za-z'.-]+$/.test(f) ? f.charAt(0).toUpperCase() + f.slice(1) : "";
+}
+function ibReplyStart(tgt) {
+  const p = tgt.to[0], ls = p ? ibLeadsFor(p.email) : [];
+  const first = ls.length ? blastFirst(ls[0]) : ibFirstOf(p);
+  return `Hi${first ? " " + first : ""},\n\n\n\nThank you,\n${BUSINESS.owner}\n${BUSINESS.name}\n${BUSINESS.phone}\n${BUSINESS.email}`;
+}
+// the subject of a reply: Re: and theirs (none when there was none, so Gmail keeps it in the same conversation)
+const ibSubject = (t) => { const s = String((t.msgs.find(x => x.subject) || {}).subject || "").trim(); return !s ? "" : /^re:/i.test(s) ? s : "Re: " + s; };
+function ibReplyHTML(t) {
+  const m = MAIL(), s = t.summary || {};
+  // a bounce at the end, with no one waiting on an answer
+  if ((s.last || {}).bounce && !(s.ask && !s.askAnswered)) return `<div class="pad note">The last email bounced, so there's no one to answer. Fix their address on their page under Edit, or log Wrong person.</div>`;
+  const tgt = ibReplyTo(t);
+  if (tgt.blocked) return `<div class="banner bad" style="margin:0 16px 16px">${esc(leadName(tgt.blocked))} is marked do not contact, so the CRM won't email them. Change that on their page to email them again.</div>`;
+  if (!tgt.to.length) return tgt.dead.length ? `<div class="pad note">Your email to ${esc(tgt.dead.map(p => p.email).join(", "))} bounced, so there's no one to answer here. Fix their address on their page under Edit, or log Wrong person.</div>` : "";
+  if (!m.connected()) return `<div class="pad note spread"><span>${esc(m.missing() ? `To answer from here, tap Reconnect and tick “${m.missing()}”.` : "Gmail needs a quick reconnect to send. What you've written stays.")}</span><button class="btn sm" data-act="cal-connect">Reconnect</button></div>`;
+  const who = (p) => p.name && p.name !== p.email ? `${p.name} <${p.email}>` : p.email, busy = ibSending.has(t.id), dr = S.inbox.drafts[t.id];
+  // the box starts with the greeting and signature; what's written is put back from drafts after the page is drawn (ibAfter)
+  return `<div class="ib-reply">
+    <div class="note">Reply to ${esc(tgt.to.map(who).join(", "))}</div>
+    ${tgt.cc.length ? `<label class="check"><input type="checkbox" id="ib-cc-${esc(t.id)}" data-ib-draft="${esc(t.id)}"${dr && dr.cc === false ? "" : " checked"}${busy ? " disabled" : ""}> Also to ${esc(tgt.cc.map(who).join(", "))}</label>` : ""}
+    ${tgt.held.length ? `<div class="note">Not copying ${esc(tgt.held.map(who).join(", "))}: marked do not contact.</div>` : ""}
+    ${tgt.dead.length ? `<div class="note">Not copying ${esc(tgt.dead.map(who).join(", "))}: your email to them bounced.</div>` : ""}
+    <textarea id="ib-reply-${esc(t.id)}" data-ib-draft="${esc(t.id)}" rows="7" aria-label="Your reply"${busy ? " readonly" : ""}>${esc(ibReplyStart(tgt))}</textarea>
+    <div class="row"><button class="btn primary" data-act="ib-send" data-id="${esc(t.id)}"${busy ? " disabled" : ""}>${busy ? "Sending…" : "Send reply"}</button><span class="note">Sends from your Gmail${m.account() ? ` (${esc(m.account())})` : ""}, in this conversation.</span></div>
+  </div>`;
+}
+// what's written in a reply box, kept by conversation (an untouched or emptied box isn't a draft)
+function ibKeepDraft(id) {
+  const box = document.getElementById("ib-reply-" + id); if (!box) return;
+  const ccBox = document.getElementById("ib-cc-" + id), v = box.value;
+  if (!v.trim() || v.trim() === box.defaultValue.trim()) { if (!ccBox || ccBox.checked) delete S.inbox.drafts[id]; else S.inbox.drafts[id] = { body: "", cc: false }; }
+  else S.inbox.drafts[id] = { body: v, cc: ccBox ? ccBox.checked : true };
+}
+async function ibSend(btn, id) {
+  if (ibSending.has(id)) return; // already on its way
+  const c = S.inbox.conv[id], t = c && c.t; if (!t || !t.msgs.length) return;
+  const box = document.getElementById("ib-reply-" + id); if (!box) return;
+  const tgt = ibReplyTo(t), body = box.value; if (!tgt.to.length) return;
+  if (!body.trim() || body.trim() === ibReplyStart(tgt).trim()) { toast("Write your reply first"); return; }
+  if (tgt.blocked) { toast(`${leadName(tgt.blocked)} is marked do not contact`); return; }
+  const ccBox = document.getElementById("ib-cc-" + id), cc = ccBox && !ccBox.checked ? [] : tgt.cc;
+  const last = tgt.last, subject = ibSubject(t);
+  ibKeepDraft(id); ibSending.add(id); btn.disabled = true; btn.textContent = "Sending…"; box.readOnly = true;
+  try { await MAIL().reply({ threadId: id, to: tgt.to.map(p => p.email).join(", "), cc: cc.map(p => p.email).join(", "), subject, body, inReplyTo: last.msgId, references: [last.refs, last.msgId].filter(Boolean).join(" ") }); }
+  catch (e) { ibSending.delete(id); schedule(); toast((e.code === "expired" ? "Gmail needs a quick reconnect. Tap Reconnect in Settings > Connections; your reply comes back with you." : gmailErr(e)) + (e.code === "expired" ? "" : " Your reply is still here."), 7000); return; }
+  // sent: the box starts over, and it goes in the history of everyone it went to
+  ibSending.delete(id); delete S.inbox.drafts[id];
+  const now = document.getElementById("ib-reply-" + id); if (now) { now.value = now.defaultValue; now.readOnly = false; }
+  toast("Reply sent"); ibConvLoad(id, true);
+  const ls = []; tgt.to.concat(cc).forEach(p => ibLeadsFor(p.email).forEach(l => { if (!ls.includes(l)) ls.push(l); }));
+  for (const l of ls) {
+    const upd = { activity: activity(l, "email", `Email replied: ${subject}`), lastContact: today(), updatedAt: new Date().toISOString() };
+    upd.activity[0].thread = id; if (!l.stage || l.stage === "new") upd.stage = "contacted";
+    try { await saveDoc("leads", l.id, upd, true); } catch (e) {}
+  }
+}
+
+// ---------- what they said ----------
+async function ibSetDone(id, val) {
+  S.inboxDone = Object.assign({}, S.inboxDone, { [id]: val }); schedule(); // shows at once
+  const at = new Date().toISOString(), ks = Object.keys(S.inboxDone).filter(k => S.inboxDone[k]);
+  // the list is kept to the 400 newest once it passes 500
+  if (ks.length > 500) { const keep = {}; ks.sort((a, b) => String(S.inboxDone[b].at).localeCompare(String(S.inboxDone[a].at))).slice(0, 400).forEach(k => { keep[k] = S.inboxDone[k]; }); return saveDoc("settings", "inbox", { kind: "inbox", done: keep, updatedAt: at }); }
+  return saveDoc("settings", "inbox", { kind: "inbox", done: { [id]: val }, updatedAt: at }, true);
+}
+async function ibDispo(id, k) {
+  const s = ibFind(id), d = EMAIL_DISPOS.find(x => x.k === k); if (!s || !d) return;
+  const l = ibForLead(s); if (!l) return;
+  // the address it's about (whoever wrote, or the one that bounced; see ibAbout), else any of this contact's in it
+  const about = ibAbout(s), cs = ibContacts(s).filter(c => c.leads.includes(l)), entry = cs.find(c => about.includes(c.email)) || cs[0];
+  const targets = d.byAddr && entry ? [l].concat(entry.leads.filter(x => x !== l)) : [l];
+  // matched through an address they used to have: what's about the person (do not contact, lost) still applies, but
+  // their current address isn't flagged or taken off emails
+  const cur = (x) => String(x.email || "").split(/[\s,;<>()"']+/).map(emailKey).filter(Boolean);
+  const viaOld = (x) => !!(d.byAddr && entry && !cur(x).includes(emailKey(entry.email)));
+  const items = []; let first = null, old = 0;
+  // all saved at once (one address can be on many communities); a contact that didn't save isn't counted
+  const ch = targets.map(x => { const dd = viaOld(x) ? Object.assign({}, d, { flagEmail: false, unsub: false }) : d; if (dd !== d) old++; const c = dispoChange(x, dd, k, "email"); c.upd.activity[0].thread = id; return Object.assign({ x }, c); });
+  const res = await Promise.all(ch.map(c => saveDoc("leads", c.x.id, c.upd, true).then(() => true, () => false)));
+  ch.forEach((c, i) => { if (!res[i]) return; items.push({ leadId: c.x.id, prev: c.prev, actAt: c.upd.activity[0].at, stamp: c.upd.updatedAt }); if (c.x === l) first = c.upd; });
+  if (!items.length) return;
+  const was = S.inboxDone[id] || null;
+  ibSetDone(id, { at: new Date().toISOString(), msgAt: s.at, k, lead: l.id, by: S.myId || "" }).catch(() => {});
+  const others = items.length - 1, upd = first || {};
+  const stops = (d.dnc || d.unsub || d.stage === "lost") && targets.some(x => onHoaFollowups(x));
+  const whose = old === 1 && targets.length === 1 ? "theirs" : plural(old, "contact");
+  const oldNote = !old || !entry ? "" : d.dnc ? ` ${entry.email} is an old address of ${whose}. If someone else uses it now, press Undo.` : d.flagEmail || d.unsub ? ` ${entry.email} is an old address of ${whose}, so their current email wasn't changed.` : "";
+  S.inbox.last = { id, k, items, was };
+  S.inbox.msg = { id, lead: l.id, form: k === "Wants quote" ? "visit" : k === "Booked" ? "job" : "",
+    text: `Logged “${k}” for ${leadName(l)}${others ? ` and ${plural(others, "other contact")} with the same email` : ""}.` + (upd.nextFollowUp ? ` Next follow-up ${fmtD(upd.nextFollowUp, { weekday: "short", month: "short", day: "numeric" })}.` : "") + (upd.stage && upd.stage !== l.stage ? ` Now ${STAGE_LABEL[upd.stage]}.` : "") + (upd.list === "leads" && isOutreach(l) ? " Moved to Leads." : "")
+      + oldNote + (stops ? " Your HOA follow-up emails stop on their own when someone replies; if they didn't write back, ask Claude in your project to take them off." : "") };
+  schedule();
+}
+async function ibUndo() {
+  const u = S.inbox.last; if (!u) return; S.inbox.last = null; S.inbox.msg = null; let stuck = 0;
+  await Promise.all(u.items.map(async it => {
+    const l = leadById(it.leadId); if (!l) return;
+    if (l.updatedAt !== it.stamp) { stuck++; return; }
+    try { await saveDoc("leads", l.id, Object.assign({}, it.prev, { activity: (l.activity || []).filter(a => a.at !== it.actAt), updatedAt: new Date().toISOString() }), true); } catch (e) { stuck++; }
+  }));
+  ibSetDone(u.id, u.was).catch(() => {});
+  toast(stuck ? `Undone, except ${plural(stuck, "contact")} changed since` : "Undone"); schedule();
+}
+
+// ---------- the Inbox tab ----------
+const ibWhen = (at) => { const d = new Date(at); return ymd(d) === today() ? fmtT(d.toISOString()) : d.toLocaleDateString("en-US", d.getFullYear() === new Date().getFullYear() ? { month: "short", day: "numeric" } : { month: "short", day: "numeric", year: "numeric" }); };
+function ibRowHTML(t) {
+  const done = ibDone(t), dd = done && done.k ? EMAIL_DISPOS.find(x => x.k === done.k) : null;
+  const tag = ibNeeds(t) ? `<span class="pill due">Needs you</span>` : t.last.bounce && done && +done.msgAt < t.at ? `<span class="pill over">Bounced</span>` : dd ? `<span class="pill ${IB_TONE[dd.tone]}">${esc(dd.k)}</span>` : done && !t.lastMine ? `<span class="pill">Done</span>`
+    : t.last.bounce ? `<span class="pill over">Bounced</span>` : t.last.auto ? `<span class="pill">Auto-reply</span>` : t.lastMine ? `<span class="pill">Sent</span>` : "";
+  return `<button class="item ib-row${S.inbox.sel === t.id ? " sel" : ""}" data-ib="${esc(t.id)}"${S.inbox.sel === t.id ? ' aria-current="true"' : ""}><div class="main-col"><span class="t">${esc(ibWho(t))}${t.count > 1 ? ` <span class="note num">${t.count}</span>` : ""}</span><span class="s ib-subj">${esc(t.subject)}</span><span class="s">${t.lastMine ? "You: " : ""}${esc(t.snippet)}</span></div><div class="r"><span class="note">${esc(ibWhen(t.at))}</span>${tag}</div></button>`;
+}
+function ibFlags(l) {
+  const f = l.crashOut ? ["Crash out", "dnc"] : l.dnc ? ["Do not contact", "dnc"] : l.unsubscribed ? ["Off your emails", "over"] : l.emailWrong ? ["Wrong person", "over"] : l.emailBounced ? ["Email bounced", "over"] : l.noAutoEmail || blockedEmail(l.email) ? ["You email them yourself", ""] : null;
+  return f ? ` <span class="pill ${f[1]}">${esc(f[0])}</span>` : "";
+}
+function ibConvHTML(id) {
+  if (ibConvStale(S.inbox.conv[id])) ibConvLoad(id);
+  const c = S.inbox.conv[id] || {}, t = c.t, back = `<button class="btn sm ghost ib-back" data-act="ib-back">‹ Inbox</button>`;
+  if (!t) return `<div class="panel-h">${back}</div>${c.status === "error" ? `<div class="banner warn" style="margin:0 16px 16px">${esc(c.msg)}</div>` : `<div class="empty">Loading the conversation…</div>`}`;
+  const s = t.summary;
+  if (!s || !t.msgs.length) { const dr = S.inbox.drafts[id], kept = dr && dr.body ? dr.body : "";
+    return `<div class="panel-h">${back}</div><div class="empty">This conversation isn't in Gmail anymore.${kept ? " What you'd written is below, to copy." : ""}</div>${kept ? `<div class="pad"><textarea readonly rows="7" aria-label="What you'd written">${esc(kept)}</textarea></div>` : ""}`; }
+  // who it's with: contacts open their page; anyone else can be added as a lead
+  const seen = new Set();
+  const people = s.people.slice(0, 8).map(p => {
+    const ls = ibLeadsFor(p.email).filter(l => !seen.has(l.id)); ls.forEach(l => seen.add(l.id));
+    if (ibLeadsFor(p.email).length) return ls.map(l => `<button class="ib-who" data-open-lead="${esc(l.id)}"><span><b>${esc(leadName(l))}</b>${l.name && l.name !== leadName(l) ? ` · ${esc(l.name)}` : ""}</span> ${isOutreach(l) ? '<span class="pill out">Email outreach</span>' : stagePill(l.stage || "new")}${ibFlags(l)}</button>`).join("");
+    return `<div class="ib-who static"><span><b>${esc(p.name)}</b>${p.name !== p.email ? ` <span class="note">${esc(p.email)}</span>` : ""}</span><button class="btn sm" data-act="ib-add-lead" data-id="${esc(id)}" data-email="${esc(p.email)}" data-name="${esc(p.name !== p.email ? p.name : "")}">Add as lead</button></div>`;
+  }).join("");
+  const all = ibAllLeads(s), forL = ibForLead(s), done = S.inboxDone[id], fresh = ibDone(s);
+  const ny = new Date().getFullYear() + 1, hint = (d) => { const h = d.k === "Budget next year" ? `follow up Jan ${ny}` : d.hint.charAt(0).toLowerCase() + d.hint.slice(1); return d.promote && forL && isOutreach(forL) ? h + ", moves to Leads" : h; };
+  const result = all.length ? `<div class="ib-res">
+      <div class="row">${all.length > 1 ? `<select id="ib-for" data-id="${esc(id)}" aria-label="Which contact">${all.map(l => `<option value="${esc(l.id)}"${forL && l.id === forL.id ? " selected" : ""}>${esc(leadName(l))}</option>`).join("")}</select>` : ""}
+      <select id="ib-dispo" data-id="${esc(id)}" class="show" aria-label="What they said"><option value="">Log what they said…</option>${EMAIL_DISPO_GROUPS.map(g => `<optgroup label="${esc(g.name)}">${g.items.map(d => `<option value="${esc(d.k)}">${esc(d.k)} · ${esc(hint(d))}</option>`).join("")}</optgroup>`).join("")}</select></div>
+    </div>` : "";
+  const msg = S.inbox.msg && S.inbox.msg.id === id ? S.inbox.msg : null;
+  const logged = msg ? `<div class="banner info ib-logged"><span>${esc(msg.text)}</span><span class="row">${msg.form && leadById(msg.lead) ? `<button class="btn sm primary" data-act="ib-next" data-lead="${esc(msg.lead)}" data-kind="${msg.form}">${msg.form === "job" ? "Book the job" : "Schedule the estimate"}</button>` : ""}${S.inbox.last && S.inbox.last.id === id ? `<button class="btn sm" data-act="ib-undo">Undo</button>` : ""}</span></div>` : "";
+  const doneLine = !(s.ask && !s.askAnswered) ? "" : fresh ? `<div class="row ib-done"><span class="note">${fresh.k ? `Logged “${esc(fresh.k)}”` : "Marked done"} ${esc(fmtD(ymd(new Date(fresh.at)), { month: "short", day: "numeric" }))}</span><button class="btn sm ghost" data-act="ib-undone" data-id="${esc(id)}">Not done</button></div>`
+    : `<div class="row ib-done">${done && done.msgAt ? `<span class="note">New email since you dealt with it.</span>` : ""}<button class="btn sm" data-act="ib-done" data-id="${esc(id)}">Mark done</button><span class="note">${all.length ? "Nothing to log? This takes it off Needs you." : "Takes it off Needs you."}</span></div>`;
+  const ms = t.msgs, older = ms.length > 3 ? ms.slice(0, ms.length - 2) : [], recent = older.length ? ms.slice(-2) : ms, ok = "older:" + id;
+  return `<div class="panel-h ib-head">${back}<h2>${esc(s.subject)}</h2><a class="btn sm" href="${esc(t.link)}" target="_blank" rel="noopener">Open in Gmail</a></div>
+    <div class="pad ib-top"><div class="ib-people">${people}</div>${result}${logged}${doneLine}</div>
+    <div class="ib-msgs">${older.length ? `<details class="ib-older" data-ib-open="${esc(ok)}"${S.inbox.open.has(ok) ? " open" : ""}><summary>${plural(older.length, "earlier email")}</summary>${older.map(ibMsgHTML).join("")}</details>` : ""}${recent.map(ibMsgHTML).join("")}</div>
+    ${ibReplyHTML(t)}`;
+}
+function inboxTabHTML() {
+  const m = MAIL();
+  if (!m.canRead()) {
+    const why = m.connected() ? `To show your emails here, tap Reconnect and tick “${m.missing() || "View your email messages and settings"}” on Google's screen.` : m.allowed() ? "Gmail needs a quick reconnect to show your emails here." : "Connect your Gmail to see the emails you send and the ones that come back, answer them here, and log what each person said.";
+    return `<div class="banner info spread"><span>${esc(why)}</span><button class="btn primary sm" data-act="cal-connect">${m.allowed() || m.connected() ? "Reconnect" : "Connect Gmail"}</button></div>`;
+  }
+  const k = ibKey(), L = ibList(k);
+  if (ibStale(L)) ibLoad({ key: k });
+  else if (!k && L.status === "ready" && L.next && L.pages < IB_FIRST_PAGES && !(L.failAt && Date.now() - L.failAt < 60000)) ibLoad({ key: k, more: true });
+  const sh = IB_SHOWS.find(x => x[0] === S.inbox.show) || IB_SHOWS[0], list = L.items.filter(sh[2]), need = L.items.filter(ibNeeds).length, sel = S.inbox.sel;
+  const controls = `<div class="ib-ctl"><div class="seg wide" role="group" aria-label="Which emails">${IB_SHOWS.map(([key, label]) => `<button data-ib-show="${key}" aria-pressed="${sh[0] === key}">${label}${key === "needs" && need ? ` <span class="num">(${need})</span>` : ""}</button>`).join("")}</div>
+    <div class="row ib-search"><input type="search" id="ib-q" placeholder="Search your Gmail…" value="${esc(S.inbox.typed)}" aria-label="Search your email"><button class="btn sm" data-act="ib-refresh">Refresh</button></div></div>`;
+  const empty = L.status === "loading" && !L.items.length ? "Loading your email…" : L.status === "error" ? "" : k ? "No emails match that search." : sh[0] === "needs" ? "Nothing waiting on you. When someone writes, it shows here until you answer or log what they said." : sh[0] === "contacts" ? "No emails with your contacts yet." : "No emails here yet.";
+  const oldest = L.items.length ? L.items[L.items.length - 1].at : 0;
+  const foot = `${L.next ? `<button class="btn sm" data-act="ib-more"${L.status === "loading" ? " disabled" : ""}>${L.status === "loading" ? "Loading…" : "Load older emails"}</button>` : ""}<span class="note">${L.status === "loading" && L.items.length ? "Checking Gmail… " : ""}${oldest ? `Back to ${esc(fmtD(ymd(new Date(oldest)), { month: "short", day: "numeric", year: "numeric" }))}. ` : ""}Promotions and social emails are left out.</span>`;
+  const listHTML = `<section class="panel flush ib-list">${controls}${L.msg ? `<div class="banner warn" style="margin:0 16px 12px">${esc(L.msg)}</div>` : ""}${L.missed && L.missed.length ? `<div class="banner warn" style="margin:0 16px 12px">Gmail didn't send ${plural(L.missed.length, "conversation")} just now. Trying again on the next refresh.</div>` : ""}${list.length ? `<div class="list">${list.map(ibRowHTML).join("")}</div>` : `<div class="empty">${esc(empty)}</div>`}<div class="pad row ib-foot">${foot}</div></section>`;
+  // the open conversation keeps its scroll when the page redraws (this runs before the old one is replaced)
+  const cv = $("#ib-conv"); if (cv && sel && cv.dataset.id === sel) S.inbox.scroll = cv.scrollTop;
+  return `<div class="ib${sel ? " has-sel" : ""}">${listHTML}<section class="panel flush ib-conv" id="ib-conv" data-id="${esc(sel)}" aria-label="Conversation">${sel ? ibConvHTML(sel) : `<div class="empty">Pick an email to read it, answer it, and log what they said.</div>`}</section></div>`;
+}
+function ibAfter() {
+  const q = $("#ib-q"); let qt = 0;
+  if (q) {
+    const go = () => { clearTimeout(qt); if (S.inbox.q === S.inbox.typed.trim()) return; S.inbox.q = S.inbox.typed.trim(); S.inbox.sel = ""; schedule(); };
+    q.addEventListener("input", () => { S.inbox.typed = q.value; clearTimeout(qt); qt = setTimeout(go, 700); });
+    q.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+    q.addEventListener("search", go);
+  }
+  document.querySelectorAll("#ib-conv [data-ib-draft]").forEach(el => {
+    const id = el.dataset.ibDraft, dr = S.inbox.drafts[id];
+    if (el.tagName === "TEXTAREA" && dr && dr.body) el.value = dr.body;
+    el.addEventListener(el.type === "checkbox" ? "change" : "input", () => ibKeepDraft(id));
+  });
+  const cv = $("#ib-conv"); if (cv && S.inbox.scroll) cv.scrollTop = S.inbox.scroll;
+}
+const ibNarrow = () => matchMedia("(max-width: 900px)").matches;
+function ibOpen(id) {
+  if (S.inbox.sel !== id) { if (ibNarrow() && !S.inbox.sel) S.inbox.listY = window.scrollY; S.inbox.sel = id; S.inbox.scroll = 0; }
+  const c = S.inbox.conv[id]; if (!c || (c.status !== "loading" && Date.now() - c.at > 30000)) ibConvLoad(id, true);
+  render(); if (ibNarrow()) window.scrollTo(0, 0);
+}
+function ibBack() { S.inbox.sel = ""; render(); if (ibNarrow()) window.scrollTo(0, S.inbox.listY || 0); }
+// from a lead's Recent emails: the conversation, here in the inbox
+function ibGo(id, leadId) {
+  if (openLeadId && leadUnsaved()) { toast("You have unsaved changes on this lead. Save them first."); return; }
+  if (leadId && !S.inbox.forLead[id]) S.inbox.forLead[id] = leadId;
+  closeModal(); S.view = "email"; S.emailTab = "inbox"; try { localStorage.setItem("gic-view", "email"); } catch (_) {}
+  ibOpen(id);
+}
 
 // ---------- CSV export ----------
 function toCSV(rows) { return rows.map(r => r.map(v => { const s = String(v ?? ""); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }).join(",")).join("\n"); }
@@ -5025,7 +5725,7 @@ document.addEventListener("click", async (e) => {
       if (!S.leaveOk) { S.leaveOk = true; setTimeout(() => { S.leaveOk = false; }, 8000); toast("You have unsaved settings. Save them, or tap again to leave without saving.", 8000, { label: "Save", fn: saveSettings }); return; }
       S.setDraft = null; S.setDirty = false; S.leaveOk = false;
     }
-    S.view = t.dataset.nav; if (t.dataset.show) { S.leadFilter.show = t.dataset.show; S.leadFilter.q = ""; } if (t.dataset.outq) { S.emailTab = "outreach"; S.outFilter.show = "all"; S.outFilter.q = t.dataset.outq; } try { localStorage.setItem("gic-view", S.view); } catch (_) {} if (S.view === "email" && S.mail.status === "idle") loadMail(); closeModal(); render(); window.scrollTo(0, 0); return; }
+    S.view = t.dataset.nav; if (t.dataset.show) { S.leadFilter.show = t.dataset.show; S.leadFilter.q = ""; } if (t.dataset.etab) S.emailTab = t.dataset.etab; if (t.dataset.outq) { S.emailTab = "outreach"; S.outFilter.show = "all"; S.outFilter.q = t.dataset.outq; } try { localStorage.setItem("gic-view", S.view); } catch (_) {} if (S.view === "email" && S.mail.status === "idle") loadMail(); closeModal(); render(); window.scrollTo(0, 0); return; }
   if (t.dataset.href) { window.open(t.dataset.href, "_blank", "noopener"); return; }
   if (t.dataset.ltab) { e.preventDefault(); switchLeadTab(t.dataset.ltab); return; }
   if (t.dataset.calNav !== undefined) { if (t.dataset.calNav === "0") { S.calMonth = monthKey(today()); S.calDay = today(); } else S.calMonth = monthShift(S.calMonth || monthKey(today()), +t.dataset.calNav); render(); return; }
@@ -5041,6 +5741,10 @@ document.addEventListener("click", async (e) => {
   if (t.dataset.mode) { S.leadFilter.mode = t.dataset.mode; try { localStorage.setItem("gic-lead-mode", t.dataset.mode); } catch (_) {} render(); return; }
   if (t.dataset.ogrp) { const g = t.dataset.ogrp; S.outOpen.has(g) ? S.outOpen.delete(g) : S.outOpen.add(g); render(); return; }
   if (t.dataset.etab) { S.emailTab = t.dataset.etab; if (S.mail.status === "idle") loadMail(); render(); return; }
+  // Email > Inbox: a conversation, which ones show, one from a lead's Recent emails
+  if (t.dataset.ib) { ibOpen(t.dataset.ib); return; }
+  if (t.dataset.ibShow) { S.inbox.show = t.dataset.ibShow; render(); return; }
+  if (t.dataset.ibGo) { ibGo(t.dataset.ibGo, t.dataset.ibGoLead); return; }
   if (t.dataset.stab) { if (["prices", "drips", "texts"].includes(S.setTab)) S.setDraft = readSettingsForm(); S.setTab = t.dataset.stab; render(); return; }
   if (t.dataset.mm) { S.money.month = (t.dataset.mm === S.money.month && t.dataset.mm !== "all") ? "all" : t.dataset.mm; try { localStorage.setItem("gic-money-month", S.money.month); } catch (_) {} render(); return; }
   if (t.dataset.sort) { const k = t.dataset.sort; if (k === S.money.sortK) S.money.sortDir = -S.money.sortDir; else { S.money.sortK = k; S.money.sortDir = ["price", "cost", "net", "date"].includes(k) ? -1 : 1; } render(); return; }
@@ -5163,6 +5867,17 @@ document.addEventListener("click", async (e) => {
         try { await saveDoc("leads", l.id, { activity: activity(l, "email", `Email sent: ${subj}`), lastContact: today(), stage: l.stage === "new" ? "contacted" : l.stage, updatedAt: new Date().toISOString() }, true); } catch (er) {}
       } break;
       case "mail-hist-refresh": if (l) { loadMailHist(l, true); refreshLeadModal(); } break;
+      case "ib-refresh": ibLoad({ key: ibKey() }); if (S.inbox.sel) ibConvLoad(S.inbox.sel, true); break;
+      case "ib-more": ibLoad({ key: ibKey(), more: true }); break;
+      case "ib-back": ibBack(); break;
+      case "ib-send": await ibSend(t, t.dataset.id); break;
+      case "ib-undo": await ibUndo(); break;
+      case "ib-done": case "ib-undone": { const id = t.dataset.id, s = ibFind(id); if (!s) break; const was = S.inboxDone[id] || null;
+        if (S.inbox.msg && S.inbox.msg.id === id) { S.inbox.msg = null; S.inbox.last = null; }
+        await ibSetDone(id, act === "ib-done" ? { at: new Date().toISOString(), msgAt: s.at, k: "", lead: "", by: S.myId || "" } : null);
+        toast(act === "ib-done" ? "Marked done" : "Back on Needs you", 7000, { label: "Undo", fn: () => ibSetDone(id, was).catch(() => {}) }); break; }
+      case "ib-add-lead": { const s = ibFind(t.dataset.id); newLeadModal({ name: t.dataset.name || "", email: t.dataset.email || "", notes: s ? `Emailed you: “${s.subject}”` : "" }); break; }
+      case "ib-next": { const nl = leadById(t.dataset.lead); if (!nl) break; S.inbox.msg = null; openLead(nl.id); setTimeout(() => { const x = leadById(nl.id); if (x && openLeadId === x.id) scheduleForm(x, t.dataset.kind === "job" ? "job" : "visit"); }, 30); break; }
       case "quote-lead": if (l) openQuoteEditor(null, l); break;
       case "schedule-lead": if (l) scheduleForm(l, t.dataset.kind); break;
       case "save-schedule": await saveSchedule(t); break;
@@ -5330,6 +6045,8 @@ document.addEventListener("change", async (e) => {
   if (e.target.id === "q-type" && QD) { readQuoteHeader(); syncQuoteChrome(); updatePreview(); }
   if (e.target.id === "q-date" && QD && !QD.id) { $("#q-num").value = nextNumber(e.target.value); readQuoteHeader(); updatePreview(); }
   if (e.target.id === "dispo-sel" && e.target.value) { const v = e.target.value; e.target.value = ""; logDispo(v).catch(() => {}); return; }
+  if (e.target.id === "ib-dispo" && e.target.value) { const v = e.target.value; e.target.value = ""; ibDispo(e.target.dataset.id, v).catch(() => {}); return; }
+  if (e.target.id === "ib-for") { S.inbox.forLead[e.target.dataset.id] = e.target.value; render(); return; }
   if (e.target.id === "fu-date") {
     const v = e.target.value;
     if (v && !fuYearOk(v)) return; // a year still being typed (0002, 0020…) isn't saved
