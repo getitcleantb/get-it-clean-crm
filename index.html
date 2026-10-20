@@ -143,6 +143,9 @@ p { margin: 0; }
 .item .t { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .item .s { font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .item .r { text-align: right; flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.bankpct { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: var(--muted); white-space: nowrap; cursor: default; }
+.bankpct input[type=number] { width: 70px; padding: 6px 8px; border-radius: 8px; }
+.bankpct .num { color: var(--ink-2); }
 .grp-toggle { display: flex; align-items: center; gap: 12px; width: 100%; padding: 15px 20px; border: 0; border-top: 1px solid var(--line); background: var(--surface-2); color: inherit; text-align: left; cursor: pointer; font: inherit; }
 .list > .grp-toggle:first-child { border-top: 0; }
 .grp-toggle:hover { background: var(--hover, var(--line)); }
@@ -1382,8 +1385,8 @@ function kpiData() {
   const pdate = j => (j.paidDate || j.start || "");
   const monthRev = sum(paid.filter(j => pdate(j).startsWith(m)), j => j.amount);
   const ytdRev = sum(paid.filter(j => pdate(j).startsWith(y)), j => j.amount);
-  // the same estimates the Quotes tab counts as Accepted
-  const acc = S.quotes.filter(q => !isInvoice(q) && q.status === "accepted"), accV = sum(acc, q => q.total);
+  // the same estimates the Quotes tab counts as Accepted: said yes, job not paid yet
+  const acc = acceptedWaiting(), accV = sum(acc, q => q.total);
   const openQ = S.quotes.filter(q => q.status === "sent" || q.status === "draft");
   const openQv = sum(openQ, q => q.total);
   const newLeads = leadsOnly().filter(l => l.stage === "new" && !l.dnc).length;
@@ -2011,7 +2014,9 @@ async function bookAppt(l, kind, f, statusEl) {
   const start = `${date}T${time}:00`; const endD = new Date(start); endD.setMinutes(endD.getMinutes() + durMin);
   const end = `${ymd(endD)}T${pad(endD.getHours())}:${pad(endD.getMinutes())}:00`;
   const job = { kind, leadId: l.id, title: String(f.title || "").trim(), start, end, address: String(f.addr || "").trim(), amount: kind === "job" ? (+f.amount || 0) : 0, status: "scheduled", quoteId: f.quoteId || "", createdAt: new Date().toISOString() };
-  if (kind === "job") { job.service = String(f.service || "").trim(); job.crew = f.crew || ""; }
+  if (kind === "job") { job.service = String(f.service || "").trim(); job.crew = f.crew || "";
+    // the % to bank typed on the Money tab for this estimate goes on its job
+    const eq = f.quoteId && S.quotes.find(q => q.id === f.quoteId); if (eq && eq.bankPct != null) job.bankPct = eq.bankPct; }
   say("Saving…");
   const id = uid(kind); let calErr = ""; const wantCal = !!f.cal;
   const desc = jobDesc(job, l);
@@ -2051,19 +2056,21 @@ const PRE_SALE = ["new", "contacted", "working", "selling"];
 // the customer's name for lists, file names and emails (Bill To's second line can be a phone or an email)
 function quoteCust(q) { const l = leadById(q.leadId); return (l && (l.company || l.name)) || (q.billTo || [])[0] || ""; }
 const qPill = (q) => q.id ? `<span class="pill ${QSTAT_CLS[q.status] || ""}">${esc(QSTAT[q.status] || "Draft")}</span>` : "";
-function quoteRow(q) {
+function quoteRow(q, jobPaid) {
   const l = leadById(q.leadId);
-  return `<button class="item" data-open-quote="${esc(q.id)}"><div class="main-col"><span class="t">${isInvoice(q) ? "Invoice" : "Estimate"} ${esc(q.number)} · ${esc(quoteCust(q))}</span><span class="s">${esc(fmtD(q.date, { month: "short", day: "numeric", year: "numeric" }))}${l && l.name && l.company ? " · " + esc(l.name) : ""}</span></div><div class="r"><span class="num" style="font-weight:700">${money(q.total, true)}</span>${qPill(q)}</div></button>`;
+  return `<button class="item" data-open-quote="${esc(q.id)}"><div class="main-col"><span class="t">${isInvoice(q) ? "Invoice" : "Estimate"} ${esc(q.number)} · ${esc(quoteCust(q))}</span><span class="s">${esc(fmtD(q.date, { month: "short", day: "numeric", year: "numeric" }))}${l && l.name && l.company ? " · " + esc(l.name) : ""}</span></div><div class="r"><span class="num" style="font-weight:700">${money(q.total, true)}</span>${jobPaid instanceof Set && jobPaid.has(q.id) ? `<span class="pill s-paid">Job paid</span>` : qPill(q)}</div></button>`;
 }
 VIEWS.quotes = () => {
   const qs = S.quotes.slice().sort((a, b) => (b.date || "").localeCompare(a.date || "") || (b.number || "").localeCompare(a.number || ""));
   const ests = qs.filter(q => !isInvoice(q)); // invoices are for jobs already won, so they stay out of the estimate numbers
   const sent = ests.filter(q => q.status === "sent"), acc = ests.filter(q => q.status === "accepted"), dec = ests.filter(q => q.status === "declined");
+  // Accepted counts the ones still waiting on the job, the same as Today; the close rate counts every yes
+  const wait = acceptedWaiting(), jobPaid = new Set(acc.filter(q => !wait.includes(q)).map(q => q.id));
   const decided = acc.length + dec.length;
   return `${pageHead("Quotes", "Estimates and invoices on your Get It Clean template", `<button class="btn primary" data-act="new-quote">+ New quote</button>`)}
   ${noDbBanner()}
-  ${kpiStrip([["Out for decision", money(sum(sent, q => q.total)), plural(sent.length, "quote") + " sent"], ["Accepted", money(sum(acc, q => q.total)), plural(acc.length, "quote")], ["Close rate", decided ? Math.round(acc.length / decided * 100) + "%" : "–", decided ? `${acc.length} of ${decided} decided` : "Shows once quotes are decided"], ["Average estimate", ests.length ? money(sum(ests, q => q.total) / ests.length) : "–", plural(ests.length, "estimate") + (qs.length > ests.length ? ` · ${plural(qs.length - ests.length, "invoice")}` : "")]])}
-  <section class="panel flush">${qs.length ? `<div class="list">${qs.map(quoteRow).join("")}</div>` : `<div class="empty">No quotes yet. “+ New quote” builds one on your estimate template, with your price book filling in the prices.</div>`}</section>`;
+  ${kpiStrip([["Out for decision", money(sum(sent, q => q.total)), plural(sent.length, "quote") + " sent"], ["Accepted", money(sum(wait, q => q.total)), `${plural(wait.length, "quote")} waiting for completion${jobPaid.size ? ` · ${jobPaid.size} paid` : ""}`], ["Close rate", decided ? Math.round(acc.length / decided * 100) + "%" : "–", decided ? `${acc.length} of ${decided} decided` : "Shows once quotes are decided"], ["Average estimate", ests.length ? money(sum(ests, q => q.total) / ests.length) : "–", plural(ests.length, "estimate") + (qs.length > ests.length ? ` · ${plural(qs.length - ests.length, "invoice")}` : "")]])}
+  <section class="panel flush">${qs.length ? `<div class="list">${qs.map(q => quoteRow(q, jobPaid)).join("")}</div>` : `<div class="empty">No quotes yet. “+ New quote” builds one on your estimate template, with your price book filling in the prices.</div>`}</section>`;
 };
 let QD = null; // quote draft
 let QD_LEAD = ""; // the lead the open quote was last saved for, so linking a lead later still updates that lead
@@ -2283,6 +2290,8 @@ async function saveQuoteNow(silent) {
   const isNew = !QD.id; const id = QD.id || uid("quote");
   // blank lines stay on screen (so typing into one still works) but aren't saved
   const { id: _, taxRate: _t, newName: _n, ...doc } = QD; doc.items = QD.items.filter(isLine); doc.updatedAt = new Date().toISOString(); if (isNew) doc.createdAt = doc.updatedAt;
+  // the % to bank is set on the Money tab, so the latest one stays even if it changed while this estimate was open
+  const was = S.quotes.find(x => x.id === id); if (was && was.bankPct !== undefined) doc.bankPct = was.bankPct;
   await saveDoc("quotes", id, doc); QD.id = id;
   const l = leadById(QD.leadId) || nc.made; const linked = (QD.leadId || "") !== QD_LEAD; QD_LEAD = QD.leadId || "";
   if (l && (isNew || linked || isOutreach(l))) {
@@ -2559,6 +2568,20 @@ function bookFirstDay(durMin) {
   return addDays(1);
 }
 const bookedFrom = (quoteId) => S.jobs.find(j => quoteId && j.quoteId === quoteId && j.kind === "job" && j.status !== "canceled");
+// The job each accepted estimate turned into: the one booked from it, or for a job saved without its estimate
+// (an older job, or one added on the Money tab), that customer's next job dated on or after the estimate.
+// A job counts for one estimate only.
+function estimateJobs() {
+  const ests = S.quotes.filter(q => !isInvoice(q) && q.status === "accepted").sort((a, b) => (a.date || "").localeCompare(b.date || "") || (a.number || "").localeCompare(b.number || ""));
+  const live = S.jobs.filter(j => j.kind === "job" && j.status !== "canceled"), qids = new Set(S.quotes.map(q => q.id));
+  const got = new Map(), used = new Set(), take = (q, j) => { if (j) { got.set(q.id, j); used.add(j.id); } };
+  ests.forEach(q => take(q, live.find(j => j.quoteId === q.id && !used.has(j.id))));
+  ests.forEach(q => { if (got.has(q.id) || !q.leadId) return; const d = q.date || String(q.createdAt || "").slice(0, 10);
+    take(q, live.filter(j => j.leadId === q.leadId && !used.has(j.id) && !(j.quoteId && qids.has(j.quoteId)) && String(j.start || "").slice(0, 10) >= d).sort((a, b) => (a.start || "").localeCompare(b.start || ""))[0]); });
+  return got;
+}
+// accepted estimates whose job isn't paid yet: the Accepted number on the Quotes tab and the Jobs accepted card on Today
+function acceptedWaiting() { const m = estimateJobs(); return S.quotes.filter(q => !isInvoice(q) && q.status === "accepted" && !(m.get(q.id) && m.get(q.id).status === "paid")); }
 function startBooking() {
   if (isInvoice(QD)) return;
   const l = leadById(QD.leadId);
@@ -2861,7 +2884,11 @@ VIEWS.money = () => {
   const hasC = (v) => Math.round(v * 100) % 100 !== 0;
   const cts = [c.rev, c.jc, c.be, c.bank].some(hasC) || c.jobs.some(j => hasC(j.price) || hasC(j.cost)) || c.exps.some(e => hasC(e.amt)); const M = v => money(v, cts);
   const ctsAll = cts || all.jobs.some(j => hasC(j.price)) || R.exps.some(e => hasC(e.amt)), MA = v => money(v, ctsAll);
-  const open = S.jobs.filter(j => j.kind === "job" && ["scheduled", "completed"].includes(j.status)).sort((a, b) => (a.start || "").localeCompare(b.start || ""));
+  // jobs not paid yet, and accepted estimates that have no job yet, so a yes shows here right away
+  const em = estimateJobs();
+  const open = S.jobs.filter(j => j.kind === "job" && ["scheduled", "completed"].includes(j.status))
+    .concat(S.quotes.filter(q => !isInvoice(q) && q.status === "accepted" && !em.has(q.id)).map(estItem)).sort((a, b) => (a.start || "").localeCompare(b.start || ""));
+  const openBank = sum(open, j => (+j.amount || 0) * (+j.bankPct || 0));
   // month chart
   const ms = months.map(x => Object.assign({ m: x }, moneyCalc(R, x)));
   const top = Math.max(1000, Math.ceil(Math.max(0, ...ms.map(x => Math.max(x.rev, x.exp))) / 1000) * 1000);
@@ -2897,7 +2924,7 @@ VIEWS.money = () => {
   ${months.length ? `<div class="chips" role="group" aria-label="Pick a month">${[["all", "All months"], ...months.map(x => [x, ml(x) + (x === cur ? " (so far)" : "")])].map(([k, t]) => `<button data-mm="${k}" aria-pressed="${k === m}">${t}</button>`).join("")}</div>` : ""}
   ${S.money.form ? moneyForm(S.money.form) : ""}
   ${kpiStrip([["Revenue", M(c.rev), `${plural(n, "job")}, ${M(n ? c.rev / n : 0)} average`], ["Expenses", M(c.exp), `${M(c.jc)} job costs + ${M(c.be)} business`], ["Profit", `<span class="${c.profit < 0 ? "neg" : "pos"}">${M(c.profit)}</span>`, c.rev ? `${pct(c.profit / c.rev)} of revenue kept` : ""], ["Paid into bank", M(c.bank), c.rev ? `${pct(c.bank / c.rev)} of revenue` : ""]])}
-  ${open.length ? `<section class="panel flush"><div class="panel-h"><h2>Jobs to finish or collect</h2><span class="count">${money(sum(open, j => j.amount), open.some(j => hasC(Number(j.amount) || 0)))}</span></div><div class="list">${open.map(jobRow).join("")}</div><div id="pay-box" data-keep>${payBoxFor("view", open)}</div></section>` : ""}
+  ${open.length ? `<section class="panel flush"><div class="panel-h"><h2>Jobs to finish or collect</h2><span class="count">${money(sum(open, j => j.amount), open.some(j => hasC(Number(j.amount) || 0)))}${openBank ? ` · ${money(openBank, hasC(openBank))} to bank` : ""}</span></div><div class="list">${open.map(j => jobRow(j, "money")).join("")}</div><div id="pay-box" data-keep>${payBoxFor("view", open)}</div></section>` : ""}
   <section class="panel"><div class="panel-h"><h2>Month by month</h2><div class="legend"><span><span class="sw" style="background:var(--rev)"></span>Revenue</span><span><span class="sw" style="background:var(--exp)"></span>All expenses</span></div></div>
     ${chart}${ms.length ? `<p class="note">Tap a month to see just that month. Tap it again to go back to all months. Profit is under each month.</p>` : ""}</section>
   ${T.length ? `${m !== "all" ? `<h3 class="sub-title">All-time takeaways</h3>` : ""}<section class="take">${T.slice(0, 4).map(t => `<div><b>${esc(t[0])}</b><p>${esc(t[1])}</p></div>`).join("")}</section>` : ""}
@@ -2972,7 +2999,7 @@ async function saveMoneyJob(btn) {
   const price = Number(v("mj-price")); if (!(price > 0)) { toast("Enter the job price (more than $0)"); return; }
   if (v("mj-cost") !== "" && !(Number(v("mj-cost")) >= 0)) { toast("Job cost can't be negative"); return; }
   let leadId = v("mj-lead"); const date = v("mj-date") || today(); const status = v("mj-status"); const svc = v("mj-svc"); const now = new Date().toISOString();
-  let name = "", kept = "", matched = "";
+  let name = "", kept = "", matched = "", dropQuote = "";
   if (!leadId) {
     name = v("mj-name"); if (!name) { toast("Type the customer's name"); return; }
     // a name that's already in the CRM goes on that customer instead of making a second record
@@ -2997,7 +3024,7 @@ async function saveMoneyJob(btn) {
         if (l.stage !== "paid" && (fromDrop || !(l.stage === "selling" && open.length))) { upd.stage = status === "paid" ? "paid" : "completed"; upd.stageSince = date; const fu = endFollowUp(l, upd); if (fu) upd.activity[0].text += " · " + fu; }
         else if (l.stage === "selling" && open.length) kept = `${leadName(l)} stays in Selling because an estimate is still open.`;
         // the estimate they were dropped on Paid for is the one being paid
-        if (fromDrop) for (const q of open.filter(q => q.status === "sent")) await saveDoc("quotes", q.id, { status: "accepted", updatedAt: now }, true);
+        if (fromDrop) { const sent = open.filter(q => q.status === "sent"); for (const q of sent) await saveDoc("quotes", q.id, { status: "accepted", updatedAt: now }, true); if (sent.length === 1) dropQuote = sent[0].id; }
         if (!l.value) upd.value = price;
         if (!l.address && !l.city && v("mj-addr")) upd.address = v("mj-addr");
         if (isOutreach(l)) Object.assign(upd, PROMOTE());
@@ -3005,6 +3032,7 @@ async function saveMoneyJob(btn) {
     }
     const job = { kind: "job", leadId, title: "Job: " + name, service: svc, start: date, end: date, address: v("mj-addr"), amount: price, cost: Number(v("mj-cost")) || 0, crew, source: v("mj-src"), status, paidDate: status === "paid" ? date : "", method: status === "paid" ? v("mj-method") : "", createdAt: now };
     if (v("mj-bank") !== "") job.bankPct = Math.max(0, Math.min(100, Number(v("mj-bank")) || 0)) / 100;
+    if (dropQuote) job.quoteId = dropQuote;
     await saveDoc("jobs", uid("job"), job);
     // the form closes only if it's still the one that was saved (not one opened since)
     if (S.money.gen === gen && S.money.form === "job") { S.money.form = ""; S.money.formLead = ""; S.money.dropPaid = ""; forgetTyped(/^mj-/); }
@@ -3018,18 +3046,35 @@ async function saveMoneyExpense(btn) {
   try { await saveDoc("expenses", uid("exp"), { date: v("me-date") || today(), category: v("me-cat"), vendor: v("me-vendor"), note: v("me-note"), paidWith: v("me-paid"), forSource: v("me-src"), amount: amt, createdAt: new Date().toISOString() }); if (S.money.gen === gen && S.money.form === "expense") { S.money.form = ""; forgetTyped(/^me-/); } toast("Expense saved"); schedule(); }
   catch (e) { btn.disabled = false; }
 }
-function jobRow(j) {
+// An accepted estimate with no job yet, as a row in Jobs to finish or collect. Its id starts with "q:".
+function estItem(q) {
+  const svc = [...new Set((q.items || []).filter(isLine).map(i => String(i.service || "").trim()).filter(Boolean))].join(", ");
+  const l = leadById(q.leadId);
+  return { id: "q:" + q.id, est: q, kind: "job", status: "accepted", leadId: q.leadId || "", title: "Job: " + ((l && leadName(l)) || quoteCust(q)), service: svc, start: q.date || "", amount: +q.total || 0, bankPct: q.bankPct, address: l ? leadAddr(l) : "" };
+}
+const estItemById = (id) => { const q = String(id || "").startsWith("q:") && S.quotes.find(x => x.id === id.slice(2)); return q && !isInvoice(q) && q.status === "accepted" && !estimateJobs().has(q.id) ? estItem(q) : null; };
+// the % of a job that goes into the business bank, typed right on its row and saved when the box is left
+function bankBox(j) {
+  const p = j.bankPct == null || j.bankPct === "" ? "" : Math.round(j.bankPct * 1000) / 10, amt = (+j.amount || 0) * (+j.bankPct || 0);
+  return `<label class="bankpct" data-keep>% to bank<input type="number" id="bank-${esc(j.id)}" data-bank="${esc(j.id)}" min="0" max="100" step="5" inputmode="decimal" value="${p}" placeholder="0" aria-label="Percent of this job that goes to the bank">${amt ? `<span class="num">${money(amt, Math.round(amt * 100) % 100 !== 0)}</span>` : ""}</label>`;
+}
+function jobRow(j, where) {
+  if (j.est) { const q = j.est;
+    return `<div class="item static flow"><div class="main-col"><span class="t">${esc(j.title)}</span><span class="s">${esc(["Estimate " + q.number + " accepted", j.service.length <= 40 ? j.service : "", "not booked yet"].filter(Boolean).join(" · "))}</span></div>
+    <div class="r"><span class="row"><span class="num" style="font-weight:700">${money(j.amount, j.amount % 1 !== 0)}</span><span class="pill s-scheduled">Accepted</span></span>
+    <div class="row">${bankBox(j)}<button class="btn sm" data-act="m-book" data-id="${esc(q.id)}">Book job</button><button class="btn sm primary" data-pay="${esc(j.id)}">Paid</button></div></div></div>`; }
+  const money1 = where === "money";
   const l = leadById(j.leadId);
   const st = { scheduled: "Scheduled", completed: "Done, unpaid", paid: "Paid", canceled: "Canceled" }[j.status] || j.status;
   const cls = { scheduled: "s-visit", completed: "s-quoted", paid: "s-paid", canceled: "s-lost" }[j.status] || "";
   const sub = [fmtDT(j.start), j.service, j.crew ? "Crew " + j.crew : "", j.paidDate ? "paid " + fmtD(j.paidDate) + (j.method ? " by " + j.method : "") : ""].filter(Boolean).join(" · ");
-  return `<div class="item static"><div class="main-col"><span class="t">${esc(j.kind === "visit" ? "Estimate" : "Job")}: ${esc((l && leadName(l)) || (j.title || "").replace(/^(Job|Estimate): /, ""))}</span><span class="s">${esc(sub)}</span></div>
+  return `<div class="item static${money1 ? " flow" : ""}"><div class="main-col"><span class="t">${esc(j.kind === "visit" ? "Estimate" : "Job")}: ${esc((l && leadName(l)) || (j.title || "").replace(/^(Job|Estimate): /, ""))}</span><span class="s">${esc(sub)}</span></div>
     <div class="r"><span class="row">${j.kind === "job" ? `<span class="num" style="font-weight:700">${money(j.amount, (+j.amount || 0) % 1 !== 0)}</span>` : ""}<span class="pill ${cls}">${esc(st)}</span></span>
-    <div class="row">${j.status === "scheduled" ? `<button class="btn sm" data-job="${esc(j.id)}" data-js="completed">${j.kind === "visit" ? "Done" : "Job done"}</button><button class="btn sm ghost danger" data-job="${esc(j.id)}" data-js="canceled">Cancel ${j.kind === "visit" ? "estimate" : "job"}</button>` : ""}${j.kind === "job" && (j.status === "completed" || j.status === "scheduled") ? `<button class="btn sm primary" data-pay="${esc(j.id)}">Paid</button>` : ""}</div></div></div>`;
+    <div class="row">${money1 && j.kind === "job" ? bankBox(j) : ""}${j.status === "scheduled" ? `<button class="btn sm" data-job="${esc(j.id)}" data-js="completed">${j.kind === "visit" ? "Done" : "Job done"}</button><button class="btn sm ghost danger" data-job="${esc(j.id)}" data-js="canceled">Cancel ${j.kind === "visit" ? "estimate" : "job"}</button>` : ""}${j.kind === "job" && (j.status === "completed" || j.status === "scheduled") ? `<button class="btn sm primary" data-pay="${esc(j.id)}">Paid</button>` : ""}</div></div></div>`;
 }
 // The payment box is drawn from S.payOpen, so a refresh of the page doesn't close it or clear what was typed.
 function payBoxFor(where, jobs) {
-  const p = S.payOpen; if (!p || p.where !== where) return ""; const isOpen = (x) => x.id === p.id && ["scheduled", "completed"].includes(x.status);
+  const p = S.payOpen; if (!p || p.where !== where) return ""; const isOpen = (x) => x.id === p.id && ["scheduled", "completed", "accepted"].includes(x.status);
   const j = jobs.find(isOpen); if (!j && !S.jobs.some(isOpen)) S.payOpen = null; // paid or canceled meanwhile
   return j ? payBoxHTML(j) : "";
 }
@@ -3554,7 +3599,10 @@ document.addEventListener("click", async (e) => {
     else toast("Marked done");
     return;
   }
-  if (t.dataset.pay) { const j = S.jobs.find(x => x.id === t.dataset.pay); if (j) payBox(j, t.closest("#modal") ? "modal" : "view"); return; }
+  if (t.dataset.pay) { const j = estItemById(t.dataset.pay) || S.jobs.find(x => x.id === t.dataset.pay); if (!j) return;
+    // a % to bank typed on the row but not saved yet goes in the payment box
+    const bi = document.getElementById("bank-" + j.id), bv = bi ? String(bi.value).trim() : "";
+    payBox(bv !== "" && Number(bv) >= 0 ? Object.assign({}, j, { bankPct: Math.min(100, Number(bv)) / 100 }) : j, t.closest("#modal") ? "modal" : "view"); return; }
   if (t.dataset.drip) {
     const dl = leadById(t.dataset.lead); if (!dl) return; const key = t.dataset.key;
     try {
@@ -3719,7 +3767,9 @@ document.addEventListener("click", async (e) => {
       case "save-mjob": await saveMoneyJob(t); break;
       case "save-mexp": await saveMoneyExpense(t); break;
       case "save-pay": {
-        const j = S.jobs.find(x => x.id === t.dataset.id); if (!j) break;
+        const isEst = String(t.dataset.id || "").startsWith("q:");
+        const j = isEst ? estItemById(t.dataset.id) : S.jobs.find(x => x.id === t.dataset.id);
+        if (!j) { if (isEst) { S.payOpen = null; dropDraft(/^pay-/); toast("That estimate already has a job, or isn't accepted anymore. Record the payment on its job."); schedule(); } break; }
         const box = t.closest("#pay-box") || document; const q = (s) => box.querySelector(s);
         const raw = q("#pay-amt").value.trim(); const amt = raw === "" ? (+j.amount || 0) : Number(raw);
         if (!(amt > 0)) { toast("Enter the amount they paid (more than $0)"); break; }
@@ -3728,11 +3778,22 @@ document.addEventListener("click", async (e) => {
         const upd = { status: "paid", amount: amt, method: q("#pay-method").value, paidDate: q("#pay-date").value || today(), cost: Number(costRaw) || 0, crew: crewVal("pay-crew", box), updatedAt: new Date().toISOString() };
         if (bank !== "") upd.bankPct = Math.max(0, Math.min(100, Number(bank) || 0)) / 100;
         const fromDrop = S.payOpen && S.payOpen.dropPaid === j.leadId;
-        await saveDoc("jobs", j.id, upd, true); S.payOpen = null; dropDraft(/^pay-/);
+        const dropQs = fromDrop ? S.quotes.filter(q => q.leadId === j.leadId && q.docType !== "INVOICE" && q.status === "sent") : [];
+        if (!isEst && dropQs.length === 1 && !j.quoteId) upd.quoteId = dropQs[0].id;
+        // one save at a time, so a second tap can't make the estimate's job twice
+        if (S.paying) break; S.paying = j.id;
+        try {
+        // an accepted estimate paid without booking it first becomes a paid job, tied to the estimate
+        if (isEst) { const l0 = leadById(j.leadId); await saveDoc("jobs", uid("job"), Object.assign({ kind: "job", leadId: j.leadId, quoteId: j.est.id, title: j.title, service: j.service, start: upd.paidDate, end: upd.paidDate, address: j.address, source: (l0 && l0.source) || "", createdAt: upd.updatedAt }, upd)); }
+        else await saveDoc("jobs", j.id, upd, true);
+        S.payOpen = null; dropDraft(/^pay-/);
         // dropped on Paid: the estimate they were sent is the one being paid
-        if (fromDrop) for (const q of S.quotes.filter(q => q.leadId === j.leadId && q.docType !== "INVOICE" && q.status === "sent")) await saveDoc("quotes", q.id, { status: "accepted", updatedAt: new Date().toISOString() }, true);
+        for (const q of dropQs) await saveDoc("quotes", q.id, { status: "accepted", updatedAt: new Date().toISOString() }, true);
         const jl = leadById(j.leadId); if (jl) { const lu = { stage: "paid" }; const fu = endFollowUp(jl, lu); Object.assign(lu, { activity: activity(jl, "paid", `Paid ${money(amt, true)} by ${upd.method}${fu ? " · " + fu : ""}`), updatedAt: new Date().toISOString() }); if (!jl.value) lu.value = amt; await saveDoc("leads", jl.id, lu, true); }
-        toast("Payment recorded"); schedule(); refreshLeadModal(); break; }
+        toast("Payment recorded"); schedule(); refreshLeadModal();
+        } finally { S.paying = null; }
+        break; }
+      case "m-book": { const q = S.quotes.find(x => x.id === t.dataset.id); if (!q) break; openQuoteEditor(q); if (QD && QD.id === q.id && $("#modal #q-acts")) startBooking(); break; }
       case "cancel-pay": { S.payOpen = null; const b = t.closest("#pay-box"); if (b) b.innerHTML = ""; dropDraft(/^pay-/); break; }
       case "save-settings": await saveSettings(); break;
       case "pb-add": { const st = readSettingsForm(); st.priceBook.push({ name: "New service", unit: "sqft", rate: 0, min: 0 }); S.setDraft = st; S.setDirty = true; render(); break; }
@@ -3787,9 +3848,19 @@ document.addEventListener("change", async (e) => {
     fuQueue(openLeadId, v, 700);
   }
   if (e.target.id === "mj-lead") syncJobForm(true);
+  if (e.target.dataset && e.target.dataset.bank) saveBankPct(e.target);
   if (e.target.id === "bk-date" && e.target.value) bookPickDay(e.target.value);
   if (e.target.matches && e.target.matches('[data-dk="channel"]')) { S.setDraft = readSettingsForm(); S.setDirty = true; render(); } // shows or hides the email subject
 });
+// the % to bank typed on a row of Jobs to finish or collect: on the job, or on the estimate until it has a job
+async function saveBankPct(el) {
+  const id = el.dataset.bank, raw = String(el.value).trim();
+  if (raw !== "" && !(Number(raw) >= 0)) { toast("Type the percent as a number, like 20"); return; }
+  const v = raw === "" ? null : Math.min(100, Number(raw)) / 100; el.value = raw === "" ? "" : Math.round(v * 1000) / 10;
+  const isEst = id.startsWith("q:"), cur = isEst ? S.quotes.find(q => q.id === id.slice(2)) : S.jobs.find(j => j.id === id); if (!cur) return;
+  if ((cur.bankPct == null ? null : +cur.bankPct) === v) return;
+  try { await saveDoc(isEst ? "quotes" : "jobs", cur.id, { bankPct: v, updatedAt: new Date().toISOString() }, true); toast(v == null ? "% to bank cleared" : `${Math.round(v * 1000) / 10}% to bank saved`); schedule(); } catch (e) {}
+}
 // one waiting save per lead, so setting another lead's date right after doesn't drop this one
 const fuTimers = {};
 function fuQueue(id, v, wait) { fuCancel(id); const e = { t: setTimeout(() => fuSave(id, v), wait), run: () => { clearTimeout(e.t); return fuSave(id, v); } }; fuTimers[id] = e; }
