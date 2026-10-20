@@ -180,6 +180,19 @@ select.show { font-weight: 700; font-size: 15px; padding: 10px 14px; border-colo
 textarea { resize: vertical; min-height: 70px; }
 label.f { display: flex; flex-direction: column; gap: 5px; font-size: 13px; font-weight: 600; color: var(--muted); min-width: 0; }
 label.f[hidden] { display: none; }
+/* email blasts */
+.bl-list { max-height: 460px; overflow-y: auto; border-top: 1px solid var(--line); }
+.bl-grp .grp-toggle { cursor: default; padding: 10px 20px; }
+.bl-grp .grp-toggle label.check { flex: 1; min-width: 0; }
+.bl-row { padding: 9px 20px 9px 28px; border-top: 1px solid var(--line); min-height: 44px; cursor: pointer; }
+.bl-row input { flex: none; width: 20px; height: 20px; }
+.bl-row .main-col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.bl-row .t { font-weight: 600; } .bl-row .s { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.bl-row.off { opacity: .6; cursor: default; }
+.bl-mail { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; background: var(--surface); display: flex; flex-direction: column; gap: 6px; }
+.bl-body { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.5; }
+.bl-log { margin: 4px 0 8px 18px; display: grid; gap: 2px; }
+#bl-prev-pick select { max-width: 220px; }
 label.check { display: flex; align-items: center; gap: 9px; font-size: 14px; font-weight: 500; color: var(--ink); }
 .form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .form .full { grid-column: 1 / -1; }
@@ -421,6 +434,7 @@ div.item[role="button"]:focus-visible { outline: 2px solid var(--accent); outlin
   .item .r .row { gap: 10px; }
 }
 @media (max-width: 640px) {
+  .bl-row { padding-left: 16px; padding-right: 12px; } .bl-grp .grp-toggle { padding: 10px 12px; } .bl-list { max-height: none; } #bl-prev-pick select { max-width: 150px; }
   .only-wide { display: none !important; }
   .only-narrow { display: flex !important; }
   .item.flow { flex-wrap: wrap; row-gap: 6px; }
@@ -947,7 +961,8 @@ html.gated, html.gated body { overflow: hidden; }
   // the server turned this login away mid-session (removed from the team): cover the CRM again
   const denied = (e) => { if (e && e.code === "permission-denied" && me && !me.isOwner && gateState !== "notmember") showGate("notmember", "Your access to this CRM was turned off. Ask Elias if that's a mistake."); };
   const docSnap = (s) => ({ id: s.id, exists: s.exists(), data: () => (s.exists() ? toPlain(s.data()) : undefined) });
-  const checkPath = (path) => { const segs = String(path).split("/").filter(Boolean); if (!COLLS.includes(segs[0])) throw Object.assign(new Error("Unknown collection " + segs[0]), { code: "invalid_argument" }); return segs; };
+  // rulesv is only read, to check the database rules are up to date (it isn't backed up)
+  const checkPath = (path) => { const segs = String(path).split("/").filter(Boolean); if (!COLLS.includes(segs[0]) && segs[0] !== "rulesv") throw Object.assign(new Error("Unknown collection " + segs[0]), { code: "invalid_argument" }); return segs; };
   function docApi(segs) {
     const ref = F.doc(fs, ...segs);
     return {
@@ -1023,6 +1038,8 @@ html.gated, html.gated body { overflow: hidden; }
     owner: OWNER,
     me: () => me && Object.assign({}, me),
     pendingWrites: () => pendingWrites,
+    // a document as the database has it now, not the copy on this device (fails with no connection)
+    serverDoc: async (coll, id) => { const d = await F.getDocFromServer(F.doc(fs, coll, id)); return d.exists() ? toPlain(d.data()) : null; },
     signOut: () => F.signOut(auth),
     resetPassword: (email) => F.sendPasswordResetEmail(auth, email || (me && me.email)),
     members: async () => { const s = await F.getDocs(F.collection(fs, "members")); return s.docs.map(d => Object.assign({ email: d.id }, toPlain(d.data()))); },
@@ -1066,12 +1083,55 @@ html.gated, html.gated body { overflow: hidden; }
       if (!me || !me.isOwner) throw Object.assign(new Error("Only the owner can load a backup."), { code: "owner_only" });
       if (!data || data.format !== "get-it-clean-crm-backup" || !data.collections) throw Object.assign(new Error("That file isn't a CRM backup."), { code: "bad_file" });
       const items = []; COLLS.forEach(c => Object.entries(data.collections[c] || {}).forEach(([id, d]) => { if (id && !id.includes("/") && d && typeof d === "object") items.push([c, id, d]); }));
+      // Email blasts and their progress stay as they are now: an old copy could start a finished blast again or undo what
+      // the sender has done. The templates come back, and anyone the file says asked out (or bounced) stays out.
+      const blastItems = items.filter(([c, id]) => c === "settings" && (/^blast/.test(id) || id === "gone-contacts"));
+      blastItems.forEach(x => items.splice(items.indexOf(x), 1));
+      const tpl = blastItems.find(([, id]) => id === "blast-templates"); if (tpl) items.push(tpl);
+      const oldOut = blastItems.find(([, id]) => id === "blast-out");
+      // An older copy of a contact doesn't undo what happened since: marked do not contact or not interested, asked to be
+      // taken off emails, or a bounce stays as it is now.
+      // A contact deleted since is remembered with its flags (settings/gone-contacts), by its ID and its email.
+      let now = {}, gone = {};
+      try {
+        const s = await F.getDocsFromServer(F.collection(fs, "leads")); s.docs.forEach(d => { now[d.id] = d.data(); });
+        const g = await F.getDocFromServer(F.doc(fs, "settings", "gone-contacts")); gone = (g.exists() && g.data().list) || {};
+      } catch (e) { throw mapErr(e); }
+      const FLAGS = ["dnc", "crashOut", "unsubscribed", "emailBounced", "noAutoEmail"], by = {};
+      const addBy = (k, flags) => { k = String(k || "").trim().toLowerCase(); if (k && flags.length) (by[k] = by[k] || []).push({ flags }); };
+      Object.keys(gone).forEach(id => { const g = gone[id] || {}; addBy(g.email, Array.isArray(g.flags) ? g.flags : []); });
+      Object.keys(now).forEach(id => addBy(now[id].email, FLAGS.filter(f => now[id][f] === true)));
+      items.forEach(x => {
+        if (x[0] !== "leads") return;
+        const keep = {}, d = x[2], key = String(d.email || "").trim().toLowerCase();
+        // the same contact (by its ID) keeps everything; another contact on the same email passes on only its flags, and only
+        // to one that isn't in the CRM now or is there with another email, so a customer's stage is never changed by someone
+        // else on a shared inbox
+        const was = [now[x[1]] ? Object.assign({ flags: FLAGS.filter(f => now[x[1]][f] === true), lost: now[x[1]].stage === "lost" }, { lostAt: now[x[1]].lostAt }) : null, gone[x[1]] || null]
+          .concat(key && (!now[x[1]] || String(now[x[1]].email || "").trim().toLowerCase() !== key) ? by[key] || [] : []).filter(Boolean);
+        was.forEach(w => { (w.flags || []).forEach(f => { if (d[f] !== true) keep[f] = true; }); if (w.lost && d.stage !== "lost" && !keep.stage) { keep.stage = "lost"; if (w.lostAt) keep.lostAt = w.lostAt; } });
+        if (Object.keys(keep).length) x[2] = Object.assign({}, d, keep);
+      });
       let done = 0;
       for (let i = 0; i < items.length; i += 400) {
         const b = F.writeBatch(fs);
         items.slice(i, i + 400).forEach(([c, id, d]) => b.set(F.doc(fs, c, id), toStore(d)));
         try { await b.commit(); } catch (e) { throw mapErr(e); }
         done = Math.min(items.length, i + 400); if (onProgress) onProgress(done, items.length);
+      }
+      // the file's deleted-contact list adds to the one here
+      const oldGone = blastItems.find(([, id]) => id === "gone-contacts");
+      if (oldGone && oldGone[2].list && typeof oldGone[2].list === "object") {
+        const add = {}; Object.keys(oldGone[2].list).forEach(id => { if (!gone[id] && oldGone[2].list[id] && typeof oldGone[2].list[id] === "object") add[id] = oldGone[2].list[id]; });
+        if (Object.keys(add).length) { try { await F.setDoc(F.doc(fs, "settings", "gone-contacts"), toStore({ kind: "gone", list: add }), { merge: true }); } catch (e) { throw mapErr(e); } }
+      }
+      // last, and only adding: an address the sender took off while this loaded stays as the sender saved it
+      if (oldOut && oldOut[2].out && typeof oldOut[2].out === "object") {
+        try {
+          const s = await F.getDocFromServer(F.doc(fs, "settings", "blast-out")), cur = (s.exists() && s.data().out) || {}, add = {};
+          Object.keys(oldOut[2].out).forEach(k => { const o = oldOut[2].out[k]; if (!cur[k] && o && typeof o === "object") add[k] = o; });
+          if (Object.keys(add).length) await F.setDoc(F.doc(fs, "settings", "blast-out"), toStore({ kind: "blastout", out: add, updatedAt: new Date().toISOString() }), { merge: true });
+        } catch (e) { throw mapErr(e); }
       }
       const counts = {}; items.forEach(([c]) => { counts[c] = (counts[c] || 0) + 1; }); return counts;
     }
@@ -1147,7 +1207,8 @@ const DISPO_GROUPS = [
 const DISPOSITIONS = DISPO_GROUPS.flatMap(g => g.items.map(d => Object.assign({ tone: g.tone }, d)));
 // Addresses elias contacts personally or never emails: kept off email blasts and drip emails however they are added.
 const BLOCKED_EMAILS = [/@lansbrooktampabay\.com$/i, /^jgregor@parker\.com$/i];
-const blockedEmail = (e) => BLOCKED_EMAILS.some(re => re.test(String(e || "").trim()));
+// checked one address at a time, so an email box holding two ("a@x.com, b@y.com") is caught too
+const blockedEmail = (e) => String(e || "").split(/[\s,;<>()"']+/).some(x => x && BLOCKED_EMAILS.some(re => re.test(x)));
 const PAY_METHODS = ["Check", "Zelle", "Cash", "Card", "Venmo", "Other"];
 const EXP_CATS = ["Lead vendor", "Marketing", "Gas & chemicals", "Equipment", "Maintenance", "Employee / labor", "Insurance", "Other"];
 const PAID_WITH = ["Business card", "Business cash", "Elias card", "Cash", "Other"];
@@ -1306,7 +1367,7 @@ function dripSteps(l) {
   if (l.dnc || l.dripOff || isOutreach(l)) return [];
   const steps = (settings().drips || {})[l.stage] || []; const since = l.stageSince || (l.createdAt || "").slice(0, 10) || today(); const done = new Set(l.dripDone || []);
   return steps.map((st, i) => ({ st, i, key: `${l.stage}:${i}:${since}`, date: addDays(+st.day || 0, since), l }))
-    .filter(x => !done.has(x.key) && !(x.st.channel === "email" && (!l.email || l.noAutoEmail || blockedEmail(l.email))) && !(x.st.channel !== "email" && (!l.phone || l.phoneBad)));
+    .filter(x => !done.has(x.key) && !(x.st.channel === "email" && (!l.email || l.noAutoEmail || l.unsubscribed || blockedEmail(l.email))) && !(x.st.channel !== "email" && (!l.phone || l.phoneBad)));
 }
 function dripDueAll() { const t = today(); return S.leads.map(l => dripSteps(l)[0]).filter(x => x && x.date <= t).sort((a, b) => a.date.localeCompare(b.date)); }
 async function markDrip(l, key, how) {
@@ -1362,7 +1423,14 @@ function render() {
   st.textContent = S.db ? `${S.syncNote || "Saved to your CRM"} · ${plural(leadsOnly().length, "lead")} · ${outreachOnly().length} outreach` : (S.dbChecked ? (STANDALONE ? "Sign in to load your data" : "Open this page in claude.ai to load your data") : "Connecting…");
 }
 let renderQueued = false;
+// A redraw between pressing a button and letting go would swallow the click (the button pressed is gone), so a redraw
+// waits until the press is over. Most a press holds it is 1.5 seconds.
+let pressed = false, pressT = 0, heldDraw = false;
+function pressOver() { pressed = false; clearTimeout(pressT); if (heldDraw) { heldDraw = false; schedule(); } }
+document.addEventListener("pointerdown", () => { pressed = true; clearTimeout(pressT); pressT = setTimeout(pressOver, 1500); }, true);
+["pointerup", "pointercancel", "click"].forEach(ev => document.addEventListener(ev, () => setTimeout(pressOver, 0), true));
 function schedule() { if (renderQueued) return; renderQueued = true; requestAnimationFrame(() => { renderQueued = false;
+  if (pressed) { heldDraw = true; return; }
   // price, drip and text forms don't depend on live data, so a data update doesn't redraw them mid-typing
   if (S.view === "settings" && ["prices", "drips", "texts"].includes(S.setTab) && $("#view [data-act='save-settings']")) { renderNav(); return; }
   render(); }); }
@@ -1530,7 +1598,7 @@ function dropOnStage(l, stage) {
   if (stage === "paid") {
     const open = S.jobs.find(j => j.leadId === l.id && j.kind === "job" && ["scheduled", "completed"].includes(j.status));
     if (open) { openLead(l.id, "work"); setTimeout(() => { payBox(open, "modal"); if (S.payOpen) S.payOpen.dropPaid = l.id; }, 30); toast("Record the payment to mark them paid"); }
-    else { closeModal(); S.view = "money"; S.money.form = "job"; S.money.formLead = l.id; S.money.dropPaid = l.id; S.money.gen = (S.money.gen || 0) + 1; forgetTyped(/^mj-/); render(); window.scrollTo(0, 0); toast("Add the paid job to mark them paid"); }
+    else { closeModal(); S.view = "money"; S.money.form = "job"; S.money.formLead = l.id; S.money.dropPaid = l.id; S.money.jobQuote = undefined; S.money.gen = (S.money.gen || 0) + 1; forgetTyped(/^mj-/); render(); window.scrollTo(0, 0); toast("Add the paid job to mark them paid"); }
     return;
   }
   setStage(l, stage, null, stage === "lost" ? "Find them with “Lost” in the list above." : "").catch(() => {});
@@ -1673,7 +1741,9 @@ function dispoSelect(l) {
 function leadBanners(l) {
   return (l.crashOut && l.dnc ? `<div class="banner bad">Crash out. This person was angry, so texts, emails and drips are off.</div>` : l.dnc ? `<div class="banner bad">Do not contact. Texts, emails and drips are off for this lead.</div>` : "")
     + (l.phoneBad ? `<div class="banner warn">The phone number was marked wrong. Fix it under Edit.</div>` : "")
-    + (l.noAutoEmail && !l.dnc ? `<div class="banner warn">You contact them personally. They stay off email blasts.</div>` : "");
+    + (l.noAutoEmail && !l.dnc ? `<div class="banner warn">You contact them personally. They stay off email blasts.</div>` : "")
+    + (l.unsubscribed && !l.dnc ? `<div class="banner warn">They asked to be taken off your emails, so they stay off email blasts. You can still call or email them yourself.</div>` : "")
+    + (l.emailBounced && !l.dnc ? `<div class="banner warn">Their email bounced, so they stay off email blasts. Fix the address under Edit to put them back.</div>` : "");
 }
 // which text templates fit each stage, matched on the template name
 const STAGE_TPL = { new: /intro|follow/i, contacted: /follow|intro/i, working: /confirm|estimate|follow/i, selling: /quote/i, scheduled: /way|confirm/i, completed: /done|review/i, paid: /review|done|again|year/i, lost: /follow/i };
@@ -1899,6 +1969,7 @@ async function saveLead() {
   if ("phone" in d && d.phone !== (l.phone || "") && l.phoneBad) d.phoneBad = false; // a new number clears the "wrong number" flag
   if ("dnc" in d && !d.dnc && l.crashOut) d.crashOut = false; // unblocking clears the crash-out too
   if (("email" in d || "noAutoEmail" in d) && blockedEmail("email" in d ? d.email : l.email)) d.noAutoEmail = true; // a blocked address stays off automatic emails
+  if ("email" in d && l.emailBounced && d.email !== String(l.email || "").toLowerCase()) d.emailBounced = false; // a fixed address can get blasts again
   const toLeads = "list" in d && d.list !== "outreach" && isOutreach(l), toOut = d.list === "outreach" && !isOutreach(l);
   if (toLeads) { Object.assign(d, PROMOTE()); if (!("stage" in d) && (!l.stage || l.stage === "new")) d.stage = "contacted"; }
   // a reply that was already handled won't move them back to Leads, but a new reply will
@@ -1971,15 +2042,17 @@ function scheduleForm(l, kind, preset) {
   const box = $("#lead-extra"); if (!box) return; clearExtra();
   const dur = kind === "visit" ? 30 : 240;
   const booked = nextAppt(l, kind);
+  // a job for an accepted estimate that has no job yet is tied to it (picked for them when there's only one)
+  const ests = kind === "job" && !preset?.quoteId ? waitingEstimatesFor(l) : [], est1 = ests.length === 1 ? ests[0] : null;
   box.innerHTML = `<div class="tpl stack" style="margin-top:4px"><div class="spread"><h3 style="font-size:17px">${kind === "visit" ? "Schedule estimate" : "Book job"}</h3><button class="btn ghost sm" data-act="close-extra">Close</button></div>
     ${booked ? `<div class="banner warn">${kind === "visit" ? "An estimate" : "A job"} is already booked for ${esc(fmtDT(booked.start))}. Save this only if it's an extra one.</div>` : ""}
     <div class="form">
       <label class="f">Date<input type="date" id="sc-date" value="${esc(preset?.date || addDays(1))}"></label>
       <label class="f">Start time<input type="time" id="sc-time" value="${kind === "visit" ? "10:00" : "08:00"}"></label>
       <label class="f">Length (minutes)<input type="number" id="sc-dur" min="15" step="15" value="${dur}"></label>
-      ${kind === "job" ? `<label class="f">Job price ($)<input type="number" id="sc-amt" min="0" step="1" value="${esc(preset?.amount || l.value || "")}"></label>
+      ${kind === "job" ? `<label class="f">Job price ($)<input type="number" id="sc-amt" min="0" step="1" value="${esc(preset?.amount || (est1 && quoteTotals(est1).total) || l.value || "")}"></label>
       <label class="f">Service<input type="text" id="sc-svc" value="${esc((l.services || []).join(", "))}"></label>
-      ${crewPick("sc-crew", "EL")}` : `<span></span>`}
+      ${crewPick("sc-crew", "EL")}${estPickHTML("sc-quote", ests, est1 ? est1.id : "")}` : `<span></span>`}
       <label class="f full">Address<input type="text" id="sc-addr" value="${esc([l.address, l.city].filter(Boolean).join(", "))}"></label>
       <label class="f full">Calendar title<input type="text" id="sc-title" value="${esc((kind === "visit" ? "Estimate: " : "Job: ") + [l.company, l.name].filter(Boolean).join(", "))}"></label>
       <label class="check full"><input type="checkbox" id="sc-gcal" checked> ${S.mcp || calConnected() || !STANDALONE ? "Add to my Google Calendar" : "Add it to my Google Calendar (opens Google Calendar so you can save it there)"}</label>
@@ -2002,7 +2075,7 @@ async function saveSchedule(btn) {
   if (!date) { toast("Pick a date"); return; }
   if (!fuYearOk(date)) { toast("Finish typing the year in the date"); return; }
   btn.disabled = true;
-  const ok = await bookAppt(l, kind, { date, time: $("#sc-time").value, dur: +$("#sc-dur").value, title: $("#sc-title").value, addr: $("#sc-addr").value, amount: $("#sc-amt")?.value, service: $("#sc-svc")?.value, crew: kind === "job" ? crewVal("sc-crew") : "", cal: $("#sc-gcal").checked, quoteId: btn.dataset.quote || "" }, $("#sc-status"));
+  const ok = await bookAppt(l, kind, { date, time: $("#sc-time").value, dur: +$("#sc-dur").value, title: $("#sc-title").value, addr: $("#sc-addr").value, amount: $("#sc-amt")?.value, service: $("#sc-svc")?.value, crew: kind === "job" ? crewVal("sc-crew") : "", cal: $("#sc-gcal").checked, quoteId: btn.dataset.quote || ($("#sc-quote") ? $("#sc-quote").value : "") }, $("#sc-status"));
   if (ok) clearExtra(); else btn.disabled = false;
 }
 // Saves an estimate (kind "visit") or a job for a lead and puts it on Google Calendar; f holds the form's values.
@@ -2016,7 +2089,7 @@ async function bookAppt(l, kind, f, statusEl) {
   const job = { kind, leadId: l.id, title: String(f.title || "").trim(), start, end, address: String(f.addr || "").trim(), amount: kind === "job" ? (+f.amount || 0) : 0, status: "scheduled", quoteId: f.quoteId || "", createdAt: new Date().toISOString() };
   if (kind === "job") { job.service = String(f.service || "").trim(); job.crew = f.crew || "";
     // the % to bank typed on the Money tab for this estimate goes on its job
-    const eq = f.quoteId && S.quotes.find(q => q.id === f.quoteId); if (eq && eq.bankPct != null) job.bankPct = eq.bankPct; }
+    try { await tieToEstimate(job, f.quoteId, l); } catch (e) { return false; } }
   say("Saving…");
   const id = uid(kind); let calErr = ""; const wantCal = !!f.cal;
   const desc = jobDesc(job, l);
@@ -2568,17 +2641,45 @@ function bookFirstDay(durMin) {
   return addDays(1);
 }
 const bookedFrom = (quoteId) => S.jobs.find(j => quoteId && j.quoteId === quoteId && j.kind === "job" && j.status !== "canceled");
-// The job each accepted estimate turned into: the one booked from it, or for a job saved without its estimate
-// (an older job, or one added on the Money tab), that customer's next job dated on or after the estimate.
+// The job each accepted estimate turned into: the one booked from it or tied to it when it was saved; else a job of
+// that customer whose own estimate was declined or redone (the new estimate replaced it); else, for a job saved before
+// jobs were tied to estimates, that customer's next job made and dated on or after the estimate.
 // A job counts for one estimate only.
+const LINK_SINCE = "2026-10-20T04:30:00.000Z"; // jobs saved since then are tied to their estimate by the person saving them
 function estimateJobs() {
   const ests = S.quotes.filter(q => !isInvoice(q) && q.status === "accepted").sort((a, b) => (a.date || "").localeCompare(b.date || "") || (a.number || "").localeCompare(b.number || ""));
-  const live = S.jobs.filter(j => j.kind === "job" && j.status !== "canceled"), qids = new Set(S.quotes.map(q => q.id));
+  const live = S.jobs.filter(j => j.kind === "job" && j.status !== "canceled"), byId = new Map(S.quotes.map(q => [q.id, q]));
   const got = new Map(), used = new Set(), take = (q, j) => { if (j) { got.set(q.id, j); used.add(j.id); } };
+  const first = (xs) => xs.sort((a, b) => (a.start || "").localeCompare(b.start || ""))[0];
   ests.forEach(q => take(q, live.find(j => j.quoteId === q.id && !used.has(j.id))));
+  ests.forEach(q => { if (got.has(q.id) || !q.leadId) return;
+    take(q, first(live.filter(j => j.leadId === q.leadId && !used.has(j.id) && byId.has(j.quoteId) && byId.get(j.quoteId).status !== "accepted"))); });
   ests.forEach(q => { if (got.has(q.id) || !q.leadId) return; const d = q.date || String(q.createdAt || "").slice(0, 10);
-    take(q, live.filter(j => j.leadId === q.leadId && !used.has(j.id) && !(j.quoteId && qids.has(j.quoteId)) && String(j.start || "").slice(0, 10) >= d).sort((a, b) => (a.start || "").localeCompare(b.start || ""))[0]); });
+    take(q, first(live.filter(j => j.leadId === q.leadId && !used.has(j.id) && !byId.has(j.quoteId) && String(j.createdAt || "") < LINK_SINCE && String(j.start || "").slice(0, 10) >= d && (!j.createdAt || String(j.createdAt).slice(0, 10) >= d)))); });
   return got;
+}
+// the estimate each job is for, the other way round
+function jobEstimates() { const m = new Map(); estimateJobs().forEach((j, qid) => m.set(j.id, S.quotes.find(q => q.id === qid))); return m; }
+// accepted estimates for this customer that don't have a job yet, for the "For estimate" pick when a job is saved
+// (an estimate saved without picking the customer counts when its Bill To name is theirs)
+function waitingEstimatesFor(l) {
+  if (!l) return []; const m = estimateJobs(), nm = (x) => String(x || "").trim().toLowerCase().replace(/\s+/g, " "), names = [l.name, l.company].map(nm).filter(Boolean);
+  return S.quotes.filter(q => !isInvoice(q) && q.status === "accepted" && !m.has(q.id) && (q.leadId === l.id || (!leadById(q.leadId) && names.includes(nm((q.billTo || [])[0])))))
+    .sort((a, b) => (a.date || "").localeCompare(b.date || "") || (a.number || "").localeCompare(b.number || ""));
+}
+function estPickHTML(id, xs, sel) {
+  if (!xs.length) return "";
+  const svc = (q) => [...new Set((q.items || []).filter(isLine).map(i => String(i.service || "").trim()).filter(Boolean))].join(", ");
+  return `<label class="f full">For estimate<select id="${id}"><option value="">Not for an estimate</option>${xs.map(q => { const t = quoteTotals(q).total, s = svc(q);
+    return `<option value="${esc(q.id)}"${q.id === sel ? " selected" : ""}>#${esc(q.number)} · ${money(t, t % 1 !== 0)}${s ? " · " + esc(s.length > 40 ? s.slice(0, 39) + "…" : s) : ""}</option>`; }).join("")}</select></label>`;
+}
+// a job saved for an accepted estimate: tie them together, carry the estimate's % to bank when none was typed, and
+// put the customer on an estimate that was saved without one
+async function tieToEstimate(job, quoteId, l) {
+  const q = quoteId && S.quotes.find(x => x.id === quoteId && !isInvoice(x)); if (!q) return null;
+  job.quoteId = q.id; if (job.bankPct == null && q.bankPct != null) job.bankPct = q.bankPct;
+  if (l && !leadById(q.leadId)) await saveDoc("quotes", q.id, { leadId: l.id, updatedAt: new Date().toISOString() }, true);
+  return q;
 }
 // accepted estimates whose job isn't paid yet: the Accepted number on the Quotes tab and the Jobs accepted card on Today
 function acceptedWaiting() { const m = estimateJobs(); return S.quotes.filter(q => !isInvoice(q) && q.status === "accepted" && !(m.get(q.id) && m.get(q.id).status === "paid")); }
@@ -2736,8 +2837,10 @@ function outreachStatus(l) {
   const f = followRow(l), q = queuedRow(l), live = !!q || !!(f && f.status === "waiting");
   if (l.crashOut && l.dnc) return [live ? "Crash out · still scheduled" : "Crash out", "dnc", "stopped"];
   if (l.dnc) return [live ? "Do not contact · still scheduled" : "Do not contact", "dnc", "stopped"];
+  if (l.stage === "lost") { const bs = blastStatusOf(l); if (bs) return bs; } // picked for a blast knowing they said no
   if (l.stage === "lost") return [live ? "Not interested · still scheduled" : f && f.status === "replied" ? "Not interested · replied" : "Not interested", "s-lost", "stopped"];
   if (!l.email && !live && !(f && f.status === "replied")) return ["No email · call them", "out", "call"]; // a bounced thread doesn't stop the calls
+  const bs = blastStatusOf(l); if (bs) return bs;
   if (S.mail.status !== "ready") return [l.stage === "contacted" ? "Emailed" : "Not emailed yet", "out", "other"];
   if (f && f.status === "replied") return ["Replied", "s-scheduled", "stopped"];
   if (f && f.status !== "waiting") return [f.status.charAt(0).toUpperCase() + f.status.slice(1), "s-lost", "stopped"];
@@ -2766,13 +2869,14 @@ function groupSummary(arr) {
   return [plural(arr.length, "contact"), c.emailing ? `${c.emailing} getting emails` : "", c.call ? `${c.call} to call` : "", due ? `${due} call-back due` : "", c.stopped ? `${c.stopped} stopped` : ""].filter(Boolean).join(" · ");
 }
 function emailList() {
-  return S.leads.filter(l => l.email).map(l => ({ l, state: l.dnc ? "Do not contact" : l.noAutoEmail || blockedEmail(l.email) ? "Personal only" : l.unsubscribed ? "Unsubscribed" : "On list" }));
+  return S.leads.filter(l => l.email).map(l => ({ l, state: l.dnc ? "Do not contact" : l.noAutoEmail || blockedEmail(l.email) ? "Personal only" : l.unsubscribed ? "Unsubscribed" : l.emailBounced ? "Bounced" : "On list" }));
 }
 VIEWS.email = () => {
   // the HOA email schedule lives in the Claude project's files, so the standalone website can't show it
   const noSched = STANDALONE && !S.files; if (noSched && S.emailTab === "scheduled") S.emailTab = "outreach";
   const tab = S.emailTab;
-  const tabs = `<div class="seg" role="group" aria-label="Email section"><button data-etab="outreach" aria-pressed="${tab === "outreach"}">Outreach contacts</button>${noSched ? "" : `<button data-etab="scheduled" aria-pressed="${tab === "scheduled"}">Scheduled sends</button>`}<button data-etab="list" aria-pressed="${tab === "list"}">Email list</button></div>`;
+  if (S.emailTab === "blasts" && !BL_ON()) S.emailTab = "outreach";
+  const tabs = `<div class="seg" role="group" aria-label="Email section"><button data-etab="outreach" aria-pressed="${tab === "outreach"}">Outreach contacts</button>${BL_ON() ? `<button data-etab="blasts" aria-pressed="${tab === "blasts"}">Blasts</button>` : ""}${noSched ? "" : `<button data-etab="scheduled" aria-pressed="${tab === "scheduled"}">Scheduled sends</button>`}<button data-etab="list" aria-pressed="${tab === "list"}">Email list</button></div>`;
   let body = "";
   if (tab === "outreach") {
     const O = outreachOnly(); const shows = outShows(); const f = S.outFilter;
@@ -2784,6 +2888,8 @@ VIEWS.email = () => {
     body = `<p class="note">HOAs and property managers you're reaching out to. They aren't leads yet. ${noSched ? "When one replies, tap They replied on their page, or schedule an estimate, and they move to Leads." : "When one replies or you schedule an estimate, they move to Leads on their own."} Tap an area to open it.${S.mail.status === "loading" ? " Loading the email schedule…" : ""}</p>
       <div class="controls">${showSelect("of-show", [{ items: shows }], f.show, "Which outreach contacts to show")(O)}<input type="search" id="of-q" placeholder="Search community, manager, email…" value="${esc(f.q)}" aria-label="Search outreach"><button class="btn" data-act="new-outreach">+ Add contact</button></div>
       <section class="panel flush">${list.length ? `<div class="list">${order.map(g => { const open = expandAll || S.outOpen.has(g); return `${expandAll ? `<div class="grp-toggle static"><span class="gname">${esc(g)}</span><span class="gsum">${esc(groupSummary(groups[g]))}</span></div>` : `<button class="grp-toggle" data-ogrp="${esc(g)}" aria-expanded="${open}"><span class="chev" aria-hidden="true"></span><span class="gname">${esc(g)}</span><span class="gsum">${esc(groupSummary(groups[g]))}</span></button>`}${open ? groups[g].sort((a, b) => leadName(a).localeCompare(leadName(b))).map(outreachRow).join("") : ""}`; }).join("")}</div>` : `<div class="empty">${O.length ? "No outreach contacts match." : "No outreach contacts yet."}</div>`}</section>`;
+  } else if (tab === "blasts") {
+    body = blastsTabHTML();
   } else if (tab === "scheduled") {
     if (S.mail.status === "idle" || S.mail.status === "loading") body = `<section class="panel"><div class="empty">Loading the email schedule…</div></section>`;
     else if (S.mail.status !== "ready") body = `<div class="banner warn">${esc(S.mail.msg)}</div>`;
@@ -2819,7 +2925,7 @@ VIEWS.email = () => {
         <div class="list only-narrow" style="flex-direction:column">${rows.map(r => `<button class="item flow" data-open-lead="${esc(r.l.id)}"><div class="main-col"><span class="t">${esc(leadName(r.l))}</span><span class="s" style="white-space:normal;overflow-wrap:anywhere">${esc(r.l.email)}</span></div><div class="r">${pill(r)}</div></button>`).join("")}</div>`; })() : `<div class="empty">Contacts with an email address show here.</div>`}
     </section>`;
   }
-  return `${pageHead("Email", "Outreach to HOAs and property managers, what's scheduled to send, and your email list", tabs)}${noDbBanner()}${body}`;
+  return `${pageHead("Email", BL_ON() ? "Outreach to HOAs and property managers, email blasts, and your email list" : "Outreach to HOAs and property managers, what's scheduled to send, and your email list", tabs)}${noDbBanner()}${body}`;
 };
 after.email = () => {
   const s = $("#of-show"); if (s) s.addEventListener("change", () => { S.outFilter.show = s.value; schedule(); });
@@ -2885,8 +2991,9 @@ VIEWS.money = () => {
   const cts = [c.rev, c.jc, c.be, c.bank].some(hasC) || c.jobs.some(j => hasC(j.price) || hasC(j.cost)) || c.exps.some(e => hasC(e.amt)); const M = v => money(v, cts);
   const ctsAll = cts || all.jobs.some(j => hasC(j.price)) || R.exps.some(e => hasC(e.amt)), MA = v => money(v, ctsAll);
   // jobs not paid yet, and accepted estimates that have no job yet, so a yes shows here right away
-  const em = estimateJobs();
-  const open = S.jobs.filter(j => j.kind === "job" && ["scheduled", "completed"].includes(j.status))
+  const em = estimateJobs(), je = new Map(); em.forEach((j, qid) => je.set(j.id, S.quotes.find(q => q.id === qid)));
+  // a job tied to an estimate shows the % typed on the estimate until one is typed on the job
+  const open = S.jobs.filter(j => j.kind === "job" && ["scheduled", "completed"].includes(j.status)).map(j => j.bankPct == null && je.get(j.id) && je.get(j.id).bankPct != null ? Object.assign({}, j, { bankPct: je.get(j.id).bankPct }) : j)
     .concat(S.quotes.filter(q => !isInvoice(q) && q.status === "accepted" && !em.has(q.id)).map(estItem)).sort((a, b) => (a.start || "").localeCompare(b.start || ""));
   const openBank = sum(open, j => (+j.amount || 0) * (+j.bankPct || 0));
   // month chart
@@ -2986,7 +3093,7 @@ function moneyForm(kind) {
       <label class="f">Job cost ($)<input type="number" id="mj-cost" min="0" step="1" placeholder="Chemicals and supplies for this job"></label>
       ${crewPick("mj-crew", "EL")}
       <label class="f">Lead source<select id="mj-src">${opt(SOURCES, preL && SOURCES.includes(preL.source) ? preL.source : "Other")}</select></label>
-      <label class="f">% put in business bank<input type="number" id="mj-bank" min="0" max="100" step="5" placeholder="0"></label>
+      <label class="f">% put in business bank<input type="number" id="mj-bank" min="0" max="100" step="any" inputmode="decimal" placeholder="0"></label>
       <label class="f">Payment<select id="mj-status"><option value="paid">Paid</option><option value="completed">Done, not paid yet</option></select></label>
       <label class="f">Paid by<select id="mj-method">${opt(PAY_METHODS, "Zelle")}</select></label>
     </div>
@@ -3023,8 +3130,9 @@ async function saveMoneyJob(btn) {
         const fromDrop = S.money.dropPaid === l.id && status === "paid";
         if (l.stage !== "paid" && (fromDrop || !(l.stage === "selling" && open.length))) { upd.stage = status === "paid" ? "paid" : "completed"; upd.stageSince = date; const fu = endFollowUp(l, upd); if (fu) upd.activity[0].text += " · " + fu; }
         else if (l.stage === "selling" && open.length) kept = `${leadName(l)} stays in Selling because an estimate is still open.`;
-        // the estimate they were dropped on Paid for is the one being paid
-        if (fromDrop) { const sent = open.filter(q => q.status === "sent"); for (const q of sent) await saveDoc("quotes", q.id, { status: "accepted", updatedAt: now }, true); if (sent.length === 1) dropQuote = sent[0].id; }
+        // dropped on Paid with no accepted estimate picked: the estimate they were sent is the one being paid, when it's
+        // clear which one (the only one sent, or the only one for this price); the others are left as they are
+        if (fromDrop && !v("mj-quote")) { const q = sentFor(open.filter(x => x.status === "sent"), price); if (q) { await saveDoc("quotes", q.id, { status: "accepted", updatedAt: now }, true); dropQuote = q.id; } }
         if (!l.value) upd.value = price;
         if (!l.address && !l.city && v("mj-addr")) upd.address = v("mj-addr");
         if (isOutreach(l)) Object.assign(upd, PROMOTE());
@@ -3032,7 +3140,7 @@ async function saveMoneyJob(btn) {
     }
     const job = { kind: "job", leadId, title: "Job: " + name, service: svc, start: date, end: date, address: v("mj-addr"), amount: price, cost: Number(v("mj-cost")) || 0, crew, source: v("mj-src"), status, paidDate: status === "paid" ? date : "", method: status === "paid" ? v("mj-method") : "", createdAt: now };
     if (v("mj-bank") !== "") job.bankPct = Math.max(0, Math.min(100, Number(v("mj-bank")) || 0)) / 100;
-    if (dropQuote) job.quoteId = dropQuote;
+    await tieToEstimate(job, dropQuote || v("mj-quote"), leadById(leadId));
     await saveDoc("jobs", uid("job"), job);
     // the form closes only if it's still the one that was saved (not one opened since)
     if (S.money.gen === gen && S.money.form === "job") { S.money.form = ""; S.money.formLead = ""; S.money.dropPaid = ""; forgetTyped(/^mj-/); }
@@ -3046,6 +3154,8 @@ async function saveMoneyExpense(btn) {
   try { await saveDoc("expenses", uid("exp"), { date: v("me-date") || today(), category: v("me-cat"), vendor: v("me-vendor"), note: v("me-note"), paidWith: v("me-paid"), forSource: v("me-src"), amount: amt, createdAt: new Date().toISOString() }); if (S.money.gen === gen && S.money.form === "expense") { S.money.form = ""; forgetTyped(/^me-/); } toast("Expense saved"); schedule(); }
   catch (e) { btn.disabled = false; }
 }
+// of the estimates sent to a customer dropped on Paid, the one being paid: the only one, or the only one for that price
+function sentFor(sent, amt) { if (sent.length === 1) return sent[0]; const m = sent.filter(q => Math.abs(quoteTotals(q).total - amt) < 0.005); return m.length === 1 ? m[0] : null; }
 // An accepted estimate with no job yet, as a row in Jobs to finish or collect. Its id starts with "q:".
 function estItem(q) {
   const svc = [...new Set((q.items || []).filter(isLine).map(i => String(i.service || "").trim()).filter(Boolean))].join(", ");
@@ -3056,7 +3166,7 @@ const estItemById = (id) => { const q = String(id || "").startsWith("q:") && S.q
 // the % of a job that goes into the business bank, typed right on its row and saved when the box is left
 function bankBox(j) {
   const p = j.bankPct == null || j.bankPct === "" ? "" : Math.round(j.bankPct * 1000) / 10, amt = (+j.amount || 0) * (+j.bankPct || 0);
-  return `<label class="bankpct" data-keep>% to bank<input type="number" id="bank-${esc(j.id)}" data-bank="${esc(j.id)}" min="0" max="100" step="5" inputmode="decimal" value="${p}" placeholder="0" aria-label="Percent of this job that goes to the bank">${amt ? `<span class="num">${money(amt, Math.round(amt * 100) % 100 !== 0)}</span>` : ""}</label>`;
+  return `<label class="bankpct" data-keep>% to bank<input type="number" id="bank-${esc(j.id)}" data-bank="${esc(j.id)}" min="0" max="100" step="any" inputmode="decimal" value="${p}" placeholder="0" aria-label="Percent of this job that goes to the bank">${amt ? `<span class="num">${money(amt, Math.round(amt * 100) % 100 !== 0)}</span>` : ""}</label>`;
 }
 function jobRow(j, where) {
   if (j.est) { const q = j.est;
@@ -3085,13 +3195,15 @@ function payBox(j, where) {
   b.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 function payBoxHTML(j) {
+  // a job tied to an estimate starts with the % typed on the estimate, until one is typed on the job
+  const est = j.est || j.bankPct != null && j.bankPct !== "" ? null : jobEstimates().get(j.id), bp = est && est.bankPct != null ? est.bankPct : j.bankPct;
   return `<div class="pad stack" style="padding-top:14px;border-top:1px solid var(--line)"><b>Record payment: ${esc(leadName(leadById(j.leadId)) || (j.title || "").replace(/^Job: /, ""))}</b><div class="form">
     <label class="f">Amount ($)<input type="number" id="pay-amt" step="0.01" value="${esc(j.amount || "")}"></label>
     <label class="f">Paid by<select id="pay-method">${PAY_METHODS.map(m => `<option>${m}</option>`).join("")}</select></label>
     <label class="f">Date paid<input type="date" id="pay-date" value="${today()}"></label>
     <label class="f">Job cost ($)<input type="number" id="pay-cost" min="0" step="1" value="${esc(j.cost || "")}" placeholder="Chemicals and supplies"></label>
     ${crewPick("pay-crew", j.crew || "EL")}
-    <label class="f">% put in business bank<input type="number" id="pay-bank" min="0" max="100" step="5" value="${j.bankPct != null ? Math.round(j.bankPct * 100) : ""}" placeholder="0"></label>
+    <label class="f">% put in business bank<input type="number" id="pay-bank" min="0" max="100" step="any" inputmode="decimal" value="${bp != null && bp !== "" ? Math.round(bp * 1000) / 10 : ""}" placeholder="0"></label>
   </div><div class="row"><button class="btn primary" data-act="save-pay" data-id="${esc(j.id)}">Save payment</button><button class="btn ghost" data-act="cancel-pay">Cancel</button></div></div>`;
 }
 // Add-job form: show the name box only for a new customer, and point out a job that's already waiting on payment.
@@ -3105,7 +3217,20 @@ function syncJobForm(fromChange) {
   if (ad && fromChange && (!was || ad.dataset.auto === "1" || S.leads.some(x => leadAddr(x) === was))) { ad.value = l ? leadAddr(l) : ""; ad.dataset.auto = "1"; }
   const box = $("#mj-open"); if (!box) return;
   const open = l ? S.jobs.filter(j => j.leadId === l.id && j.kind === "job" && ["scheduled", "completed"].includes(j.status)) : [];
-  box.innerHTML = open.length ? `<div class="banner warn spread"><span>${esc(leadName(l))} already has ${open.length === 1 ? `a ${money(open[0].amount)} job that's ${open[0].status === "completed" ? "done but not paid" : "scheduled"}` : `${open.length} open jobs`}. If this is that job, record the payment on it instead.</span><button class="btn sm" data-act="use-open-job" data-id="${esc(open[0].id)}">Record payment on it</button></div>` : "";
+  // their accepted estimates with no job yet: this job is tied to the one picked (picked for them when there's only one)
+  const ests = waitingEstimatesFor(l);
+  if (fromChange || S.money.jobQuote === undefined || (S.money.jobQuote && !ests.some(q => q.id === S.money.jobQuote))) S.money.jobQuote = ests.length === 1 ? ests[0].id : "";
+  const pick = estPickHTML("mj-quote", ests, S.money.jobQuote);
+  box.innerHTML = (pick ? `<div class="form" style="margin-bottom:10px">${pick}</div>` : "") + (open.length ? `<div class="banner warn spread"><span>${esc(leadName(l))} already has ${open.length === 1 ? `a ${money(open[0].amount)} job that's ${open[0].status === "completed" ? "done but not paid" : "scheduled"}` : `${open.length} open jobs`}. If this is that job, record the payment on it instead.</span><button class="btn sm" data-act="use-open-job" data-id="${esc(open[0].id)}">Record payment on it</button></div>` : "");
+  fillFromEstimate(fromChange);
+}
+// the picked estimate's price and service go in the form, unless something was typed there
+function fillFromEstimate(force) {
+  const q = S.quotes.find(x => x.id === S.money.jobQuote), pr = $("#mj-price"), sv = $("#mj-svc");
+  if (!q) { if (force) [pr, sv].forEach(el => { if (el && el.dataset.auto === "1") { el.value = ""; delete el.dataset.auto; } }); return; }
+  if (pr && (!pr.value || force && pr.dataset.auto === "1")) { pr.value = quoteTotals(q).total; pr.dataset.auto = "1"; }
+  const s = [...new Set((q.items || []).filter(isLine).map(i => String(i.service || "").trim()).filter(Boolean))].join(", ");
+  if (sv && s && (!sv.value || force && sv.dataset.auto === "1")) { sv.value = s; sv.dataset.auto = "1"; }
 }
 after.money = () => syncJobForm(false);
 
@@ -3266,7 +3391,7 @@ if (STANDALONE && window.GIC) {
     <section class="panel"><div class="panel-h"><h2>Backup</h2></div>
       <p class="note">Download a copy of everything in your CRM (leads, quotes, jobs, money and settings). Keep one now and then somewhere safe.</p>
       <div class="row"><button class="btn" data-act="backup-download">Download a backup</button></div>
-      <p class="note">Loading a backup file adds everything in it to your CRM. A record that's already here with the same ID is replaced by the one in the file.</p>
+      <p class="note">Loading a backup file adds everything in it to your CRM. A record that's already here with the same ID is replaced by the one in the file. Email blasts and their progress stay as they are now (only your message templates are loaded), so an old blast can't start sending again.</p>
       <div class="row"><label class="btn">Load a backup file<input type="file" id="restore-file" accept=".json,application/json" hidden></label></div>
       ${r ? `<div class="banner ${r.err ? "bad" : r.done ? "good" : "info"}" role="status">${esc(r.msg)}</div>${r.ready ? `<div class="row"><button class="btn primary" data-act="restore-go">Load it</button><button class="btn" data-act="restore-cancel">Cancel</button></div>` : ""}` : ""}
     </section>` : ""}`;
@@ -3277,8 +3402,9 @@ if (STANDALONE && window.GIC) {
     const file = ev.target.files[0]; ev.target.value = ""; if (!file) return;
     let data; try { data = JSON.parse(await file.text()); } catch (e) { S.restore = { err: true, msg: "That file isn't a CRM backup." }; schedule(); return; }
     if (!data || data.format !== "get-it-clean-crm-backup" || !data.collections) { S.restore = { err: true, msg: "That file isn't a CRM backup." }; schedule(); return; }
-    const parts = Object.keys(LABEL).map(c => [c, Object.keys(data.collections[c] || {}).length]).filter(x => x[1]);
-    if (!parts.length) { S.restore = { err: true, msg: "That backup is empty." }; schedule(); return; }
+    // blasts and their progress in the file aren't loaded (only the templates are), so they aren't counted
+    const parts = Object.keys(LABEL).map(c => [c, Object.keys(data.collections[c] || {}).filter(id => c !== "settings" || ((!/^blast/.test(id) || id === "blast-templates") && id !== "gone-contacts")).length]).filter(x => x[1]);
+    if (!parts.length) { S.restore = { err: true, msg: Object.keys(data.collections.settings || {}).length ? "That backup only has email blasts in it, and those aren't loaded from a backup." : "That backup is empty." }; schedule(); return; }
     S.restore = { ready: true, data, msg: `${file.name}: ${parts.map(([c, n]) => `${n} ${LABEL[c]}`).join(", ")}${data.exportedAt ? `, saved ${fmtD(data.exportedAt, { month: "short", day: "numeric", year: "numeric" })}` : ""}.` };
     schedule();
   }
@@ -3310,7 +3436,8 @@ if (STANDALONE && window.GIC) {
       S.restore = { busy: true, msg: "Loading… keep this page open." }; schedule();
       try {
         const counts = await G.importAll(r.data, (n, total) => { S.restore = { busy: true, msg: `Loading… ${n} of ${total}. Keep this page open.` }; schedule(); });
-        S.restore = { done: true, msg: `Loaded ${Object.entries(counts).map(([c, n]) => `${n} ${LABEL[c]}`).join(", ")}.` };
+        const got = Object.entries(counts).filter(([c, n]) => n && LABEL[c]);
+        S.restore = { done: true, msg: got.length ? `Loaded ${got.map(([c, n]) => `${n} ${LABEL[c]}`).join(", ")}.` : "Done. Nothing in that file needed loading." };
       } catch (e) { S.restore = { err: true, msg: e.code === "bad_file" ? "That file isn't a CRM backup." : "Couldn't load all of it. Check your internet connection and load the file again (nothing gets doubled)." }; }
       schedule();
     }
@@ -3532,6 +3659,1304 @@ function saveLead_(raw) {
   });
 }
 
+// ---------- EMAIL BLASTS ----------
+// A blast is a list of contacts, a few messages sent in turn, and a schedule. The CRM saves it in Firestore
+// (settings/blast-<id>), and a small Google Apps Script in the owner's own Google account (Settings > Email blasts)
+// sends it from their Gmail every few minutes during the hours picked, so it keeps going with the CRM closed. The script
+// writes how each blast is going to settings/blastrun-<id>, the addresses that asked out or bounced to
+// settings/blast-out, and checks in at settings/blast-sender. Only the owner can change blasts (firestore.rules). Website only.
+const BL_ON = () => STANDALONE && !!window.GIC;
+const BLAST_SENDER_VERSION = 1;
+// The schedule math and the email footer, shared word for word with the script (it's copied into it with toString), so
+// the CRM and the script agree on when each email goes out. Times are Eastern; parts(date) gives a date's Eastern clock.
+function blastCore(parts) {
+  const p2 = (n) => String(n).padStart(2, "0");
+  const ymdOf = (t) => { const x = parts(t); return x.y + "-" + p2(x.m) + "-" + p2(x.d); };
+  const num = (ymd) => ymd.split("-").map(Number);
+  // the moment the Eastern clock reads hh:mm on that day (4 or 5 hours behind UTC, with daylight saving)
+  function at(ymd, hm) {
+    const [y, m, d] = num(ymd), [h, mi] = String(hm).split(":").map(Number);
+    for (const off of [4, 5]) { const t = new Date(Date.UTC(y, m - 1, d, h + off, mi)); const x = parts(t); if (x.d === d && x.h === h && x.mi === mi) return t; }
+    return new Date(Date.UTC(y, m - 1, d, h + 5, mi));
+  }
+  const fromUTC = (t) => t.getUTCFullYear() + "-" + p2(t.getUTCMonth() + 1) + "-" + p2(t.getUTCDate());
+  const addD = (ymd, n) => { const [y, m, d] = num(ymd); return fromUTC(new Date(Date.UTC(y, m - 1, d + n))); };
+  const addM = (ymd, n) => { const [y, m, d] = num(ymd); const last = new Date(Date.UTC(y, m + n, 0)).getUTCDate(); return fromUTC(new Date(Date.UTC(y, m - 1 + n, Math.min(d, last)))); };
+  const dow = (ymd) => { const [y, m, d] = num(ymd); return new Date(Date.UTC(y, m - 1, d)).getUTCDay(); };
+  // no marketing email on New Year's Day, Memorial Day, July 4, Labor Day, Thanksgiving and the day after, Christmas Eve and Day, or New Year's Eve
+  function holiday(ymd) {
+    const [, m, d] = num(ymd), wd = dow(ymd);
+    if ((m === 1 && d === 1) || (m === 7 && d === 4) || (m === 12 && (d === 24 || d === 25 || d === 31))) return true;
+    if (m === 5 && wd === 1 && d > 24) return true;
+    if (m === 9 && wd === 1 && d <= 7) return true;
+    return m === 11 && ((wd === 4 && d >= 22 && d <= 28) || (wd === 5 && d >= 23 && d <= 29));
+  }
+  const sendDay = (ymd, s) => (s.days || []).indexOf(dow(ymd)) >= 0 && !holiday(ymd);
+  // the first moment at or after t that's on a send day, inside the hours
+  function slotFrom(t, s) {
+    let day = ymdOf(t);
+    for (let i = 0; i < 400; i++, day = addD(day, 1)) {
+      if (!sendDay(day, s)) continue;
+      const a = at(day, s.start), b = at(day, s.end);
+      if (i === 0 && t >= b) continue;
+      return i === 0 && t > a ? t : a;
+    }
+    return null;
+  }
+  // when a contact's next email is due: the first send day for the first one, then the gap after the day of the last
+  // one (null once they've had them all)
+  function dueAt(b, pr) {
+    const sent = (pr && pr.sent) || 0; if (sent >= (b.count || 1)) return null;
+    let from;
+    if (!sent) from = at(b.startDate, b.start);
+    else { const last = ymdOf(new Date(pr.lastAt)), n = Math.max(1, +b.every || 1); from = at(b.unit === "months" ? addM(last, n) : addD(last, n * (b.unit === "weeks" ? 7 : 1)), b.start); }
+    if (pr && pr.holdUntil && new Date(pr.holdUntil) > from) from = new Date(pr.holdUntil);
+    return slotFrom(from, b);
+  }
+  const inHours = (t, s) => { const day = ymdOf(t); return sendDay(day, s) && t >= at(day, s.start) && t < at(day, s.end); };
+  const fillIn = (text, r) => String(text || "").replace(/\{first\}/g, r.first || "there").replace(/\{community\}/g, r.community || "your property");
+  // every blast email ends with the signature, the mailing address and how to stop them (CAN-SPAM)
+  const SIG = "Thank you,\n\nElias\nGet It Clean Tampa Bay\n727-254-1391 | getitclean.tb@gmail.com\n3858 Keystone Way, Palm Harbor, FL\n\nIf you'd rather not hear from us, just reply \"remove\" and I'll take you off our list.";
+  const compose = (msg, r) => ({ subject: fillIn(msg.subject, r).replace(/\s+/g, " ").trim() || "Get It Clean Tampa Bay", body: fillIn(msg.body, r).replace(/\s+$/, "") + "\n\n" + SIG });
+  return { at, addD, ymdOf, dow, holiday, sendDay, slotFrom, dueAt, inHours, fillIn, compose, SIG };
+}
+const ET_FMT = (() => { try { return new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hourCycle: "h23", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric" }); } catch (e) { return null; } })();
+function etParts(t) {
+  if (!ET_FMT) return { y: t.getFullYear(), m: t.getMonth() + 1, d: t.getDate(), h: t.getHours(), mi: t.getMinutes() };
+  const o = {}; ET_FMT.formatToParts(t).forEach(p => { o[p.type] = +p.value; });
+  return { y: o.year, m: o.month, d: o.day, h: o.hour % 24, mi: o.minute };
+}
+const BC = blastCore(etParts);
+// a personal address elias asked never to be emailed, kept as a fingerprint so it isn't written out in the website's code
+const BLAST_BLOCKED_SHA = ["2199e30ded85effe745b1859af02e9549a2030ffdb94c66ca38eec1597f4ef06"];
+const BL_DAYS = [[1, "Mon"], [2, "Tue"], [3, "Wed"], [4, "Thu"], [5, "Fri"], [6, "Sat"], [0, "Sun"]];
+// Starter messages: two sets, for HOAs and property managers, and for customers and leads. They never mention a job
+// in another community (elias, 2026-10-16) and say only what's true of the business.
+const BLAST_STARTERS = [
+  { id: "hoa-1", set: "hoa", name: "HOA intro: we were in the area", subject: "Pressure washing for {community}", body: "Hi {first},\n\nMy name is Elias, and I run Get It Clean Tampa Bay, a local pressure washing company in Palm Harbor. We were in the area recently and noticed the buildup on the sidewalks, curbs and entry walls around {community}.\n\nWe clean common areas for HOAs and condo associations: sidewalks, curbs and gutters, entrance monuments, pool decks, clubhouses, fences and dumpster pads. I'd be glad to walk the property and put together a free estimate for the board.\n\nIs there a good time this week or next for a quick walk-through?" },
+  { id: "hoa-2", set: "hoa", name: "HOA follow-up: a free estimate for the board", subject: "Free estimate for {community}", body: "Hi {first},\n\nJust following up on my last note. If cleaning up the mold and algae around {community} is on the list this year, I'd be happy to put together a free written estimate you can bring to your next board meeting.\n\nJust reply with a good day and time, and I'll stop by." },
+  { id: "hoa-3", set: "hoa", name: "HOA: next year's budget", subject: "Pressure washing in next year's budget?", body: "Hi {first},\n\nA lot of boards are putting together next year's maintenance budget right now. If pressure washing or soft washing is on the list for {community}, I can give you a free written estimate now, so the board has real numbers to plan with.\n\nWe can schedule the work for whenever the budget allows." },
+  { id: "hoa-4", set: "hoa", name: "HOA: everything we clean", subject: "More than sidewalks: what we clean", body: "Hi {first},\n\nChecking in from Get It Clean Tampa Bay. Besides sidewalks and curbs, we also soft wash buildings and roofs, clean pool cages and lanais, wash windows and storefronts, clean gutters, and seal pavers.\n\nWith Florida's heat and humidity, mold and algae come back fast. If anything around {community} could use a cleaning, reply here and I'll set up a time for a free estimate." },
+  { id: "hoa-5", set: "hoa", name: "HOA: who handles it?", subject: "Quick question about {community}", body: "Hi {first},\n\nQuick question: who handles exterior cleaning for {community}? If it's you, I'd be happy to put together a free estimate. If it's someone else, I'd really appreciate it if you could point me in the right direction." },
+  { id: "cust-1", set: "cust", name: "Customers: time for a refresh", subject: "Time for a refresh?", body: "Hi {first},\n\nIt's Elias with Get It Clean Tampa Bay. It's been a while since we cleaned for you, and Florida mildew comes back fast. Want me to get you back on the schedule?\n\nJust reply with a day that works, or call or text me at 727-254-1391. The estimate is free as always." },
+  { id: "cust-2", set: "cust", name: "Customers: before the holidays", subject: "Get your home ready for the holidays", body: "Hi {first},\n\nThe holidays are coming up, and a clean driveway, walkway and house make a big difference when family comes over. I'm filling the schedule for the next few weeks now.\n\nReply here or call or text me at 727-254-1391 for a free estimate." },
+  { id: "cust-3", set: "cust", name: "Customers: more we can clean", subject: "Anything else we can clean for you?", body: "Hi {first},\n\nThank you again for choosing Get It Clean Tampa Bay. Besides driveways, we also soft wash houses and roofs, clean pool cages and lanais, wash windows, clean gutters and fences, and seal pavers.\n\nIf anything else around your home could use a cleaning, just reply and I'll come take a look. The estimate is free as always." },
+  { id: "cust-4", set: "cust", name: "Leads: still interested?", subject: "Still need pressure washing?", body: "Hi {first},\n\nIt's Elias with Get It Clean Tampa Bay. A while back you asked about pressure washing. If it's still on your list, I'd be happy to come out and give you a free in-person estimate.\n\nJust reply with a day and time that works for you." }
+];
+
+// ---------- the data ----------
+S.blasts = []; S.blastRuns = {}; S.blastSender = null; S.blastTpl = null; S.blastTest = null; S.blastOut = {}; S.blastAllow = {}; S.blastRulesOk = null;
+// only the owner can write settings/blast*, so a blast or its progress counts only under its own name
+const isBlastDoc = (d) => d.kind === "blast" && /^blast-/.test(d.id);
+const isRunDoc = (d) => d.kind === "blastrun" && d.id === "blastrun-" + d.blastId;
+function blastListen(db) {
+  db.collection("settings").onSnapshot(snap => {
+    const docs = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
+    S.blasts = docs.filter(isBlastDoc).map(d => d.stoppedAt && d.status !== "stopped" ? Object.assign(d, { status: "stopped" }) : d) // Stop is for good
+      .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+    S.blastRuns = {}; docs.filter(isRunDoc).forEach(d => { S.blastRuns[d.blastId] = d; });
+    S.blastSender = docs.find(d => d.id === "blast-sender") || null; S.blastTest = docs.find(d => d.id === "blast-test") || null;
+    const t = docs.find(d => d.id === "blast-templates"); S.blastTpl = t && Array.isArray(t.list) ? t.list : null;
+    const al = docs.find(d => d.id === "blast-allow"); S.blastAllow = (al && al.allow) || {};
+    // an address you allowed again is off this list at once, before the sender catches up
+    const o = docs.find(d => d.id === "blast-out"), out = (o && o.out) || {}; S.blastOut = {};
+    Object.keys(out).forEach(k => { if (!(Date.parse(S.blastAllow[k] || 0) >= Date.parse((out[k] || {}).at || 0))) S.blastOut[k] = out[k]; });
+    if (S.view === "email" || (S.view === "settings" && S.setTab === "blasts")) schedule();
+    // the editor follows changes made on another device: Pause on the phone shows as paused here, and a save here
+    // doesn't undo it
+    if (BD && BD.id && $("#modal #bl-acts")) {
+      const cur = S.blasts.find(b => b.id === BD.id);
+      if (cur) { BP.seen = true; ["status", "startedAt", "stoppedAt"].forEach(k => { if (cur[k] !== undefined) BD[k] = cur[k]; }); }
+      else if (BP.seen && !BP.saving) { BD = null; S.dirty = false; closeModal(); toast("This blast was deleted on another device."); return; }
+    }
+    if (BD && $("#modal #bl-acts")) blastRefresh(["acts", "progress", "pill"]);
+  }, () => {});
+  blastRulesCheck(db);
+}
+// whether the database rules that keep blasts owner-only are published (an old set doesn't let anyone read rulesv).
+// Checked again on Settings > Email blasts and before Start, so publishing them shows without a reload.
+let blastRulesAt = 0;
+function blastRulesCheck(db) {
+  db = db || S.db; blastRulesAt = Date.now(); if (!db) return Promise.resolve();
+  return db.collection("rulesv").doc("blasts1").get().then(() => { S.blastRulesOk = true; }, (e) => { S.blastRulesOk = e && e.code === "revoked" ? false : null; })
+    .then(() => { if (S.view === "settings" && S.setTab === "blasts") schedule(); });
+}
+const blastTemplates = () => S.blastTpl || BLAST_STARTERS;
+// contacts the HOA follow-up emails from the Claude project already go to (they were imported with that note)
+const onHoaFollowups = (l) => !l.hoaFollowupsOff && (l.activity || []).some(a => /automatic follow-ups|then automatic follow/i.test(a.text || ""));
+const isKylemont = (l) => /kylemont/i.test([l.name, l.company, l.email, l.area, l.address].join(" "));
+const emailKey = (e) => String(e || "").trim().toLowerCase();
+// one plain address: an email box holding two ("a@x.com, b@y.com") would send to both
+const oneAddr = (e) => /^[^\s@,;<>()"']+@[^\s@,;<>()"']+\.[a-z]{2,}$/i.test(String(e || "").trim());
+// addresses on the never-email list by fingerprint (worked out once per address, when the editor opens)
+const BL_HASH = new Map();
+async function blastHashScan() {
+  for (const k of new Set(S.leads.map(l => emailKey(l.email)).filter(k => k && !BL_HASH.has(k)))) {
+    let bad = false; try { for (const x of k.split(/[\s,;<>()"']+/).filter(Boolean)) if (BLAST_BLOCKED_SHA.includes(await sha256(x))) bad = true; } catch (e) {}
+    BL_HASH.set(k, bad);
+  }
+}
+// why this contact can't get blast emails ("" when they can)
+function blastOwnBlock(l) {
+  if (!l.email || !/@/.test(l.email)) return "No email";
+  if (!oneAddr(l.email)) return "Email needs fixing";
+  if (l.dnc) return "Do not contact";
+  if (l.unsubscribed) return "Asked to be removed";
+  if (l.emailBounced) return "Email bounced";
+  if (l.noAutoEmail || blockedEmail(l.email) || BL_HASH.get(emailKey(l.email))) return "You email them yourself";
+  return "";
+}
+// Blocking goes by address: a shared inbox where one contact asked out (or bounced, or is do not contact) gets nothing,
+// and neither does an address the sender saw ask out or bounce. Worked out once per change to the leads.
+let BL_ADDR = { leads: null };
+function blastAddrs() {
+  if (BL_ADDR.leads === S.leads && BL_ADDR.out === S.blastOut && BL_ADDR.hashed === BL_HASH.size) return BL_ADDR;
+  const bad = new Map(), fu = new Set();
+  S.leads.forEach(l => {
+    const k = emailKey(l.email); if (!k) return;
+    // an email box holding several addresses blocks each of them
+    const ks = [k].concat(k.split(/[\s,;<>()"']+/).filter(x => x !== k && /@/.test(x)));
+    const why = l.dnc ? "Do not contact" : l.unsubscribed ? "Asked to be removed" : l.emailBounced ? "Email bounced"
+      : l.noAutoEmail || blockedEmail(l.email) || BL_HASH.get(k) || isKylemont(l) ? "You email them yourself" : "";
+    if (why) ks.forEach(x => { if (!bad.has(x)) bad.set(x, { why, id: isKylemont(l) ? "" : l.id }); });
+    if (onHoaFollowups(l)) ks.forEach(x => fu.add(x));
+  });
+  Object.keys(S.blastOut || {}).forEach(k => { const w = S.blastOut[k].why; if (!bad.has(k)) bad.set(k, { why: w === "bounced" ? "Email bounced" : w === "replied" ? "Wrote back to a blast" : "Asked to be removed", id: "" }); });
+  return (BL_ADDR = { leads: S.leads, out: S.blastOut, hashed: BL_HASH.size, bad, fu });
+}
+function blastBlock(l) {
+  const own = blastOwnBlock(l); if (own) return own;
+  const x = blastAddrs().bad.get(emailKey(l.email)); if (!x) return "";
+  const o = x.id && x.id !== l.id ? leadById(x.id) : null;
+  return o ? `${x.why}: same email as ${leadName(o)}` : x.why;
+}
+// on the HOA follow-ups, or sharing an inbox with a contact who is
+const onFollowupsAddr = (l) => blastAddrs().fu.has(emailKey(l.email));
+// running blasts an address is already in (other than this one)
+const blastsWith = (l, exceptId) => { const k = emailKey(l.email); return S.blasts.filter(b => b.id !== exceptId && (b.status === "running" || b.status === "paused") && (b.recipients || []).some(r => r.key === k && !blastDone(b, r))); };
+// a reason to think twice before adding them ("" when there's none)
+function blastWarn(l, exceptId) {
+  if (onFollowupsAddr(l)) return onHoaFollowups(l) ? "Gets your HOA follow-ups" : "Inbox gets your HOA follow-ups";
+  const other = blastsWith(l, exceptId)[0]; if (other) return `In “${other.name || "another blast"}”`;
+  if (l.stage === "lost") return "Not interested";
+  return "";
+}
+const andList = (a) => a.length > 1 ? a.slice(0, -1).join(", ") + " and " + a[a.length - 1] : (a[0] || "");
+// "Hi Angela," for a person's name; "Hi there," when the name is the community or an office
+function blastFirst(l) {
+  const n = String(l.name || "").trim(); if (!n) return "";
+  if (/\b(board|manager|management|office|association|hoa|condo|community|info|owners?|residents?|committee|team|staff)\b/i.test(n)) return "";
+  if (isOutreach(l) && (!l.company || commKey(l.company) === commKey(n))) return "";
+  return firstName(l);
+}
+// the community's name as it reads in a sentence ("Ridgemoor (Master Association)" reads as "Ridgemoor")
+const blastCommunity = (l) => String(l.company || (isOutreach(l) ? l.name : "") || "").replace(/\s*\([^)]*\)\s*$/, "").trim() || "your home";
+const MANAGED = "the communities you manage";
+// One email per address: contacts that share an inbox (a manager with several communities) get one email together.
+// A management company, or an inbox with more than 3 communities, reads "the communities you manage".
+// outreach and lostIds tell the sender who has since moved to Leads or been marked not interested.
+function blastRecipients(ids) {
+  const by = new Map();
+  ids.map(leadById).filter(l => l && !isKylemont(l) && !blastBlock(l)).forEach(l => { const k = emailKey(l.email); if (!by.has(k)) by.set(k, []); by.get(k).push(l); });
+  return [...by].map(([key, ls]) => {
+    const firsts = [...new Set(ls.map(blastFirst))], comms = [...new Set(ls.map(blastCommunity))];
+    return { key, email: key, leadIds: ls.map(l => l.id), first: firsts.length === 1 ? firsts[0] : "", community: ls.some(l => l.type === "Property manager") || comms.length > 3 ? MANAGED : andList(comms), names: ls.map(leadName),
+      outreach: ls.every(isOutreach), lostIds: ls.filter(l => l.stage === "lost").map(l => l.id) };
+  });
+}
+const blastPerson = (b, key) => { const run = S.blastRuns[b.id]; return run && Array.isArray(run.people) ? run.people.find(p => p.key === key) || null : null; };
+// a contact is finished when they've replied, bounced, asked out or been skipped, or had every email (worked out from the
+// count, so raising it later sends them the rest)
+const FINAL = ["replied", "removed", "bounced", "skipped"];
+function blastDone(b, r) { if (!r) return true; const p = blastPerson(b, r.key); return !!p && (FINAL.includes(p.status) || (p.sent || 0) >= (b.count || 1)); }
+function blastNums(b) {
+  const rs = b.recipients || [], ps = rs.map(r => blastPerson(b, r.key) || {});
+  const c = { contacts: rs.length, sent: ps.reduce((n, p) => n + (p.sent || 0), 0), replied: 0, stopped: 0, done: 0, waiting: 0 };
+  ps.forEach(p => { if (p.status === "replied") c.replied++; else if (["removed", "bounced", "skipped"].includes(p.status)) c.stopped++; else if ((p.sent || 0) >= (b.count || 1)) c.done++; else c.waiting++; });
+  return c;
+}
+function blastNext(b) {
+  let best = null;
+  (b.recipients || []).forEach(r => { if (blastDone(b, r)) return; const t = BC.dueAt(b, blastPerson(b, r.key)); if (t && (!best || t < best)) best = t; });
+  return best;
+}
+// how the script is doing: none (not set up), old (needs the new code), stale (stopped checking in), ok
+function senderState() {
+  const s = S.blastSender; if (!s || !s.lastRun) return "none";
+  if ((+s.version || 0) < BLAST_SENDER_VERSION) return "old";
+  const p = etParts(new Date()), mins = p.h * 60 + p.mi;
+  // it rests from 9 PM to 7 AM, so a check-in from last night is fine first thing in the morning
+  if (Date.now() - Date.parse(s.lastRun) > 30 * 60000 && mins >= 7 * 60 + 30 && mins < 21 * 60) return "stale";
+  return "ok";
+}
+function blastState(b) {
+  if (!b.status || b.status === "draft") return ["Draft", ""];
+  if (b.status === "stopped") return ["Stopped", "s-lost"];
+  const n = blastNums(b);
+  if (n.contacts && !n.waiting) return ["Finished", "s-scheduled"];
+  if (b.status === "paused") return ["Paused", "s-quoted"];
+  if (senderState() !== "ok") return ["Waiting on the sender", "due"];
+  return n.sent ? ["Sending", "s-new"] : ["Scheduled", "s-new"];
+}
+const fmtWhen = (t) => t ? t.toLocaleString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "";
+const fmtDay = (t) => t ? t.toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" }) : "";
+const fmtHM = (hm) => { const [h, m] = String(hm || "0:0").split(":").map(Number); return new Date(2000, 0, 1, h, m).toLocaleTimeString("en-US", { hour: "numeric", minute: m ? "2-digit" : undefined }); };
+// the outreach list's status for a contact in a blast
+function blastStatusOf(l) {
+  if (!BL_ON()) return null;
+  for (const b of S.blasts) {
+    if (b.status !== "running" && b.status !== "paused") continue;
+    const r = (b.recipients || []).find(x => (x.leadIds || []).includes(l.id)); if (!r) continue;
+    if (l.stage === "lost" && !(r.lostIds || []).includes(l.id)) continue;
+    const p = blastPerson(b, r.key) || {};
+    if (p.status === "replied") return ["Replied to a blast", "s-scheduled", "stopped"];
+    if (["removed", "bounced", "skipped"].includes(p.status)) continue;
+    if (blastDone(b, r)) continue;
+    const nx = b.status === "running" ? BC.dueAt(b, p) : null;
+    return [nx ? `Blast email ${fmtD(BC.ymdOf(nx))}` : "In a paused blast", "due", "emailing"];
+  }
+  return null;
+}
+// a contact who replied to a blast moves from email outreach to Leads (once per reply)
+const blastPromoting = new Set();
+S.blastPromote = () => {
+  if (!S.db || !BL_ON()) return;
+  outreachOnly().forEach(l => {
+    // one who asked off but also wrote more (a quote, a visit) moves too, with drips off, so you read what they wrote
+    const offMore = l.unsubscribed && l.blastOutMore && l.blastOutMore === l.blastReplied;
+    if (!l.blastReplied || l.blastPromoted === l.blastReplied || l.dnc || l.crashOut || l.stage === "lost" || (l.unsubscribed && !offMore) || blastPromoting.has(l.id)) return;
+    blastPromoting.add(l.id);
+    promote(l, offMore ? "Asked for no more blast emails but wrote more. Moved to Leads so you can read it." : "Replied to your email blast. Moved to Leads.", offMore ? { blastPromoted: l.blastReplied, dripOff: true, dripNote: "They asked for no more emails." } : { blastPromoted: l.blastReplied }).catch(() => {}).finally(() => blastPromoting.delete(l.id));
+  });
+};
+
+// ---------- the Blasts tab ----------
+function senderBanner() {
+  const s = S.blastSender || {}, st = senderState(), me = (window.GIC && window.GIC.me && window.GIC.me()) || {};
+  const set = me.isOwner ? ` <button class="btn sm" data-nav="settings" data-bl-set="1">${st === "none" ? "Set it up" : "Open"}</button>` : "";
+  if (st === "none") return `<div class="banner info">Blasts send from your Gmail through a small Google script in your own account, so they keep going when the CRM is closed. It's set up once, on a computer.${set}</div>`;
+  if (st === "old") return `<div class="banner warn">There's a newer version of the email sender. Paste the new code at script.google.com (Settings > Email blasts) so blasts keep going.${set}</div>`;
+  if (st === "stale") return `<div class="banner warn">The email sender hasn't checked in since ${esc(fmtWhen(new Date(s.lastRun)))}, so nothing is going out. Open Settings > Email blasts to see why.${set}</div>`;
+  const wrongAcct = s.account && s.account.toLowerCase() !== BUSINESS.email;
+  return `<div class="banner ${wrongAcct || s.lastError ? "warn" : "good"}">Sender on${s.account ? `: emails go out from <b>${esc(s.account)}</b>` : ""}${wrongAcct ? `, not ${esc(BUSINESS.email)}. Set the sender up again in that account` : ""}. Last check ${esc(fmtWhen(new Date(s.lastRun)))}${s.quotaLeft != null ? ` · Gmail lets it send ${esc(s.quotaLeft)} more today` : ""}.${s.lastError && Date.now() - Date.parse(s.lastErrorAt || 0) < 86400000 ? ` Last problem: ${esc(s.lastError)}` : ""}</div>`;
+}
+function blastsTabHTML() {
+  const me = (window.GIC && window.GIC.me && window.GIC.me()) || {};
+  const rows = S.blasts.map(b => {
+    const [st, cls] = blastState(b), n = blastNums(b), nx = b.status === "running" ? blastNext(b) : null;
+    const sub = [plural(n.contacts, "address", "addresses"), `${plural((b.messages || []).length, "message")}, ${blastEvery(b)}`, n.sent ? `${plural(n.sent, "email")} sent` : "", n.replied ? `${n.replied} replied` : "", nx && st !== "Finished" ? `next ${fmtDay(nx)}` : ""].filter(Boolean).join(" · ");
+    return `<button class="item flow" data-act="bl-open" data-id="${esc(b.id)}"><div class="main-col"><span class="t">${esc(b.name || "Untitled blast")}</span><span class="s" style="white-space:normal">${esc(sub)}</span></div><div class="r"><span class="pill ${cls}">${esc(st)}</span></div></button>`;
+  }).join("");
+  const tpls = blastTemplates();
+  return `${senderBanner()}
+    <section class="panel flush"><div class="panel-h"><h2>Email blasts</h2>${me.isOwner ? `<button class="btn primary" data-act="bl-new">+ New blast</button>` : ""}</div>
+      ${rows ? `<div class="list">${rows}</div>` : `<div class="pad note">Pick who gets it, write a few messages that go out in turn so it isn't the same email every time, and set how often. Nothing goes out until you tap Start.</div>`}
+    </section>
+    <section class="panel flush"><div class="panel-h"><h2>Message templates</h2>${me.isOwner ? `<button class="btn sm" data-act="bl-tpl-new">+ New template</button>` : ""}</div>
+      <p class="pad note">Ready-made messages to start a blast from. {first} becomes the contact's first name (or “there”), {community} the community or company. Your signature, the business address and a “reply remove” line go under every email on their own.</p>
+      <div class="list">${tpls.map((t, i) => `<button class="item flow" data-act="bl-tpl-open" data-i="${i}"><div class="main-col"><span class="t">${esc(t.name || t.subject || "Template")}</span><span class="s">${esc(t.subject || "")}</span></div><div class="r"><span class="pill">${t.set === "cust" ? "Customers" : t.set === "hoa" ? "HOAs" : "Yours"}</span></div></button>`).join("")}</div>
+    </section>`;
+}
+
+// ---------- the blast editor ----------
+// picking which email to preview isn't a change to the blast
+["bl-prev-msg", "bl-prev-to"].forEach(id => LIVE_IDS.add(id));
+let BD = null; // the blast being edited
+const BP = { pick: new Set(), q: "", show: "all", open: new Set(), prevKey: "", prevMsg: 0, confirm: "", seen: false, saving: false, html: {} };
+function nextSendDay(from, days) { let d = from; for (let i = 0; i < 30; i++, d = BC.addD(d, 1)) if (BC.sendDay(d, { days })) return d; return from; }
+function newBlast() {
+  const days = [2, 3, 4];
+  return { id: "", kind: "blast", name: "", status: "draft", messages: blastTemplates().filter(t => t.set !== "cust").slice(0, 4).map(t => ({ subject: t.subject, body: t.body })),
+    recipients: [], every: 2, unit: "weeks", count: 4, days, start: "09:00", end: "16:00", startDate: nextSendDay(addDays(1), days), perDay: 40 };
+}
+async function openBlast(b) {
+  if (!BL_ON()) return;
+  await blastHashScan();
+  BD = b ? JSON.parse(JSON.stringify(b)) : newBlast();
+  if (!Array.isArray(BD.messages) || !BD.messages.length) BD.messages = [{ subject: "", body: "" }];
+  BP.pick = new Set((BD.recipients || []).flatMap(r => r.leadIds || [])); BP.q = ""; BP.show = "all"; BP.open = new Set(); BP.prevKey = ""; BP.prevMsg = 0; BP.confirm = ""; BP.seen = !!BD.id; BP.saving = false; BP.html = {};
+  openLeadId = null; S.dirty = false;
+  showModal(blastEditorHTML(), true); blastRefresh([]);
+}
+const blastLive = () => BD && (BD.status === "running" || BD.status === "paused");
+const canEditBlast = () => !!((window.GIC && window.GIC.me && window.GIC.me()) || {}).isOwner;
+function blastEditorHTML() {
+  const [st, cls] = BD.id ? blastState(S.blasts.find(b => b.id === BD.id) || BD) : ["New", ""];
+  return `<div class="sh"><div class="sh-t"><h2 id="bl-h" tabindex="-1">${esc(BD.name || (BD.id ? "Untitled blast" : "New email blast"))}</h2><span class="pill ${cls}" id="bl-pill">${esc(st)}</span></div><button class="x" data-close="1" aria-label="Close">×</button></div>
+  <div class="sb">
+    <div id="bl-progress">${blastProgressHTML()}</div>
+    <section class="panel"><label class="f">Blast name (only you see it)<input type="text" id="bl-name" value="${esc(BD.name || "")}" placeholder="Fall HOA emails" autocomplete="off" ${canEditBlast() ? "" : "readonly"}></label></section>
+    <section class="panel flush"><div class="panel-h"><h2>1. Who gets it</h2><span class="pill" id="bl-count"></span></div><div id="bl-who">${blastWhoHTML()}</div></section>
+    <section class="panel flush"><div class="panel-h"><h2>2. The messages</h2><span class="row"><select id="bl-fill" aria-label="Fill the messages with" ${canEditBlast() ? "" : "disabled"}><option value="">Fill with a set…</option><option value="hoa">HOA and property manager messages</option><option value="cust">Customer and lead messages</option></select><button class="btn sm" data-act="bl-msg-add" ${canEditBlast() ? "" : "disabled"}>+ Add message</button></span></div>
+      <p class="pad note">They go out in this order, one per email, so each contact gets a different one every time. After the last one it starts over at the first. {first} is the contact's first name, {community} the community or company. Your signature, the business address and a “reply remove” line are added under each email.</p>
+      <div id="bl-msgs" class="pad stack">${blastMsgsHTML()}</div></section>
+    <section class="panel"><div class="panel-h"><h2>3. When it sends</h2></div><div id="bl-when">${blastWhenHTML()}</div><p class="note" id="bl-sum" role="status"></p></section>
+    <section class="panel"><div class="panel-h"><h2>Preview</h2><span class="row" id="bl-prev-pick"></span></div><div id="bl-prev"></div></section>
+    <div id="bl-acts" class="stack">${blastActsHTML()}</div>
+  </div>`;
+}
+// ---- 1. who gets it ----
+function blastGroups() {
+  const all = S.leads.filter(l => !isKylemont(l)), g = new Map();
+  const put = (k, l) => { if (!g.has(k)) g.set(k, []); g.get(k).push(l); };
+  all.forEach(l => {
+    if (isOutreach(l)) put(l.type === "Property manager" ? "Property management companies" : "HOAs: " + (l.area || l.city || "Other"), l);
+    else put(["paid", "completed"].includes(l.stage) ? "Customers" : l.stage === "lost" ? "Lost leads" : "Open leads", l);
+  });
+  const rank = (k) => k.startsWith("HOAs: ") ? 0 : k === "Property management companies" ? 1 : k === "Customers" ? 2 : k === "Open leads" ? 3 : 4;
+  return [...g].sort((a, b) => rank(a[0]) - rank(b[0]) || a[0].localeCompare(b[0])).map(([k, ls]) => [k, ls.sort((a, b) => leadName(a).localeCompare(leadName(b)))]);
+}
+const pickable = (l) => !blastBlock(l);
+const easyPick = (l) => pickable(l) && !blastWarn(l, BD && BD.id);
+function blastWhoHTML() {
+  const q = BP.q.trim().toLowerCase(), groups = blastGroups();
+  const hoaN = S.leads.filter(l => isOutreach(l) && pickable(l) && onFollowupsAddr(l)).length;
+  const quick = [["hoa", "All HOAs"], ["pm", "All property managers"], ["cust", "All customers"], ["open", "All open leads"], ["none", "Clear"]];
+  const body = groups.map(([g, ls]) => {
+    const shown = ls.filter(l => !q || outreachMatch(l, q)); if (!shown.length) return "";
+    const ready = ls.filter(easyPick), on = ls.filter(l => BP.pick.has(l.id)).length, open = !!q || BP.open.has(g);
+    const allOn = ready.length && ready.every(l => BP.pick.has(l.id));
+    return `<div class="bl-grp"><div class="grp-toggle static"><label class="check"><input type="checkbox" data-bl-grp="${esc(g)}" ${allOn ? "checked" : ""} ${ready.length && canEditBlast() ? "" : "disabled"} aria-label="Pick everyone ready in ${esc(g)}"><span class="gname">${esc(g)}</span></label><span class="gsum">${on ? `${on} of ${ls.length} picked` : plural(ls.length, "contact")}</span>${q ? "" : `<button class="btn sm ghost" data-bl-open="${esc(g)}" aria-expanded="${open}">${open ? "Hide" : "Show"}</button>`}</div>
+      ${open ? shown.map(l => { const no = blastBlock(l), w = no ? "" : blastWarn(l, BD.id); return `<label class="check bl-row${no ? " off" : ""}"><input type="checkbox" data-bl-lead="${esc(l.id)}" ${BP.pick.has(l.id) && !no ? "checked" : ""} ${no || !canEditBlast() ? "disabled" : ""}><span class="main-col"><span class="t">${esc(leadName(l))}</span><span class="s">${esc(l.email || l.phone || "")}${l.name && l.company ? " · " + esc(l.name) : ""}</span></span>${no ? `<span class="pill s-lost">${esc(no)}</span>` : w ? `<span class="pill due">${esc(w)}</span>` : ""}</label>`; }).join("") : ""}</div>`;
+  }).join("");
+  return `<div class="pad stack" style="gap:10px">
+    <div class="row" role="group" aria-label="Quick picks">${quick.map(([k, t]) => `<button class="btn sm${k === "none" ? " ghost" : ""}" data-act="bl-quick" data-k="${k}" ${canEditBlast() ? "" : "disabled"}>${t}</button>`).join("")}</div>
+    <input type="search" id="bl-q" placeholder="Search a community, name or email…" value="${esc(BP.q)}" aria-label="Search contacts">
+    ${hoaN ? `<p class="note">${plural(hoaN, "contact")} already ${hoaN === 1 ? "gets" : "get"} the HOA follow-up emails your Claude project sends (or ${hoaN === 1 ? "shares an inbox" : "share inboxes"} with one that does), so the quick picks leave them out. If you tick one yourself, that inbox gets both.</p>` : ""}
+    <p class="note" id="bl-who-note"></p></div>
+    <div class="list bl-list">${body || `<div class="empty">No contacts match.</div>`}</div>`;
+}
+function blastWhoSummary() {
+  const ids = [...BP.pick], rs = blastRecipients(ids), shared = rs.filter(r => r.leadIds.length > 1);
+  const c = $("#bl-count"); if (c) c.textContent = `${plural(ids.filter(id => leadById(id)).length, "contact")} · ${plural(rs.length, "email")}`;
+  const n = $("#bl-who-note"); if (n) n.textContent = shared.length ? `${plural(shared.reduce((k, r) => k + r.leadIds.length, 0), "contact")} use the same email address (${shared.length} ${shared.length === 1 ? "inbox" : "inboxes"}). Each inbox gets one email that names all of its communities, not one per community.` : "";
+}
+// ---- 2. the messages ----
+// how many of a started blast's emails are saved (and so stay in place)
+const blastKept = () => ((S.blasts.find(b => b.id === (BD && BD.id)) || {}).messages || []).length;
+function blastMsgsHTML() {
+  const tpls = blastTemplates(), n = BD.messages.length, ed = canEditBlast(), fixed = blastLive() || BD.status === "stopped", kept = blastKept();
+  return (fixed && ed ? `<p class="note">It has started, so the emails stay in this order: each contact's next email is counted from the ones they already got. You can still change the wording, or add emails at the end (and move or remove those until you save).</p>` : "") + BD.messages.map((m, i) => `<div class="tpl" data-bl-msg="${i}"><div class="spread"><b>Email ${i + 1}</b><span class="row">
+      <select data-bl-use="${i}" aria-label="Start email ${i + 1} from a template" ${ed ? "" : "disabled"}><option value="">Use a template…</option>${tpls.map((t, k) => `<option value="${k}">${esc(t.name || t.subject)}</option>`).join("")}</select>
+      <button class="btn sm ghost" data-act="bl-msg-up" data-i="${i}" ${i && ed && (!fixed || i - 1 >= kept) ? "" : "disabled"} aria-label="Move email ${i + 1} up">Up</button><button class="btn sm ghost" data-act="bl-msg-del" data-i="${i}" ${n > 1 && ed && (!fixed || i >= kept) ? "" : "disabled"} aria-label="Remove email ${i + 1}">Remove</button></span></div>
+    <label class="f">Subject<input type="text" data-bk="subject" value="${esc(m.subject || "")}" ${ed ? "" : "readonly"}></label>
+    <label class="f">Message<textarea data-bk="body" rows="8" ${ed ? "" : "readonly"}>${esc(m.body || "")}</textarea></label></div>`).join("");
+}
+// ---- 3. when ----
+function blastWhenHTML() {
+  const ed = canEditBlast() ? "" : "disabled", hrs = []; for (let h = 7; h <= 19; h++) hrs.push(pad(h) + ":00");
+  const sel = (id, cur, lab) => `<select id="${id}" aria-label="${lab}" ${ed}>${hrs.map(h => `<option value="${h}" ${cur === h ? "selected" : ""}>${fmtHM(h)}</option>`).join("")}</select>`;
+  return `<div class="form">
+    <label class="f">Send each contact an email every<span class="row"><input type="number" id="bl-every" min="1" max="52" value="${esc(BD.every)}" style="width:80px" ${ed}><select id="bl-unit" aria-label="Days, weeks or months" ${ed}>${[["days", "days"], ["weeks", "weeks"], ["months", "months"]].map(([k, t]) => `<option value="${k}" ${BD.unit === k ? "selected" : ""}>${t}</option>`).join("")}</select></span></label>
+    <label class="f">Emails each contact gets in all<input type="number" id="bl-count-in" min="1" max="60" value="${esc(BD.count)}" ${ed}></label>
+    <label class="f">First emails go out on<input type="date" id="bl-start" value="${esc(BD.startDate)}" min="${today()}" ${ed || (blastLive() && BD.startedAt ? "disabled" : "")}></label>
+    <label class="f">Up to this many a day (80 at most)<input type="number" id="bl-perday" min="1" max="80" value="${esc(BD.perDay)}" ${ed}></label>
+    <div class="f full"><span>Send on</span><div class="svc-pick" id="bl-days" role="group" aria-label="Send on these days">${BL_DAYS.map(([d, t]) => `<label><input type="checkbox" value="${d}" ${(BD.days || []).includes(d) ? "checked" : ""} ${ed}> ${t}</label>`).join("")}</div></div>
+    <label class="f">Starting at${sel("bl-from", BD.start, "Earliest time")}</label>
+    <label class="f">Until${sel("bl-to", BD.end, "Latest time")}</label>
+  </div>`;
+}
+// reads the form into BD
+function blastRead() {
+  if (!BD || !$("#modal #bl-when")) return BD;
+  const v = (id) => { const el = $("#" + id); return el ? el.value : ""; };
+  BD.name = v("bl-name").trim();
+  const ms = []; document.querySelectorAll("#modal [data-bl-msg]").forEach(c => ms.push({ subject: c.querySelector('[data-bk="subject"]').value, body: c.querySelector('[data-bk="body"]').value }));
+  if (ms.length) BD.messages = ms;
+  BD.every = Math.max(1, Math.min(52, Math.round(+v("bl-every") || 1))); BD.unit = v("bl-unit") || "weeks";
+  BD.count = Math.max(1, Math.min(60, Math.round(+v("bl-count-in") || 1))); BD.perDay = Math.max(1, Math.min(80, Math.round(+v("bl-perday") || 40)));
+  if (v("bl-start")) BD.startDate = v("bl-start");
+  BD.days = [...document.querySelectorAll("#bl-days input:checked")].map(i => +i.value);
+  BD.start = v("bl-from") || "09:00"; BD.end = v("bl-to") || "16:00";
+  return BD;
+}
+// what's wrong with the schedule ("" when it's fine)
+function blastProblem(forStart) {
+  const b = BD, rs = blastRecipients([...BP.pick]);
+  if (!b.days.length) return "Pick at least one day to send on.";
+  if (b.end <= b.start) return "The last time has to be later than the first.";
+  if (!fuYearOk(b.startDate || "")) return "Pick the day the first emails go out.";
+  if (b.messages.some(m => !m.subject.trim() || !m.body.trim())) return "Every email needs a subject and a message. Remove the ones you don't need.";
+  const odd = b.messages.map(m => (m.subject + m.body).match(/\{[^}]*\}/g) || []).flat().filter(x => !["{first}", "{community}"].includes(x));
+  if (odd.length) return `${odd[0]} won't be filled in. Only {first} and {community} are.`;
+  if (forStart && !rs.length) return "Pick who gets it first.";
+  if (forStart && S.blastRulesOk !== true) return S.blastRulesOk === false ? "First update your database rules (Settings > Email blasts, step 1), so only you can start blasts." : "Couldn't check that your database rules are up to date. Check your internet connection and try again.";
+  if (forStart && !b.startedAt && b.startDate < today()) return "The first day has passed. Pick another.";
+  return "";
+}
+const blastEvery = (b) => { const u = { months: "month", days: "day" }[b.unit] || "week", n = +b.every || 1; return n > 1 ? `every ${n} ${u}s` : `every ${u}`; };
+function blastSummary() {
+  const el = $("#bl-sum"); if (!el) return; const b = blastRead(), bad = blastProblem(false);
+  if (bad) { el.innerHTML = `<span class="banner warn" style="display:block">${esc(bad)}</span>`; return; }
+  const rs = blastRecipients([...BP.pick]), slots = Math.floor(((+b.end.slice(0, 2)) * 60 - (+b.start.slice(0, 2)) * 60) / 5);
+  const perDay = Math.min(b.perDay, slots), days = rs.length ? Math.ceil(rs.length / perDay) : 0;
+  const first = BC.slotFrom(BC.at(b.startDate, b.start), b);
+  const span = (b.count - 1) * b.every, unit = b.unit === "months" ? "month" : b.unit === "days" ? "day" : "week";
+  el.textContent = `${rs.length ? `${plural(rs.length, "address", "addresses")} each get ${plural(b.count, "email")}, one every ${b.every > 1 ? b.every + " " + unit + "s" : unit}` : `Each contact gets ${plural(b.count, "email")}, one every ${b.every > 1 ? b.every + " " + unit + "s" : unit}`}, on ${andList(BL_DAYS.filter(([d]) => b.days.includes(d)).map(x => x[1]))} between ${fmtHM(b.start)} and ${fmtHM(b.end)}. The first ones go out ${first ? fmtDay(first) : "soon"}${days > 1 ? ` and take about ${days} send days (about 12 an hour, up to ${perDay} a day)` : ""}.${b.count > 1 ? ` The last ones go out about ${span} ${unit}${span === 1 ? "" : "s"} after that.` : ""} No emails on major holidays. Anyone who replies, bounces or asks to be removed stops getting them.`;
+}
+function blastPreview() {
+  const box = $("#bl-prev"), pk = $("#bl-prev-pick"); if (!box || !pk) return; const b = blastRead();
+  const rs = blastRecipients([...BP.pick]), sample = rs.find(r => r.key === BP.prevKey) || rs[0] || { first: "Angela", community: "Harbor Ridge Townhomes", email: "(no one picked yet)", key: "" };
+  const i = Math.min(BP.prevMsg, b.messages.length - 1), m = BC.compose(b.messages[i] || {}, sample);
+  const pick = `<select id="bl-prev-msg" aria-label="Which email">${b.messages.map((x, k) => `<option value="${k}" ${k === i ? "selected" : ""}>Email ${k + 1}</option>`).join("")}</select>${rs.length > 1 ? `<select id="bl-prev-to" aria-label="Who to preview">${rs.slice(0, 200).map(r => `<option value="${esc(r.key)}" ${r.key === sample.key ? "selected" : ""}>${esc(r.community || r.email)}</option>`).join("")}</select>` : ""}`;
+  if (BP.html.pick !== pick || !pk.firstChild) { pk.innerHTML = pick; BP.html.pick = pick; }
+  box.innerHTML = `<div class="bl-mail"><div class="note">To: ${esc(sample.email)}</div><div><b>${esc(m.subject)}</b></div><div class="bl-body">${esc(m.body)}</div></div>`;
+}
+// ---- the buttons ----
+function blastActsHTML() { const h = blastActsInner(); return BP.saving ? h.replace(/<button /g, "<button disabled ") : h; }
+function blastActsInner() {
+  if (!canEditBlast()) return `<p class="note">Only the owner can change or start blasts.</p>`;
+  const live = blastLive(), saved = S.blasts.find(b => b.id === BD.id), st = senderState(), stopped = BD.status === "stopped";
+  if (stopped) return `<p class="note">Stopped for good. Nothing more goes out from this blast. To send it again, make a new blast.</p>${BP.confirm === "delete" ? `<div class="banner bad spread" role="alert"><span>Delete this blast? Emails already sent stay in your Gmail.</span><span class="row"><button class="btn sm danger" data-act="bl-delete-yes">Delete</button><button class="btn sm" data-act="bl-confirm-no">Keep</button></span></div>` : ""}<div class="row">${saved ? `<button class="btn ghost" data-act="bl-delete">Delete</button>` : ""}</div>`;
+  const start = live ? "" : `<button class="btn primary" data-act="bl-start">Start</button>`;
+  const conf = BP.confirm === "start" && !live ? (() => { const rs = blastRecipients([...BP.pick]); const f = BC.slotFrom(BC.at(BD.startDate, BD.start), BD); return `<div class="banner info spread" role="alert"><span>Start sending to ${plural(rs.length, "email address", "email addresses")}? The first emails go out ${esc(fmtWhen(f))}${st === "ok" ? "" : ", once the email sender is set up"}. You can pause it any time.</span><span class="row"><button class="btn sm primary" data-act="bl-start-yes">Start sending</button><button class="btn sm" data-act="bl-confirm-no">Not yet</button></span></div>`; })()
+    : BP.confirm === "delete" ? `<div class="banner bad spread" role="alert"><span>Delete this blast? ${live ? "Nothing more goes out. " : ""}Emails already sent stay in your Gmail.</span><span class="row"><button class="btn sm danger" data-act="bl-delete-yes">Delete</button><button class="btn sm" data-act="bl-confirm-no">Keep</button></span></div>`
+    : BP.confirm === "stop" ? `<div class="banner bad spread" role="alert"><span>Stop this blast for good? Nothing more goes out from it.</span><span class="row"><button class="btn sm danger" data-act="bl-stop-yes">Stop it</button><button class="btn sm" data-act="bl-confirm-no">Keep it going</button></span></div>` : "";
+  const test = saved && st === "ok" ? `<button class="btn" data-act="bl-test">Send me a test</button>` : "";
+  return `${conf}<div class="row">${start}<button class="btn${live ? " primary" : ""}" data-act="bl-save">Save${live ? " changes" : ""}</button>
+    ${BD.status === "running" ? `<button class="btn" data-act="bl-pause">Pause</button>` : BD.status === "paused" ? `<button class="btn primary" data-act="bl-resume">Resume</button>` : ""}
+    ${test}${live ? `<button class="btn ghost" data-act="bl-stop">Stop for good</button>` : ""}${saved ? `<button class="btn ghost" data-act="bl-delete">Delete</button>` : ""}</div>
+    <p class="note" id="bl-status" role="status">${S.blastTest && saved && S.blastTest.blastId === BD.id && Date.now() - Date.parse(S.blastTest.at || 0) < 3600000 ? esc(S.blastSender && S.blastSender.testDoneAt === S.blastTest.at ? S.blastSender.testResult || "Test sent." : `A test of email ${(+S.blastTest.msg || 0) + 1} goes to ${S.blastSender && S.blastSender.account || BUSINESS.email} the next time the sender checks in (every 5 minutes, 7 AM to 9 PM).`) : ""}</p>`;
+}
+function blastProgressHTML() {
+  const b = BD && S.blasts.find(x => x.id === BD.id); if (!b || !b.status || b.status === "draft") return "";
+  const n = blastNums(b), nx = b.status === "running" ? blastNext(b) : null, run = S.blastRuns[b.id] || {};
+  const label = { replied: "Replied", removed: "Asked to be removed", bounced: "Bounced", skipped: "Skipped", sending: "Sending now" };
+  const people = (b.recipients || []).map(r => { const p = blastPerson(b, r.key) || {}; const due = blastDone(b, r) ? null : b.status === "running" ? BC.dueAt(b, p) : null;
+    const lab = label[p.status] || ((p.sent || 0) >= (b.count || 1) ? "Had them all" : "");
+    return `<div class="item static flow"><div class="main-col"><span class="t">${esc(r.community || r.email)}</span><span class="s" style="white-space:normal">${esc(r.email)}${p.note ? " · " + esc(p.note) : ""}</span></div><div class="r"><span class="note">${plural(p.sent || 0, "email")} sent${due ? ` · next ${esc(fmtDay(due))}` : ""}</span>${lab ? `<span class="pill ${p.status === "replied" ? "s-scheduled" : lab === "Had them all" || p.status === "sending" ? "" : "s-lost"}">${lab}</span>` : ""}</div></div>`; }).join("");
+  const log = (run.log || []).slice(0, 8).map(x => `<li>${esc(fmtWhen(new Date(x.at)))}: ${esc(x.text)}</li>`).join("");
+  return `<section class="kpis">${[["Emails sent", n.sent, run.dayCount && run.day === BC.ymdOf(new Date()) ? `${run.dayCount} today` : ""], ["Still getting them", n.waiting, nx ? "Next " + fmtWhen(nx) : b.status === "paused" ? "Paused" : ""], ["Replied", n.replied, n.replied ? "They move to Leads" : ""], ["Stopped", n.stopped + n.done, n.done ? `${n.done} had them all` : ""]].map(k => `<div class="kpi"><span class="lab">${k[0]}</span><span class="val">${k[1]}</span><span class="hint">${esc(k[2] || "") || "&nbsp;"}</span></div>`).join("")}</section>
+    ${log ? `<p class="note" style="margin-top:8px">Latest:</p><ul class="note bl-log">${log}</ul>` : ""}
+    <details class="panel flush fold"><summary><h2>Each address</h2><span class="row"><span class="pill">${n.contacts}</span><span class="more" aria-hidden="true"></span></span></summary><div class="list">${people}</div></details>`;
+}
+// redraws parts of the editor without touching what's being typed
+function blastRefresh(parts) {
+  if (!BD || !$("#modal #bl-acts")) return;
+  const want = (k) => !parts || parts.includes(k);
+  if (want("who")) { const w = $("#bl-who"), y = w ? w.querySelector(".bl-list").scrollTop : 0, f = document.activeElement && document.activeElement.id === "bl-q"; w.innerHTML = blastWhoHTML(); const l2 = w.querySelector(".bl-list"); if (l2) l2.scrollTop = y; if (f) { const q = $("#bl-q"); q.focus(); q.setSelectionRange(q.value.length, q.value.length); } }
+  if (want("msgs")) $("#bl-msgs").innerHTML = blastMsgsHTML();
+  const redo = (id, k, html) => { if (BP.html[k] === html) return; const el = $(id), d = el.querySelector("details"), open = d && d.open; el.innerHTML = html; BP.html[k] = html; const d2 = open && el.querySelector("details"); if (d2) d2.open = true; };
+  if (want("progress")) redo("#bl-progress", "progress", blastProgressHTML());
+  if (want("acts")) redo("#bl-acts", "acts", blastActsHTML());
+  if (want("pill")) { const b = S.blasts.find(x => x.id === BD.id); if (b) { const [st, cls] = blastState(b); const p = $("#bl-pill"); if (p) { p.textContent = st; p.className = "pill " + cls; } } }
+  blastWhoSummary(); blastSummary(); blastPreview();
+}
+// Saves what's on screen. The status changes only by Start, Pause, Resume and Stop, so a save on one device never undoes
+// a pause made on another.
+async function blastSave(extra) {
+  if (BP.saving) return false;
+  blastRead(); const bad = blastProblem(extra && extra.status === "running");
+  if (bad) { toast(bad, 6000); return false; }
+  const d = BD;
+  if (d.id && !S.blasts.find(b => b.id === d.id)) { toast("This blast was deleted on another device, so it can't be saved.", 6000); return false; }
+  await blastHashScan(); // blocked addresses (and inboxes shared with them) never go in
+  const rs = blastRecipients([...BP.pick]), prev = d.id && d.startedAt ? S.blasts.find(b => b.id === d.id) : null;
+  if (prev && (prev.messages || []).length > d.messages.length) { toast("It has started, so its emails can't be removed. Close it and open it again to see them all.", 6000); return false; }
+  // once it has started, a contact who moved to Leads or was marked not interested since stays skipped after a save
+  if (prev) rs.forEach(r => {
+    const was = (prev.recipients || []).find(x => x.key === r.key); if (!was) return;
+    if (was.outreach) r.outreach = true;
+    r.lostIds = r.lostIds.filter(id => !(was.leadIds || []).includes(id) || (was.lostIds || []).includes(id));
+  });
+  const now = new Date().toISOString(), isNew = !d.id, id = d.id || uid("blast");
+  const doc = { kind: "blast", name: d.name || "Email blast", messages: d.messages.map(m => ({ subject: m.subject.trim(), body: m.body.replace(/\s+$/, "") })), recipients: rs,
+    every: d.every, unit: d.unit, count: d.count, days: d.days.slice().sort(), start: d.start, end: d.end, startDate: d.startDate, perDay: d.perDay, updatedAt: now };
+  if (isNew) { doc.createdAt = now; doc.status = "draft"; }
+  Object.assign(doc, extra || {});
+  if (doc.status === "running" && !d.startedAt) doc.startedAt = now;
+  // the id is set first, so a second tap while this saves can't make a second blast
+  d.id = id; BP.saving = true; if (BD === d) blastRefresh(["acts"]);
+  try { await saveDoc("settings", id, doc, !isNew); }
+  catch (e) { if (isNew) d.id = ""; BP.saving = false; if (BD === d) blastRefresh(["acts"]); throw e; }
+  BP.saving = false;
+  Object.assign(d, doc); if (BD === d) { BP.seen = true; S.dirty = false; } return true;
+}
+// Pause, Resume and Stop, on the blast as it is now (not if it was deleted on another device)
+async function blastSetStatus(status, extra, msg) {
+  const d = BD; if (!d || !d.id) return;
+  const cur = S.blasts.find(b => b.id === d.id);
+  if (!cur) { toast("This blast was deleted on another device."); return; }
+  if (cur.status === "stopped") { d.status = "stopped"; toast("This blast was stopped on another device."); blastRefresh(["acts", "progress", "pill"]); return; }
+  await saveDoc("settings", d.id, Object.assign({ status, updatedAt: new Date().toISOString() }, extra || {}), true);
+  d.status = status; toast(msg, 4500); if (BD === d) blastRefresh(["acts", "progress", "pill"]);
+}
+async function sha256(s) { const b = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)); return [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, "0")).join(""); }
+// ---- templates ----
+let BT = null; // the template being edited: { i, t }
+function openBlastTpl(i, t) {
+  BT = { i, t: Object.assign({ name: "", subject: "", body: "" }, t || {}) }; S.dirty = false;
+  const ed = canEditBlast() ? "" : "readonly";
+  showModal(`<div class="sh"><h2>${i == null ? "New template" : "Message template"}</h2><button class="x" data-close="1" aria-label="Close">×</button></div>
+  <div class="sb stack"><p class="note">{first} becomes the contact's first name (or “there”), {community} the community or company. The signature, address and “reply remove” line are added under it when it's sent.</p>
+    <label class="f">Name (only you see it)<input type="text" id="bt-name" value="${esc(BT.t.name)}" ${ed} autofocus></label>
+    <label class="f">Subject<input type="text" id="bt-subj" value="${esc(BT.t.subject)}" ${ed}></label>
+    <label class="f">Message<textarea id="bt-body" rows="12" ${ed}>${esc(BT.t.body)}</textarea></label>
+    <div class="bl-mail"><div class="note">Under every email:</div><div class="bl-body">${esc(BC.SIG)}</div></div>
+    ${canEditBlast() ? `<div class="row"><button class="btn primary" data-act="bl-tpl-save">Save template</button>${i != null ? `<button class="btn ghost" data-act="bl-tpl-del">Delete</button>` : ""}</div><p class="note" id="bt-status" role="status"></p>` : ""}</div>`);
+}
+async function saveTplList(list) { await saveDoc("settings", "blast-templates", { list, updatedAt: new Date().toISOString() }); S.blastTpl = list; }
+
+// ---------- buttons, boxes and ticks ----------
+Object.assign(EXTRA_ACTS, {
+  "bl-new": () => openBlast(null),
+  "bl-open": (t) => { const b = S.blasts.find(x => x.id === t.dataset.id); if (b) openBlast(b); },
+  "bl-quick": (t) => {
+    const k = t.dataset.k, f = { hoa: l => isOutreach(l) && l.type !== "Property manager", pm: l => isOutreach(l) && l.type === "Property manager", cust: l => !isOutreach(l) && ["paid", "completed"].includes(l.stage), open: l => !isOutreach(l) && !["paid", "completed", "lost"].includes(l.stage) }[k];
+    if (k === "none") BP.pick.clear(); else S.leads.filter(l => !isKylemont(l) && f(l) && easyPick(l)).forEach(l => BP.pick.add(l.id));
+    S.dirty = true; blastRefresh(["who"]);
+  },
+  "bl-msg-add": () => { blastRead(); const used = new Set(BD.messages.map(m => m.subject)); const nx = blastTemplates().find(t => !used.has(t.subject) && t.set !== "cust") || { subject: "", body: "Hi {first},\n\n" }; BD.messages.push({ subject: nx.subject, body: nx.body }); S.dirty = true; blastRefresh(["msgs"]); const c = $(`#modal [data-bl-msg="${BD.messages.length - 1}"] [data-bk="subject"]`); if (c) c.focus(); },
+  "bl-msg-del": (t) => { if (blastLive() && +t.dataset.i < blastKept()) return; blastRead(); if (BD.messages.length > 1) BD.messages.splice(+t.dataset.i, 1); BP.prevMsg = 0; S.dirty = true; blastRefresh(["msgs"]); },
+  "bl-msg-up": (t) => { if (blastLive() && +t.dataset.i - 1 < blastKept()) return; blastRead(); const i = +t.dataset.i; if (i > 0) { const m = BD.messages.splice(i, 1)[0]; BD.messages.splice(i - 1, 0, m); } S.dirty = true; blastRefresh(["msgs"]); },
+  "bl-save": async (t) => { t.disabled = true; try { if (await blastSave()) { toast(blastLive() ? "Changes saved. The next emails use them." : "Saved. Nothing goes out until you tap Start."); blastRefresh(["acts", "progress", "pill"]); } } catch (e) {} finally { t.disabled = false; } },
+  "bl-start": async () => { blastRead(); if (S.blastRulesOk !== true) await blastRulesCheck(); const bad = blastProblem(true); if (bad) { toast(bad, 6000); return; } BP.confirm = "start"; blastRefresh(["acts"]); },
+  "bl-start-yes": async (t) => {
+    // started (and maybe paused) on another device since the question showed: this one doesn't start it again
+    const sv = S.blasts.find(b => b.id === BD.id);
+    if (blastLive() || BD.status === "stopped" || (sv && sv.status && sv.status !== "draft")) { BP.confirm = ""; toast("It was started on another device."); blastRefresh(["acts", "progress", "pill", "msgs"]); return; }
+    // and as the database has it, in case this device has been offline (a phone may have started and paused it)
+    t.disabled = true; const id0 = BD.id;
+    if (sv && window.GIC && window.GIC.serverDoc) {
+      let cur; try { cur = await window.GIC.serverDoc("settings", id0); } catch (e) { t.disabled = false; toast("Couldn't reach your CRM to start it. Check your connection and try again."); return; }
+      if (!BD || BD.id !== id0) return;
+      if (cur && cur.status && cur.status !== "draft") { BP.confirm = ""; toast("It was started on another device."); blastRefresh(["acts", "progress", "pill", "msgs"]); return; }
+    }
+    BP.confirm = "";
+    try { if (await blastSave({ status: "running" })) toast(senderState() === "ok" ? "Started. The first emails go out on the day and hours you picked." : "Started. It sends once the email sender is set up (Settings > Email blasts).", 6000); } catch (e) {}
+    if (BD) blastRefresh(["acts", "progress", "pill", "msgs"]);
+  },
+  "bl-confirm-no": () => { BP.confirm = ""; blastRefresh(["acts"]); },
+  "bl-pause": () => blastSetStatus("paused", null, "Paused. Nothing more goes out until you resume it."),
+  "bl-resume": () => blastSetStatus("running", null, "Resumed"),
+  "bl-stop": () => { BP.confirm = "stop"; blastRefresh(["acts"]); },
+  "bl-stop-yes": async () => { BP.confirm = ""; await blastSetStatus("stopped", { stoppedAt: new Date().toISOString() }, "Stopped. Nothing more goes out from this blast."); },
+  "bl-delete": () => { BP.confirm = "delete"; blastRefresh(["acts"]); },
+  "bl-delete-yes": async () => {
+    const id = BD.id, run = !!S.blastRuns[id]; BD = null; S.dirty = false; closeModal();
+    try { await delDoc("settings", id); if (run) await delDoc("settings", "blastrun-" + id).catch(() => {}); toast("Blast deleted"); } catch (e) { toast("Couldn't delete it. Check your connection and try again."); }
+  },
+  // the test is the email as it's on screen now, saved or not
+  "bl-test": async () => {
+    blastRead(); const i = Math.min(BP.prevMsg, BD.messages.length - 1), rs = blastRecipients([...BP.pick]);
+    const r = rs.find(x => x.key === BP.prevKey) || rs[0] || { key: "", first: "Angela", community: "Harbor Ridge Townhomes" }, m = BC.compose(BD.messages[i], r);
+    await saveDoc("settings", "blast-test", { at: new Date().toISOString(), blastId: BD.id, msg: i, key: r.key || "", subject: m.subject, body: m.body, as: r.community || r.email || "" }); toast("A test goes to your own Gmail the next time the sender checks in (within 5 minutes).", 6000); blastRefresh(["acts"]); },
+  "bl-tpl-new": () => openBlastTpl(null, null),
+  "bl-tpl-open": (t) => { const i = +t.dataset.i; openBlastTpl(i, blastTemplates()[i]); },
+  "bl-tpl-save": async () => {
+    const t = { id: BT.t.id || uid("tpl"), set: BT.t.set || "", name: $("#bt-name").value.trim(), subject: $("#bt-subj").value.trim(), body: $("#bt-body").value.replace(/\s+$/, "") };
+    if (!t.subject || !t.body) { toast("Give it a subject and a message"); return; }
+    const list = blastTemplates().map(x => Object.assign({}, x)), k = BT.t.id ? list.findIndex(x => x.id === BT.t.id) : BT.i == null ? -1 : BT.i;
+    if (k < 0 || k >= list.length) list.push(t); else list[k] = t;
+    await saveTplList(list); S.dirty = false; closeModal(); toast("Template saved"); schedule();
+  },
+  "bl-tpl-del": async (t) => {
+    if (t.dataset.sure !== "1") { t.dataset.sure = "1"; t.textContent = "Tap again to delete"; t.classList.add("danger"); return; }
+    const list = blastTemplates().filter((x, i) => BT.t.id ? x.id !== BT.t.id : i !== BT.i); await saveTplList(list); S.dirty = false; closeModal(); toast("Template deleted"); schedule();
+  }
+});
+document.addEventListener("change", (e) => {
+  const el = e.target; if (!BD || !el.closest || !el.closest("#modal") || !$("#modal #bl-acts")) return;
+  if (el.dataset.blLead) { if (el.checked) BP.pick.add(el.dataset.blLead); else BP.pick.delete(el.dataset.blLead); S.dirty = true; blastRefresh(["who"]); return; }
+  if (el.dataset.blGrp) { const g = blastGroups().find(x => x[0] === el.dataset.blGrp); if (g) g[1].filter(easyPick).forEach(l => { if (el.checked) BP.pick.add(l.id); else BP.pick.delete(l.id); }); S.dirty = true; blastRefresh(["who"]); return; }
+  if (el.dataset.blUse) { const tp = blastTemplates()[+el.value]; if (tp) { blastRead(); BD.messages[+el.dataset.blUse] = { subject: tp.subject, body: tp.body }; S.dirty = true; blastRefresh(["msgs"]); } return; }
+  if (el.id === "bl-fill" && el.value && blastLive()) { el.value = ""; toast("It has started, so its emails can't be swapped for a new set. Change the wording, or add emails at the end.", 6000); return; }
+  if (el.id === "bl-fill" && el.value) { blastRead(); BD.messages = blastTemplates().filter(t => (t.set || "") === el.value).map(t => ({ subject: t.subject, body: t.body })); if (!BD.messages.length) BD.messages = [{ subject: "", body: "Hi {first},\n\n" }]; BP.prevMsg = 0; S.dirty = true; blastRefresh(["msgs"]); return; }
+  if (el.id === "bl-prev-msg") { BP.prevMsg = +el.value; blastPreview(); return; }
+  if (el.id === "bl-prev-to") { BP.prevKey = el.value; blastPreview(); return; }
+  if (el.closest("#bl-when")) blastSummary();
+});
+document.addEventListener("input", (e) => {
+  const el = e.target; if (!BD || !el.closest || !el.closest("#modal") || !$("#modal #bl-acts")) return;
+  if (el.id === "bl-q") { BP.q = el.value; blastRefresh(["who"]); return; }
+  if (el.id === "bl-name") { const h = $("#bl-h"); if (h) h.textContent = el.value.trim() || "New email blast"; return; }
+  if (el.closest("[data-bl-msg]")) { blastPreview(); blastSummary(); return; }
+  if (el.closest("#bl-when")) blastSummary();
+});
+document.addEventListener("click", (e) => {
+  const t = e.target.closest && e.target.closest("[data-bl-open], [data-bl-set]"); if (!t) return;
+  if (t.dataset.blSet) { S.setTab = "blasts"; return; } // the Settings button opens straight on Email blasts
+  const g = t.dataset.blOpen; BP.open.has(g) ? BP.open.delete(g) : BP.open.add(g); blastRefresh(["who"]);
+}, true);
+
+// ---------- the sender (runs at script.google.com, not here) ----------
+// The CRM hands this out as the script (Settings > Email blasts). It runs in the owner's Google account every 5 minutes:
+// it looks for replies, bounces and "remove", then sends at most one blast email, during the hours each blast allows.
+// Each contact is marked "sending" before the email goes and "sent" after, so a run that stops halfway can't send twice.
+// It remembers every address it has emailed (blastmail/sent) and keeps watching them for "remove" and bounces long after
+// their blast ends; an address that asked out or bounced (settings/blast-out) is never emailed again, by any blast.
+function blastSender(PROJECT, VERSION, coreFn, BLOCKED_SHA) {
+  const TZ = "America/New_York", NAME = "Elias | Get It Clean Tampa Bay", DAY_MAX = 80;
+  // a reply this long after an address's last blast email isn't an answer to it; "remove" and bounces count for longer
+  const REPLY_DAYS = 60, WATCH_DAYS = 400, DAY = 86400000;
+  const FS = "https://firestore.googleapis.com/v1/projects/" + PROJECT + "/databases/(default)/documents/";
+  const parts = (t) => { const a = Utilities.formatDate(t, TZ, "yyyy M d H m").split(" ").map(Number); return { y: a[0], m: a[1], d: a[2], h: a[3], mi: a[4] }; };
+  const C = coreFn(parts);
+  const FINAL = ["replied", "removed", "bounced", "skipped"];
+  const BLOCKED = /@lansbrooktampabay\.com$|^jgregor@parker\.com$/i;
+  let meCache = "";
+  const me = () => meCache || (meCache = String(Session.getEffectiveUser().getEmail() || "").toLowerCase());
+  const addrOf = (s) => { const m = String(s || "").match(/<([^>]+)>/); return String(m ? m[1] : s || "").trim().toLowerCase(); };
+  const keyOf = (e) => String(e || "").trim().toLowerCase();
+  const oneAddr = (e) => /^[^\s@,;<>()"']+@[^\s@,;<>()"']+\.[a-z]{2,}$/i.test(String(e || "").trim());
+  // where delivery failures come from (Gmail, most mail servers, and Microsoft's)
+  const NDR = /^(mailer-daemon|postmaster|microsoftexchange[0-9a-f]*)@/;
+  const threadOf = (m) => { try { return m.getThread().getId(); } catch (e) { return ""; } };
+  // only the owner can write settings/blast*, so a blast or its progress counts only under its own name
+  const isBlast = (d) => d.kind === "blast" && /^blast-/.test(d.id);
+  const isRun = (d) => d.kind === "blastrun" && d.id === "blastrun-" + d.blastId;
+  const hex = (bytes) => bytes.map(b => ((b + 256) % 256).toString(16).padStart(2, "0")).join("");
+  // the never-email list; an email box holding several addresses is checked one address at a time
+  const blocked = (a) => keyOf(a).split(/[\s,;<>()"']+/).filter(Boolean).some(x => BLOCKED.test(x) || BLOCKED_SHA.indexOf(hex(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, x))) >= 0);
+  const kylemont = (l) => /kylemont/i.test([l.name, l.company, l.email, l.area, l.address].join(" "));
+  const dayText = (t) => Utilities.formatDate(t, TZ, "MMM d");
+  const scriptId = () => { try { return ScriptApp.getScriptId(); } catch (e) { return ""; } };
+
+  // ---- Firestore, as the owner (tried 3 times when it's busy) ----
+  function call(method, path, body) {
+    // the Firebase project pays for (and allows) the calls, not the script's own hidden Google project
+    const opts = { method: method, contentType: "application/json", headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken(), "X-Goog-User-Project": PROJECT }, muteHttpExceptions: true };
+    if (body !== undefined) opts.payload = JSON.stringify(body);
+    let r = null, last = null;
+    for (let i = 0; i < 3; i++) {
+      if (i > 0) Utilities.sleep(1000 * Math.pow(2, i));
+      try { r = UrlFetchApp.fetch((path.charAt(0) === ":" ? FS.slice(0, -1) : FS) + path, opts); } catch (err) { last = err; r = null; continue; }
+      const code = r.getResponseCode();
+      if (code === 403 && opts.headers["X-Goog-User-Project"] && /USER_PROJECT_DENIED|serviceusage/i.test(r.getContentText())) { delete opts.headers["X-Goog-User-Project"]; i--; continue; }
+      if (code === 429 || code >= 500) continue;
+      break;
+    }
+    if (!r) throw last || new Error("Couldn't reach Firestore");
+    let json = {}; try { json = JSON.parse(r.getContentText() || "{}"); } catch (e) {}
+    return { code: r.getResponseCode(), json: json };
+  }
+  function enc(v) {
+    if (v == null) return { nullValue: null };
+    if (Array.isArray(v)) return { arrayValue: v.length ? { values: v.map(enc) } : {} };
+    if (typeof v === "boolean") return { booleanValue: v };
+    if (typeof v === "number") return Number.isInteger(v) ? { integerValue: String(v) } : { doubleValue: v };
+    if (typeof v === "object") { const f = {}; Object.keys(v).forEach(k => { if (v[k] !== undefined) f[k] = enc(v[k]); }); return { mapValue: { fields: f } }; }
+    return { stringValue: String(v) };
+  }
+  function dec(v) {
+    if (!v) return null;
+    if ("stringValue" in v) return v.stringValue; if ("integerValue" in v) return Number(v.integerValue); if ("doubleValue" in v) return v.doubleValue;
+    if ("booleanValue" in v) return v.booleanValue; if ("timestampValue" in v) return v.timestampValue; if ("nullValue" in v) return null;
+    if ("arrayValue" in v) return (v.arrayValue.values || []).map(dec);
+    if ("mapValue" in v) { const o = {}; Object.keys(v.mapValue.fields || {}).forEach(k => { o[k] = dec(v.mapValue.fields[k]); }); return o; }
+    return null;
+  }
+  const docOf = (d) => { const o = {}; Object.keys(d.fields || {}).forEach(k => { o[k] = dec(d.fields[k]); }); o.id = d.name.split("/").pop(); o._t = d.updateTime; return o; };
+  const fail = (what, r) => new Error("Couldn't " + what + " (" + r.code + " " + JSON.stringify(r.json).slice(0, 200) + ")");
+  function list(coll) {
+    const out = []; let tok = "";
+    do {
+      const r = call("get", coll + "?pageSize=300" + (tok ? "&pageToken=" + encodeURIComponent(tok) : ""));
+      if (r.code >= 300) throw fail("read " + coll, r);
+      (r.json.documents || []).forEach(d => out.push(docOf(d))); tok = r.json.nextPageToken || "";
+    } while (tok);
+    return out;
+  }
+  function get(path) { const r = call("get", path); if (r.code === 404) return null; if (r.code >= 300) throw fail("read " + path, r); return docOf(r.json); }
+  const fieldsOf = (o) => { const f = {}; Object.keys(o).forEach(k => { if (k !== "id" && k !== "_t" && o[k] !== undefined) f[k] = enc(o[k]); }); return f; };
+  // the whole document, replacing what was there
+  function put(path, o) { const r = call("patch", path, { fields: fieldsOf(o) }); if (r.code >= 300) throw fail("save " + path, r); return r.json.updateTime || ""; }
+  // the whole document, only if it's still the version t (false when someone else saved it since)
+  function putIf(path, o, t) {
+    const w = { update: { name: "projects/" + PROJECT + "/databases/(default)/documents/" + path, fields: fieldsOf(o) } }; if (t) w.currentDocument = { updateTime: t };
+    const r = call("post", ":commit", { writes: [w] }); if (r.code < 300) return true; if (conflict(r)) return false; throw fail("save " + path, r);
+  }
+  // only the fields given, and (with t) only if nobody changed the document since it was read
+  function merge(path, o, t) {
+    Object.keys(o).forEach(k => { if (o[k] === undefined) delete o[k]; });
+    const w = { update: { name: "projects/" + PROJECT + "/databases/(default)/documents/" + path, fields: fieldsOf(o) }, updateMask: { fieldPaths: Object.keys(o) } };
+    if (t) w.currentDocument = { updateTime: t };
+    return call("post", ":commit", { writes: [w] }).code;
+  }
+  // a change to a lead, read fresh and tried again if the CRM changed it at the same moment
+  function touchLead(id, fn) {
+    for (let i = 0; i < 3; i++) {
+      const l = get("leads/" + id); if (!l) return;
+      const upd = fn(l); if (!upd) return;
+      upd.updatedAt = new Date().toISOString();
+      const code = merge("leads/" + id, upd, l._t);
+      if (code < 300 || [400, 409, 412].indexOf(code) < 0) return;
+    }
+  }
+  const act = (l, text) => [{ at: new Date().toISOString(), type: "email", text: text }].concat((l.activity || []).slice(0, 199));
+
+  // ---- a blast's progress (settings/blastrun-<id>, only this script writes it) ----
+  function person(run, key) { let p = run.people.find(x => x.key === key); if (!p) { p = { key: key, sent: 0, status: "waiting" }; run.people.push(p); } return p; }
+  function note(run, text) { run.log = [{ at: new Date().toISOString(), text: text }].concat(run.log || []).slice(0, 40); }
+  const runDoc = (run) => ({ kind: "blastrun", blastId: run.blastId, people: run.people, log: run.log || [], day: run.day || "", dayCount: run.dayCount || 0, updatedAt: run.updatedAt, writeId: run.writeId || "" });
+  const conflict = (r) => /FAILED_PRECONDITION|ALREADY_EXISTS|ABORTED/.test(JSON.stringify(r.json || {}));
+  const TWO = "Two copies of the email sender are running. At script.google.com, delete the timer (Triggers, the clock icon) in the older one.";
+  // A blast's progress is saved only over the version this run read or last wrote, so a second copy of this script that
+  // saved in between is never undone: "ok", "gone" (the blast was deleted) or "changed"
+  function writeRun(run) {
+    run.updatedAt = new Date().toISOString(); run.writeId = Utilities.getUuid();
+    const w = { update: { name: "projects/" + PROJECT + "/databases/(default)/documents/settings/blastrun-" + run.blastId, fields: fieldsOf(runDoc(run)) }, currentDocument: run._t ? { updateTime: run._t } : { exists: false } };
+    const r = call("post", ":commit", { writes: [w] });
+    if (r.code < 300) { run._t = ((r.json.writeResults || [])[0] || {}).updateTime || ""; return "ok"; }
+    if (!conflict(r)) throw fail("save a blast's progress", r);
+    const cur = get("settings/blastrun-" + run.blastId);
+    if (cur && cur.writeId === run.writeId) { run._t = cur._t; return "ok"; } // a first try that went through
+    return cur || !run._t ? "changed" : "gone";
+  }
+  const markRun = writeRun;
+  function saveRun(run, ctx) { const r = writeRun(run); if (r === "gone") ctx.gone[run.blastId] = 1; else if (r !== "ok") throw new Error(TWO); }
+  const finished = (b, p) => FINAL.indexOf(p.status) >= 0 || (p.sent || 0) >= (b.count || 1);
+
+  // ---- every address it has emailed, and the ones never to email again ----
+  function loadMail(docs) {
+    const o = docs.find(d => d.id === "blast-out") || {}, s = get("blastmail/sent") || {}, al = docs.find(d => d.id === "blast-allow") || {};
+    const mail = { out: o.out || {}, sent: s.sent || {}, allow: al.allow || {} };
+    // an address you allowed again in the CRM (Settings > Email blasts) comes off the never-again list
+    const back = Object.keys(mail.out).filter(k => mail.allow[k] && new Date(mail.allow[k]) >= new Date(mail.out[k].at || 0));
+    if (back.length) { back.forEach(k => { delete mail.out[k]; }); saveOut(mail, back); }
+    return mail;
+  }
+  // only the addresses given change (one taken out is deleted): what another copy of the script saved stays
+  function putKeys(path, field, map, keys, extra) {
+    const o = Object.assign({}, extra), sub = {}; keys.forEach(k => { if (map[k] !== undefined) sub[k] = map[k]; }); o[field] = sub;
+    const q = (k) => "`" + String(k).replace(/[`\\]/g, "\\$&") + "`";
+    const w = { update: { name: "projects/" + PROJECT + "/databases/(default)/documents/" + path, fields: fieldsOf(o) }, updateMask: { fieldPaths: Object.keys(extra).concat(keys.map(k => field + "." + q(k))) } };
+    const r = call("post", ":commit", { writes: [w] }); if (r.code >= 300) throw fail("save " + path, r);
+  }
+  function saveOut(mail, keys) { putKeys("settings/blast-out", "out", mail.out, keys, { kind: "blastout", updatedAt: new Date().toISOString() }); }
+  function saveSent(mail, keys) {
+    const cut = Date.now() - WATCH_DAYS * DAY, old = Object.keys(mail.sent).filter(k => new Date(mail.sent[k].last || 0).getTime() < cut);
+    old.forEach(k => { delete mail.sent[k]; });
+    putKeys("blastmail/sent", "sent", mail.sent, keys.concat(old.filter(k => keys.indexOf(k) < 0)), { updatedAt: new Date().toISOString() });
+  }
+  // address -> the blasts it's in now ({ b, r }), plus the last blast that emailed it, watched for a while after
+  function whoIn(blasts, mail) {
+    const who = {};
+    blasts.forEach(b => (b.recipients || []).forEach(r => { if (r && r.key) (who[r.key] = who[r.key] || []).push({ b: b, r: r }); }));
+    Object.keys(mail.sent).forEach(k => { const s = mail.sent[k] || {}; if (!who[k] || !who[k].some(x => x.b.id === s.blast)) (who[k] = who[k] || []).push({ old: true, b: { id: s.blast || "", name: s.name || "an earlier blast", startedAt: s.first || "" }, r: { key: k, email: k, leadIds: s.leads || [] }, last: s.last || "" }); });
+    return who;
+  }
+
+  // ---- replies, bounces and "remove" ----
+  // A clear "take me off your list": 0 when it isn't, 1 when it is, 2 when it's for everyone at that address ("remove us").
+  // Only a sentence that is the request and nothing else counts ("Please remove me from your list. Thanks"), so a customer's
+  // "remove the fence", "stop emailing Bob, I'm the new manager" or a "to unsubscribe, click here" footer never does. Any other
+  // answer from a person is a reply, and a reply takes the address off your blasts too, so a "remove" worded some other way
+  // is never emailed again either. more: the reply says something besides the request ("No more mailings. Come Tuesday.").
+  const OUT_LEAD = /^(?:(?:hi|hello|hey|good (?:morning|afternoon|evening)|dear [a-z]+|elias|sir|ma'?am|sorry|thank you(?: but| for (?:reaching out|the (?:e-?mail|info(?:rmation)?|offer)))?|thanks|thank|no thank you|no thanks|not interested(?: at this time)?|we(?:'re| are) (?:all set|not interested|good)|i(?:'m| am) (?:not interested|all set|good)|we (?:already )?(?:have|use) (?:a vendor|someone|a company)|we already use someone|wrong (?:person|contact|e-?mail|address)|(?:i'm|i am|we're|we are) not the right (?:person|contact|people)|but|so|and|also|kindly|please|we ask that you|i ask that you|i(?:'d| would) ask that you|can you|could you|would you|will you)\s*[,.!:-]?\s+)+/;
+  const OUT_TAIL = "(?:[\\s,.!]+(?:please|thanks?|thank you(?: (?:so|very) much)?|thx|ty|asap|now|right now|immediately|right away|again|anymore|any more|ever again|for good|permanently|going forward|moving forward|from now on|at this time))*[\\s.!?,]*$";
+  const OUT_WHO = "(?:me|us|(?:all|both) of us|everyone(?: here| at this (?:e-?mail|address))?|(?:my|our|this|that) (?:e-?mail(?: address)?|address|name|info(?:rmation)?|contact(?: info(?:rmation)?)?)|(?:our|this) (?:association|hoa|board|community|office|company))";
+  const OUT_TARGET = "(?:(?:your|the|this|these|all|any|all of your|future|further|upcoming|ur|you)\\s+){0,3}(?:(?:mailing|e-?mail|contact|distribution|marketing|promotional|vendor|solicitation|hoa|sales|newsletter|blast|client|customer)\\s+){0,2}(?:lists?|e-?mails?|e-?mailings?|mailings?|contacts|database|newsletters?|blasts?|distribution|communications?|correspondence|solicitations?|system|records|files)";
+  const OUT_FROM = "(?:\\s+(?:from|off(?: of)?|of)\\s+" + OUT_TARGET + ")?";
+  const OUT_GONE = "(?:(?:removed|unsubscribed)" + OUT_FROM + "|taken (?:off|out)(?: of)?(?:\\s+" + OUT_TARGET + ")?)";
+  const OUT_MAIL = "(?:e-?mails?|e-?mailings?|messages|mailings?|communications?|correspondence|solicitations?)";
+  const OUT_FORMS = new RegExp("^(?:" + [
+    "remove|unsubscribe|unsub|stop|opt[\\s-]?out|optout|opting out",
+    // "Please remove me as I am no longer on the board": a reason after it, said as one
+    "(?:remove|unsubscribe|delete|drop|erase) " + OUT_WHO + "(?: out| off)?" + OUT_FROM + "(?: (?:as|because|since) (?:i|we|i'm|we're|i've|we've|she|he|they)\\b.*)?",
+    "(?:take|get) " + OUT_WHO + " off(?: of)?(?:\\s+" + OUT_TARGET + ")?", "opt " + OUT_WHO + " out" + OUT_FROM,
+    "(?:remove|unsubscribe|opt out)(?:\\s+(?:from|off(?: of)?|of)\\s+" + OUT_TARGET + ")",
+    "(?:i|we)(?:'d| would)? (?:like|want|wish|need|ask|am asking|are asking|request)(?: you)? to (?:be|get) " + OUT_GONE,
+    "(?:i|we)(?:'d| would)? (?:like|want|wish) to (?:opt out|unsubscribe)" + OUT_FROM,
+    "(?:i|we) (?:no longer|do not|don't|dont) (?:wish|want) to (?:receive|get|be sent) (?:any more |anymore |any |these |your |further |future |more )?(?:" + OUT_MAIL.slice(3, -1) + "|them)(?: from you(?:r company)?)?",
+    "(?:i|we) (?:no longer|do not|don't|dont) (?:wish|want) to be (?:contacted|e-?mailed)",
+    "(?:i|we) (?:do not|don't|dont) want (?:any more|anymore|any|these|more|your) " + OUT_MAIL + "(?: from you)?",
+    "(?:i|we)(?:'d| would) (?:prefer|rather) not (?:to )?(?:receive|get) (?:any more |these |your |any |further |more )?" + OUT_MAIL + "(?: from you)?",
+    // "... and we ask that you do not contact us again"
+    "(?:.*\\b)?(?:ask|request|asking|requesting|would appreciate (?:it )?if) (?:that )?you (?:to )?(?:please )?(?:do not|don't|not|stop|no longer|refrain from) (?:e-?mail(?:ing)?|contact(?:ing)?|message|messaging|reach(?:ing)? out to) (?:me|us)",
+    "(?:stop|quit|cease) (?:e-?mailing|contacting|messaging|spamming|reaching out(?: to)?)(?: (?:me|us|this (?:e-?mail(?: address)?|address)))?",
+    "(?:stop|quit) sending(?: (?:me|us))?(?: (?:these|this|those|them|any more|more|your|the|any|all))?(?: " + OUT_MAIL + ")?",
+    "stop (?:(?:the|these|this|those|all|your|any) )?" + OUT_MAIL,
+    "(?:do not|don't|dont|never) (?:e-?mail|contact|message|spam|reach out to)(?: (?:me|us|this (?:e-?mail(?: address)?|address)))?(?: (?:at|on) this (?:e-?mail(?: address)?|address))?",
+    "(?:do not|don't|dont) send (?:me |us )?(?:any more|anymore|any|more|further) " + OUT_MAIL + "(?: to (?:me|us|this address))?",
+    "no (?:more|further) (?:" + OUT_MAIL.slice(3, -1) + "|contact)",
+    "(?:can|could|may) (?:i|we) be " + OUT_GONE,
+    "(?:add|put) (?:me|us|this (?:e-?mail|address)) (?:to|on) (?:your|the) (?:do[- ]not[- ](?:contact|e-?mail|call)|dnc) list",
+    "(?:refrain from|discontinue) (?:contacting|e-?mailing)(?: (?:me|us))?",
+    "discontinue (?:these|the|your|all) " + OUT_MAIL,
+    "cease and desist"
+  ].join("|") + ")" + OUT_TAIL);
+  // a legal notice ("If you are not the intended recipient, please delete this email"), never the person's own request
+  const NOTICE = /\bintended recipient|\b(?:received|sent to you|reached you) (?:this|it) (?:e-?mail |message |communication )?(?:in error|by mistake)|\bin error,? please\b|\bconfidentiality notice\b/;
+  // a pause, not a goodbye ("Don't contact us, the board is on break until January"): a plain reply
+  const PAUSE = /\b(?:until|till|til|on (?:vacation|break|leave|hold)|out of (?:town|the office)|travel(?:l)?ing|next (?:week|month|year|season|spring|summer|fall)|in the (?:spring|summer|fall|winter|new year)|after the (?:holidays|new year|first))\b/;
+  // signature lines: an address, a web page, a phone number, office hours
+  const SIGLINE = /^(?:<?[\w.+'-]+@[\w.-]+>?|(?:https?:\/\/|www\.)\S+|(?:(?:p|ph|phone|cell|c|o|office|fax|f|tel|t|m|mobile|direct)[:.]?\s*)?[\d\s().+-]{7,}(?:\s*(?:x|ext\.?)\s*\d+)?|(?:(?:office|business) )?hours?\b.*|(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?\s*(?:-|to|through|thru)\s*(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?:?,?\s*\d.*)$/;
+  // the reply's own words: the email it quotes (above or below it), its signature, or a legal notice under it
+  function ownWords(body) {
+    const low = String(body || "").replace(/\r/g, "").replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/[–—]/g, " - ").toLowerCase()
+      .replace(/\b(pls|plz)\b/g, "please").replace(/…/g, ".").replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]/gu, " ").replace(/(^|\s)[:;]-?[()dp](?=\s|$)/g, " ");
+    // an Outlook-style quote has no ">" marks: everything under it is the earlier email
+    const top = low.split(/\n\s*-{2,}\s*original message|\n\s*from: [^\n]*\n\s*(?:sent|date): |\n_{5,}|\n--[ \t]*\n|\nbegin forwarded message/)[0];
+    const lines = top.split("\n"), keep = [];
+    for (let i = 0; i < lines.length; i++) {
+      const x = lines[i].trim();
+      if (/^>/.test(x) || /^on .{0,200}wrote:$/.test(x) || /^<?[^\s@<>]+@[^\s@<>]+>?\s*wrote:$/.test(x)) continue;
+      if (/^on /.test(x) && /wrote:$/.test(((lines[i + 1] || "").trim())) && !/[.!?]$/.test(x)) { i++; continue; } // "On Tue … <" + "address> wrote:"
+      if (/^(thanks?|thank you|regards|best|best regards|kind regards|warm regards|sincerely|cheers|respectfully|v\/r)[,.!]?$/.test(x) && keep.some(Boolean)) break; // the sign-off: the signature follows
+      if (/^sent from my /.test(x)) continue;
+      keep.push(x);
+    }
+    // our own line under every blast email, and a confidentiality notice (a paragraph of its own, after the reply)
+    return keep.join("\n").replace(/if you'd rather not hear from us[\s\S]{0,160}?off our list\.?/g, " ").replace(/if you'd rather not hear from us[^\n]*/g, " ")
+      .split(/\n\s*\n/).filter((p, i) => !(i > 0 && (NOTICE.test(p) || (/confidential|privileged|intended (only )?for|disclaimer/.test(p) && p.length > 120)))).join("\n\n").slice(0, 3000);
+  }
+  function outCheck(m) {
+    const fresh = ownWords(m.getPlainBody());
+    const subj = String(m.getSubject() || "").toLowerCase().replace(/[‘’]/g, "'").replace(/^\s*((re|fwd?|aw|sv)\s*:\s*)+/, "").trim();
+    // each sentence, and each line, on its own; a long paragraph is also read with Gmail's line wrapping undone
+    const sents = [], flat = [];
+    const add = (t, into) => String(t || "").split(/(?<=[.!?;])\s+|\n/).forEach(s => { s = s.replace(/["*_]+/g, "").replace(/^'+|'+(?=[\s.!?,]*$)/g, "").trim(); if (s) into.push(s); });
+    add(fresh, sents);
+    fresh.split(/\n\s*\n/).forEach(p => { if (/\n/.test(p)) add(p.replace(/\s*\n\s*/g, " "), sents); add(p.split("\n").filter(x => !SIGLINE.test(x.trim())).join(" "), flat); });
+    const hits = [], used = [];
+    sents.forEach(s => {
+      if (s.length > 300 || NOTICE.test(s)) return; // a long sentence is never just the request
+      // a comma or dash splits off a reason ("Remove me, I'm not on the board"), but a bare "remove" has to be its own sentence,
+      // so "Fence - remove" or "2. Fence - no, remove" in a job list isn't one
+      const whole = s.replace(OUT_LEAD, "");
+      if (OUT_FORMS.test(whole)) { hits.push(whole); used.push(s); return; }
+      if (PAUSE.test(s)) return;
+      const raw = s.split(/\s*[,:]\s+|\s+-\s+|\s+(?=(?:and|but|so) )/).map(c => c.replace(/^(?:and|but|so) /, ""));
+      raw.forEach((r, i) => {
+        const c = r.replace(OUT_LEAD, ""); if (!c || !OUT_FORMS.test(c)) return;
+        // a bare "remove" only leads the sentence, with just a reason or a thank-you after it ("Please remove - we have a vendor")
+        if (/^(remove|unsubscribe|unsub|stop|opt[\s-]?out|optout|opting out)[\s.!?,]*$/.test(c) && (i > 0 || (raw[1] && !/^(we|i|i'm|we're|we've|i've|not|no longer|already|our|my|thanks?|thank you|have a)\b/.test(raw[1])))) return;
+        hits.push(c); used.push(r);
+      });
+    });
+    // the subject: "Remove", "Unsubscribe", "Re: Pressure washing for Oak Hill: remove"
+    [subj, subj.split(/\s*:\s*/).pop()].forEach(t => { const x = String(t || "").replace(OUT_LEAD, ""); if (x && OUT_FORMS.test(x)) hits.push(x); });
+    if (!hits.length) return { out: 0, more: false };
+    // what's left once the request is taken out: more only when it asks for something or points to someone
+    // ("No more mailings. Come Tuesday.", "Remove me. Jane at jane@oak.test handles vendors"), not a reason or a signature
+    // (read from whole paragraphs, so a request Gmail wrapped onto two lines comes out whole, and without signature lines)
+    const rest = used.slice().sort((x, y) => y.length - x.length).reduce((t, u) => t.split(u).join(" "), flat.join("\n"));
+    const more = /\?|\b(?:at|to|e-?mail|contact|reach|cc|try|add|use|send|forward|colleague|manager|is)\s+<?[a-z0-9._%+'-]+@[a-z0-9]|(?:^|\n|[.!] )[a-z0-9._%+'-]+@[a-z0-9.-]+\s+[a-z]{2,}|\b(quotes?|estimates?|prices?|pricing|cost|how much|schedule|book|come (out|by|on|over|do|look|see|wash|clean|tues|mon|wed|thur|fri|sat|sun)|send (someone|somebody|a crew|your crew|a guy|over)|look at|call (me|us|\d+)|give (me|us) a call|text (me|us)|reach me|my (cell|number|phone)|available|availability|interested in|can you|could you|would you|do you|when can|next (week|month)|tomorrow|(mon|tues|wednes|thurs|fri|satur|sun)day|reach out to|contact (her|him|them|our|the (office|manager|board))|instead|(want|need|'d like|would like)(?: to have)? (the|a|an|our|my|some|someone|you to)|january|february|march|april|june|july|august|september|october|november|december|\d{1,2}(st|nd|rd|th))\b/.test(rest);
+    // everyone at the address only when the request itself says so ("remove us"), not its reason ("remove me as we moved")
+    return { out: hits.map(h => h.replace(/\s(?:as|because|since)\s.*$/, "")).some(h => /\b(us|our|we|everyone|all of us|both of us)\b/.test(h) || (/\bthis (e-?mail )?address\b/.test(h) && !/\b(me|my|i)\b/.test(h))) ? 2 : 1, more: more };
+  }
+  function wantsOut(m) { return outCheck(m).out; }
+  // an out-of-office or "we got your message" auto-reply isn't an answer: their emails keep going
+  function autoReply(m) {
+    let h = ""; try { h = ["Auto-Submitted", "X-Autoreply", "X-Autorespond", "Precedence"].map(k => m.getHeader(k) || "").join(" ").toLowerCase(); } catch (e) {}
+    return /auto-(replied|generated|notified)|auto_reply|\byes\b|\bbulk\b|\bjunk\b/.test(h) || /^(automatic reply|auto[- ]?reply|autoreply|auto-response|out of (the )?office|away from (the|my) office)/i.test(String(m.getSubject() || "").trim());
+  }
+  // the addresses a delivery failure names. A delay ("Gmail will retry") isn't a failure.
+  function failedTo(m) {
+    const subj = String(m.getSubject() || ""), top = String(m.getPlainBody() || "").split(/-{3,}\s*(original message|forwarded message)|\n\s*Received: /i)[0].slice(0, 4000);
+    const hard = /failure|failed|undeliver|not delivered|returned mail|could ?n[o']t be delivered/i.test(subj);
+    if (/\(delay\)|delayed|delivery delay/i.test(subj) || (!hard && /temporar|will (retry|keep trying|try again)|delivery incomplete/i.test(top))) return [];
+    if (!hard && !/wasn['’]?t delivered|couldn['’]?t be delivered|could not be delivered|not delivered|address not found|does ?n[o'’]?t exist|user unknown|no such user|undeliverable|failed permanently|rejected/i.test(top)) return [];
+    let h = ""; try { h = m.getHeader("X-Failed-Recipients") || ""; } catch (e) {}
+    const found = {}; (h + " " + top).toLowerCase().replace(/[a-z0-9._%+'-]+@[a-z0-9.-]+\.[a-z]{2,}/g, a => { if (a !== me() && !NDR.test(a)) found[a] = 1; return a; });
+    return Object.keys(found);
+  }
+  function mapThread(ctx, t, k) { const c = ctx.threads[t]; ctx.threads[t] = c === undefined || c === k ? k : ""; }
+  // a reply, "remove" or bounce from one address: it stops in every blast it's in, and its contacts are marked.
+  // more: a "remove" that also says something else, so its contacts show in Leads for you to read it
+  function stopAddr(k, xs, when, status, text, ctx, more) {
+    const allowed = ctx.mail.allow[k] && new Date(ctx.mail.allow[k]) >= when; // allowed again since
+    if (status !== "replied" && allowed) return;
+    const live = xs.filter(x => !x.old && when >= new Date(x.b.startedAt || 0));
+    const old = xs.filter(x => x.old && when >= new Date(x.b.startedAt || 0) && (status !== "replied" || when - new Date(x.last || 0) <= REPLY_DAYS * DAY));
+    if (!live.length && !old.length) return;
+    live.forEach(x => {
+      const run = ctx.runs[x.b.id]; if (!run) return; const p = person(run, k);
+      if (p.status === status || (status === "replied" && p.status === "removed")) return;
+      p.status = status; p.note = text; delete p.attemptAt; delete p.attemptSubject; note(run, k + ": " + text); ctx.dirty[x.b.id] = true;
+    });
+    // no blast emails the address again: not after a "remove" or a bounce, and not after a reply either, since you answer
+    // them yourself from then on. A "remove" replaces a reply or a bounce, and a reply replaces a bounce, so allowing the
+    // lesser one again can't undo it (a bounce still marks the contacts as bounced).
+    const RANK = { bounced: 1, replied: 2, removed: 3 }, was = ctx.mail.out[k];
+    if (!allowed && (!was || RANK[status] > (RANK[was.why] || 3))) { ctx.mail.out[k] = { why: status, at: when.toISOString(), note: text }; saveOut(ctx.mail, [k]); }
+    const from = live.concat(old), named = from[0].b, ids = {};
+    from.forEach(x => (x.r.leadIds || []).forEach(id => { ids[id] = 1; }));
+    Object.keys(ids).forEach(id => touchLead(id, l => {
+      if (keyOf(l.email) !== k) return null; // their email has changed since
+      // a "remove" that says more: off your emails all the same, and shown in Leads (drips off) so you read the rest
+      if (status === "removed" && more) { const tag = String(l.blastReplied || "").indexOf(named.id + "|") === 0 ? l.blastReplied : named.id + "|" + when.toISOString();
+        return l.unsubscribed && l.blastOutMore === tag ? null : { unsubscribed: true, blastReplied: tag, blastOutMore: tag, activity: act(l, "Asked for no more blast emails, but wrote more in their reply to “" + named.name + "”. Read it in Gmail: " + text.replace(/^Asked to be removed [^:]*: /, "")) }; }
+      if (status === "removed") return l.unsubscribed ? null : { unsubscribed: true, activity: act(l, "Asked to be taken off your emails (replied to “" + named.name + "”)") };
+      if (status === "bounced") return l.emailBounced ? null : { emailBounced: true, activity: act(l, "Email to " + k + " bounced (blast “" + named.name + "”)") };
+      return String(l.blastReplied || "").indexOf(named.id + "|") === 0 ? null : { blastReplied: named.id + "|" + when.toISOString(), activity: act(l, "Replied to your email blast “" + named.name + "”: " + text.replace(/^Replied [^:]*: /, "")) };
+    }));
+  }
+  // a sender that's a system, not a person (a help desk's "we got your message", a mailing list)
+  function robot(a, m) {
+    let h = ""; try { h = (m.getHeader("List-Id") || "") + (m.getHeader("List-Unsubscribe") || ""); } catch (e) {}
+    return !!h || /^(no-?reply|do-?not-?reply|donotreply|notifications?|notify|mailer|bounces?|support|helpdesk|tickets?)[@+._-]/.test(a);
+  }
+  function handle(m, who, ctx) {
+    const when = m.getDate(), a = addrOf(m.getFrom()); if (!a || a === me()) return;
+    if (NDR.test(a)) { failedTo(m).forEach(k => { if (who[k]) stopAddr(k, who[k], when, "bounced", "Bounced " + dayText(when), ctx); }); return; }
+    if (autoReply(m)) return;
+    // someone else answering in a thread sent to an address (a board member replying to the board's inbox) counts as that
+    // address replying; their "remove me" takes them off, and a "remove us" takes the address off too
+    let tk = (ctx.threads || {})[threadOf(m)] || ""; if (tk === a || !who[tk]) tk = "";
+    if (!who[a] && !tk) return;
+    const oc = outCheck(m), out = oc.out, subj = String(m.getSubject() || "").slice(0, 80);
+    // a help desk or mailing list in the thread isn't a reply; it asking out speaks for the address it answers for
+    if (!who[a] && robot(a, m)) { if (out) stopAddr(tk, who[tk], when, "removed", "Asked to be removed " + dayText(when) + " (from " + a + ")", ctx); return; }
+    if (who[a]) stopAddr(a, who[a], when, out ? "removed" : "replied", out ? "Asked to be removed " + dayText(when) + (oc.more ? ": " + subj : "") : "Replied " + dayText(when) + ": " + subj, ctx, oc.more);
+    else if (out) blockAddr(a, when, "Asked to be removed " + dayText(when) + " (in the thread sent to " + tk + ")", ctx);
+    if (tk) stopAddr(tk, who[tk], when, out === 2 ? "removed" : "replied", out === 2 ? "Asked to be removed " + dayText(when) + " (from " + a + ")" + (oc.more ? ": " + subj : "") : "Replied " + dayText(when) + " (from " + a + "): " + subj, ctx, oc.more);
+  }
+  // someone in no blast asks out: no blast emails them either, and their contacts are marked
+  function blockAddr(a, when, text, ctx) {
+    if (!oneAddr(a) || (ctx.mail.allow[a] && new Date(ctx.mail.allow[a]) >= when)) return;
+    if (!ctx.mail.out[a] || ctx.mail.out[a].why !== "removed") { ctx.mail.out[a] = { why: "removed", at: when.toISOString(), note: text }; saveOut(ctx.mail, [a]); }
+    leadsAt([a]).forEach(l => touchLead(l.id, x => keyOf(x.email) === a && !x.unsubscribed ? { unsubscribed: true, activity: act(x, "Asked to be taken off your emails: " + text.replace(/^Asked to be removed /, "")) } : null));
+  }
+  function checkInbox(ctx, since, now) {
+    const keys = Object.keys(ctx.who); if (!keys.length) return;
+    let first = now.getTime(); keys.forEach(k => ctx.who[k].forEach(x => { const t = new Date(x.b.startedAt || now).getTime(); if (t < first) first = t; }));
+    const from = Math.floor(Math.max(first, since ? new Date(since).getTime() - 20 * 60000 : first) / 1000);
+    for (let s = 0; s < 500; s += 100) {
+      const ths = GmailApp.search("-from:me in:anywhere after:" + from, s, 100); // a reply already deleted (or in Spam) still counts
+      ths.forEach(th => th.getMessages().forEach(m => { if (m.getDate().getTime() / 1000 >= from) handle(m, ctx.who, ctx); }));
+      if (ths.length < 100) break;
+    }
+  }
+
+  // ---- sending ----
+  // after an email went out: its count, the day's counts, the address book, and the contact's history
+  function afterSend(b, run, p, r, st, when, subject, msgId, th, ctx) {
+    p.sent = (p.sent || 0) + 1; p.lastAt = when.toISOString(); p.lastSubject = subject; p.msgIds = [msgId].concat(p.msgIds || []).slice(0, 5);
+    if (th) { p.threads = [th].concat((p.threads || []).filter(x => x !== th)).slice(0, 5); if (ctx.threads) mapThread(ctx, th, r.key); }
+    p.status = "waiting"; p.note = ""; delete p.attemptAt; delete p.attemptSubject; delete p.holdUntil; delete p.fails;
+    if (run.day === st.day) run.dayCount = (run.dayCount || 0) + 1; else { run.day = st.day; run.dayCount = 1; }
+    st.sentToday = (st.sentToday || 0) + 1; if (!st.lastSentAt || when > new Date(st.lastSentAt)) st.lastSentAt = when.toISOString();
+    note(run, "Email " + p.sent + " to " + r.key + ": " + subject);
+    // the address book and the contact's history first: a run save that loses to another copy can't leave the address unwatched
+    const s = ctx.mail.sent[r.key] || { first: when.toISOString() };
+    s.last = when.toISOString(); s.blast = b.id; s.name = b.name || ""; s.leads = (r.leadIds || []).slice(0, 20); ctx.mail.sent[r.key] = s;
+    if (th) s.th = [th].concat((s.th || []).filter(x => x !== th)).slice(0, 5);
+    try { saveSent(ctx.mail, [r.key]); } catch (e) { (ctx.sentKeys = ctx.sentKeys || []).push(r.key); }
+    (r.leadIds || []).forEach(id => touchLead(id, l => {
+      if (keyOf(l.email) !== r.key) return null;
+      const u = { activity: act(l, "Email blast “" + b.name + "”: email " + p.sent + " of " + (b.count || 1) + " sent (" + subject + ")"), lastContact: C.ymdOf(when) };
+      if (!l.stage || l.stage === "new") { u.stage = "contacted"; u.stageSince = C.ymdOf(when); }
+      return u;
+    }));
+    saveRun(run, ctx); delete ctx.dirty[b.id];
+  }
+  // a send that didn't finish: Gmail's Sent folder says whether it went. A fresh mark may be another run still sending.
+  function settle(b, run, p, st, ctx, now) {
+    const at = new Date(p.attemptAt || 0), age = now - at; if (age >= 0 && age < 7 * 60000) return;
+    const q = "in:anywhere -in:drafts from:me to:" + p.key + " after:" + Math.floor(at.getTime() / 1000 - 120);
+    const m = [].concat.apply([], GmailApp.search(q, 0, 5).map(th => th.getMessages())).find(x => !x.isDraft() && x.getSubject() === p.attemptSubject && x.getDate() >= new Date(at.getTime() - 120000));
+    const r = (b.recipients || []).find(x => x.key === p.key) || { key: p.key, email: p.key, leadIds: [] };
+    if (m) afterSend(b, run, p, r, st, m.getDate(), p.attemptSubject, m.getId(), threadOf(m), ctx);
+    else {
+      p.status = "waiting"; delete p.attemptAt; delete p.attemptSubject;
+      if ((p.fails || 0) >= 3) { p.status = "skipped"; p.note = "Gmail didn't send it after 3 tries"; note(run, p.key + ": Gmail didn't send it after 3 tries"); }
+    }
+    ctx.dirty[b.id] = true;
+  }
+  // why a contact on the address means nobody there gets it ("" when it's fine)
+  function hardNo(l) {
+    if (l.dnc) return "Marked do not contact";
+    if (l.unsubscribed) return "Asked to be removed";
+    if (l.emailBounced) return "Their email bounced";
+    if (l.noAutoEmail || blocked(l.email)) return "You email them yourself";
+    if (kylemont(l)) return "Not emailed";
+    return "";
+  }
+  // and why one of the blast's own contacts can't get it now
+  function leadNo(l, r) {
+    const why = hardNo(l); if (why) return why;
+    if (l.stage === "lost" && (r.lostIds || []).indexOf(l.id) < 0) return "Marked not interested";
+    if (r.outreach && l.list !== "outreach") return "Moved to Leads";
+    return "";
+  }
+  // Every address a contact blocks (do not contact, asked out, bounced, emailed personally), however it was typed
+  // ("JSmith@Gmail.com"), and each address in a box holding several. Only flagged contacts are read, so it stays cheap.
+  function badIndex(ctx) {
+    if (ctx.bad) return ctx.bad;
+    const bad = {}, fields = ["email", "dnc", "unsubscribed", "emailBounced", "noAutoEmail", "name", "company", "area", "address"];
+    ["dnc", "unsubscribed", "emailBounced", "noAutoEmail"].forEach(f => {
+      const r = call("post", ":runQuery", { structuredQuery: { from: [{ collectionId: "leads" }], where: { fieldFilter: { field: { fieldPath: f }, op: "EQUAL", value: { booleanValue: true } } }, select: { fields: fields.map(x => ({ fieldPath: x })) } } });
+      if (r.code >= 300) throw fail("read the contacts", r);
+      (Array.isArray(r.json) ? r.json : []).filter(x => x && x.document).map(x => docOf(x.document)).forEach(l => {
+        const k = keyOf(l.email), why = k && hardNo(l); if (!why) return;
+        [k].concat(k.split(/[\s,;<>()"']+/).filter(x => x && x !== k && x.indexOf("@") > 0)).forEach(x => { if (!bad[x]) bad[x] = { why: why, id: l.id, name: kylemont(l) ? "" : l.name || l.company || "" }; });
+      });
+    });
+    return (ctx.bad = bad);
+  }
+  // Contacts no flag marks but that still keep an address off (Kylemont, or a box that also holds a never-email address),
+  // each address in their box. Every contact is read, so it's done only right before an email goes.
+  function boxIndex(ctx) {
+    if (ctx.box) return ctx.box;
+    const box = {}, fields = ["email", "name", "company", "area", "address"];
+    const r = call("post", ":runQuery", { structuredQuery: { from: [{ collectionId: "leads" }], select: { fields: fields.map(x => ({ fieldPath: x })) } } });
+    if (r.code >= 300) throw fail("read the contacts", r);
+    (Array.isArray(r.json) ? r.json : []).filter(x => x && x.document).map(x => docOf(x.document)).forEach(l => {
+      const k = keyOf(l.email); if (!k || !(kylemont(l) || blocked(k))) return;
+      [k].concat(k.split(/[\s,;<>()"']+/).filter(x => x && x !== k && x.indexOf("@") > 0)).forEach(x => { if (!box[x]) box[x] = { why: kylemont(l) ? "Not emailed" : "You email them yourself", id: l.id, name: kylemont(l) ? "" : l.name || l.company || "" }; });
+    });
+    return (ctx.box = box);
+  }
+  // the contacts with exactly this address (the CRM saves addresses in lower case)
+  function leadsAt(spellings) {
+    const vals = spellings.filter((x, i, a) => x && a.indexOf(x) === i).slice(0, 10).map(x => ({ stringValue: x }));
+    const r = call("post", ":runQuery", { structuredQuery: { from: [{ collectionId: "leads" }], where: { fieldFilter: { field: { fieldPath: "email" }, op: "IN", value: { arrayValue: { values: vals } } } } } });
+    if (r.code >= 300) throw fail("look up contacts", r);
+    return (Array.isArray(r.json) ? r.json : []).filter(x => x && x.document).map(x => docOf(x.document));
+  }
+  function trySend(x, ctx, st, now) {
+    const b = x.b, r = x.r, p = x.p, run = ctx.runs[b.id];
+    const stop = (status, text) => { p.status = status; p.note = text; note(run, r.key + ": " + text); ctx.dirty[b.id] = true; return false; };
+    if (r.email !== r.key || !oneAddr(r.key)) return stop("skipped", "Not a single email address. Fix it in the CRM and save the blast again.");
+    if (blocked(r.key)) return stop("skipped", "On your never-email list");
+    const gone = () => { const o = ctx.mail.out[r.key]; return !o ? true : o.why === "bounced" ? stop("bounced", "Bounced before") : o.why === "replied" ? stop("skipped", "Wrote back to an earlier blast, so you email them yourself") : stop("removed", "Asked to be removed before"); };
+    if (gone() !== true) return false;
+    // the contacts as they are in the CRM right now: every one still on this address has to be fine
+    const ls = (r.leadIds || []).map(id => get("leads/" + id)).filter(Boolean), here = ls.filter(l => keyOf(l.email) === r.key);
+    if (!here.length) return stop("skipped", ls.length ? "Their email changed in the CRM. Save the blast again to use the new one." : "No longer in the CRM");
+    for (let i = 0; i < here.length; i++) { const why = leadNo(here[i], r); if (why) return stop("skipped", why); }
+    // and anyone else on this address, added or changed since the blast was saved
+    const ids = here.map(l => l.id), others = leadsAt([r.key].concat(here.map(l => l.email), here.map(l => String(l.email || "").trim()))).filter(l => keyOf(l.email) === r.key && ids.indexOf(l.id) < 0);
+    for (let i = 0; i < others.length; i++) { const why = hardNo(others[i]); if (why) return stop("skipped", why + " (" + (kylemont(others[i]) ? "another contact" : others[i].name || others[i].company || "another contact") + ", same email)"); }
+    const bx = badIndex(ctx)[r.key]; if (bx && ids.indexOf(bx.id) < 0) return stop("skipped", bx.why + " (" + (bx.name || "another contact") + ", same email)");
+    // a reply the inbox check hasn't seen yet
+    const since = Math.floor(Math.min(new Date(b.startedAt || b.createdAt || now).getTime(), st.lastReplyCheck ? new Date(st.lastReplyCheck).getTime() - 20 * 60000 : Infinity) / 1000);
+    GmailApp.search("from:" + r.key + " in:anywhere after:" + since, 0, 10).forEach(th => th.getMessages().forEach(m => { if (m.getDate().getTime() / 1000 >= since) handle(m, ctx.who, ctx); }));
+    if (FINAL.indexOf(p.status) >= 0 || gone() !== true) return false;
+    // something else went to them in the last 2 days (another blast, a follow-up, your own email): this one waits
+    const mine = p.msgIds || [], last = ctx.mail.sent[r.key];
+    const recent = (last && last.blast !== b.id && now - new Date(last.last || 0) < 48 * 3600000) // another blast (even if you deleted it since)
+      || GmailApp.search("in:anywhere -in:drafts from:me to:" + r.key + " newer_than:2d", 0, 5).some(th => th.getMessages().some(m => !m.isDraft() && mine.indexOf(m.getId()) < 0 && now - m.getDate() < 48 * 3600000 && addrOf(m.getFrom()) === me() && (String(m.getTo()) + "," + String(m.getCc())).toLowerCase().indexOf(r.key) >= 0));
+    if (recent) { p.holdUntil = new Date(now.getTime() + 48 * 3600000).toISOString(); p.note = "Got another email from you in the last 2 days, so this one waits"; ctx.dirty[b.id] = true; return false; }
+    // the blast as it is right now: paused, stopped or deleted on the phone a moment ago, or this address taken out, means no
+    const live = () => { const c = get("settings/" + b.id), x = c && (c.recipients || []).find(y => y && y.key === r.key); if (!c) ctx.gone[b.id] = 1;
+      return c && isBlast(c) && c.status === "running" && !c.stoppedAt && x && x.email === r.key && Array.isArray(c.messages) && c.messages.length ? [c, x] : null; };
+    const kx = boxIndex(ctx)[r.key]; if (kx && ids.indexOf(kx.id) < 0) return stop("skipped", kx.why + " (" + (kx.name || "another contact") + ", same email)");
+    const now1 = live(); if (!now1) return true;
+    const cur = now1[0], cr = now1[1];
+    const n = p.sent || 0, mail = C.compose(cur.messages[n % cur.messages.length] || cur.messages[0], cr);
+    // marked first, so a run that stops halfway can't send it twice
+    p.status = "sending"; p.attemptAt = now.toISOString(); p.attemptSubject = mail.subject; p.note = "";
+    const mk = markRun(run);
+    if (mk === "gone") { ctx.gone[b.id] = 1; return true; }
+    if (mk !== "ok") throw new Error(TWO);
+    if (!live()) { p.status = "waiting"; p.note = ""; delete p.attemptAt; delete p.attemptSubject; ctx.dirty[b.id] = true; return true; }
+    // a new address is watched for "remove" and bounces from now on, even if this run stops before it's marked sent
+    if (!ctx.mail.sent[r.key]) { ctx.mail.sent[r.key] = { first: now.toISOString(), last: now.toISOString(), blast: b.id, name: b.name || "", leads: (r.leadIds || []).slice(0, 20) }; try { saveSent(ctx.mail, [r.key]); } catch (e) { (ctx.sentKeys = ctx.sentKeys || []).push(r.key); } }
+    let draft = null, msg;
+    try { draft = GmailApp.createDraft(r.key, mail.subject, mail.body, { name: NAME }); msg = draft.send(); }
+    catch (err) {
+      try { if (draft) draft.deleteDraft(); } catch (e2) {}
+      const why = String((err && err.message) || err);
+      p.status = "waiting"; delete p.attemptAt; delete p.attemptSubject;
+      if (/too many times|quota|limit/i.test(why)) { st.restUntil = C.at(C.addD(st.day, 1), "07:00").toISOString(); st.lastError = "Gmail's daily sending limit was reached. Blasts pick up again tomorrow."; st.lastErrorAt = now.toISOString(); }
+      else if (/invalid|recipient|address/i.test(why)) { p.status = "skipped"; p.note = "Gmail wouldn't send to this address"; note(run, r.key + ": Gmail wouldn't send to this address"); }
+      else {
+        p.fails = (p.fails || 0) + 1; st.lastError = "Gmail didn't send an email: " + why.slice(0, 120); st.lastErrorAt = now.toISOString();
+        p.holdUntil = new Date(now.getTime() + 30 * 60000).toISOString(); p.note = "Gmail didn't send it. Trying again soon.";
+        // it may have gone anyway: the Sent folder is checked before it's tried again (and after the third try)
+        if (draft) { p.status = "sending"; p.attemptAt = now.toISOString(); p.attemptSubject = mail.subject; }
+        else if (p.fails >= 3) { p.status = "skipped"; p.note = "Gmail didn't send it after 3 tries"; note(run, r.key + ": Gmail didn't send it after 3 tries"); }
+      }
+      saveRun(run, ctx); return true;
+    }
+    afterSend(b, run, p, r, st, now, mail.subject, msg.getId(), threadOf(msg), ctx);
+    return true;
+  }
+  function sendNext(blasts, ctx, st, now) {
+    if ((st.sentToday || 0) >= DAY_MAX || st.quotaLeft < 6) return;
+    // a few minutes between emails, even when two runs come close together
+    const gap = st.lastSentAt ? now - new Date(st.lastSentAt) : Infinity; if (gap >= 0 && gap < 3 * 60000) return;
+    const due = [];
+    blasts.forEach(b => {
+      if (b.status !== "running" || !Array.isArray(b.messages) || !b.messages.length || !C.inHours(now, b)) return;
+      const run = ctx.runs[b.id]; if (run.day === st.day && (run.dayCount || 0) >= Math.min(b.perDay || 80, DAY_MAX)) return;
+      const seen = {};
+      (b.recipients || []).forEach((r, i) => {
+        if (!r || !r.key || seen[r.key]) return; seen[r.key] = 1;
+        const p = person(run, r.key); if (finished(b, p) || p.status === "sending") return;
+        const t = C.dueAt(b, p); if (t && t <= now) due.push({ b: b, r: r, p: p, t: t.getTime(), i: i });
+      });
+    });
+    due.sort((x, y) => x.t - y.t || x.i - y.i);
+    // contacts that can't get it are skipped without using up the run; at most one email goes out
+    for (let k = 0; k < due.length && k < 6; k++) if (trySend(due[k], ctx, st, now)) return;
+  }
+  // "Send me a test" goes to this account only, whatever the blast says
+  function sendTest(test, docs, st) {
+    st.testDoneAt = test.at; st.testResult = "";
+    const to = me(), b = docs.find(d => isBlast(d) && d.id === test.blastId);
+    try {
+      if (st.quotaLeft < 3) { st.testResult = "Gmail's sending limit for today is used up. Try the test tomorrow."; return; }
+      let mail = test.subject && test.body ? { subject: test.subject, body: test.body } : null, as = test.as || "";
+      if (!mail) {
+        if (!b || !Array.isArray(b.messages) || !b.messages.length) { st.testResult = "Couldn't find that blast to test."; return; }
+        const r = (b.recipients || []).find(x => x.key === test.key) || (b.recipients || [])[0] || { first: "Angela", community: "Harbor Ridge Townhomes" };
+        mail = C.compose(b.messages[Math.max(0, Math.min(+test.msg || 0, b.messages.length - 1))], r); as = r.community || r.email || "";
+      }
+      const i = (+test.msg || 0) + 1;
+      GmailApp.createDraft(to, "[Test] " + mail.subject, "A test of email " + i + " of “" + ((b && b.name) || "your blast") + "”, as " + (as || "a contact") + " would get it. Only you got this.\n\n----------\n\n" + mail.body, { name: NAME }).send();
+      st.testResult = "Test of email " + i + " sent to " + to + " at " + Utilities.formatDate(new Date(), TZ, "h:mm a") + ".";
+    } catch (err) { st.testResult = "The test didn't send: " + String((err && err.message) || err).slice(0, 120); }
+  }
+
+  // ---- every 5 minutes ----
+  function tick(force) {
+    const lock = LockService.getScriptLock(); if (!lock.tryLock(0)) return "busy";
+    const now = new Date(); let st = null, prev = {}, leaseT = "";
+    try {
+      // it rests at night; a reply that came in overnight is seen in the morning
+      const h = parts(now).h; if (!force && (h < 7 || h >= 21)) return "night";
+      const sid = scriptId();
+      // setup in a new project while the old one is partway through a run waits for that run to end, then takes over
+      const busy = () => { const s0 = get("settings/blast-sender") || {}; return !!(s0.scriptId && s0.scriptId !== sid && s0.busyUntil && new Date(s0.busyUntil) > new Date()); };
+      if (force) { let i = 0; while (busy() && i++ < 12) Utilities.sleep(5000); if (i > 12) throw new Error("The other copy of the sender is partway through a run. Run setup again in a few minutes."); }
+      const docs = list("settings"); prev = docs.find(d => d.id === "blast-sender") || {};
+      // an older copy of this script (in another project) steps aside while a newer one is checking in
+      const age = prev.lastRun ? now - new Date(prev.lastRun) : Infinity;
+      if (!force && sid && prev.scriptId && prev.scriptId !== sid && age > -10 * 60000 && age < 20 * 60000) return "other";
+      st = { kind: "sender", account: me(), version: VERSION, scriptId: sid, lastRun: now.toISOString(), lastReplyCheck: prev.lastReplyCheck || "", testDoneAt: prev.testDoneAt || "", testResult: prev.testResult || "",
+        day: prev.day || "", sentToday: prev.sentToday || 0, lastSentAt: prev.lastSentAt || "", lastError: prev.lastError || "", lastErrorAt: prev.lastErrorAt || "", restUntil: prev.restUntil || "" };
+      const today = C.ymdOf(now); if (st.day !== today) { st.day = today; st.sentToday = 0; }
+      if (st.lastReplyCheck && new Date(st.lastReplyCheck) > now) st.lastReplyCheck = ""; // a clock that was ahead: look again from the start
+      if (st.lastErrorAt && now - new Date(st.lastErrorAt) > DAY) { st.lastError = ""; st.lastErrorAt = ""; }
+      const blasts = docs.filter(d => isBlast(d) && !d.stoppedAt && (d.status === "running" || d.status === "paused"));
+      const test = docs.find(d => d.id === "blast-test"), testDue = !!(test && test.at && test.at !== st.testDoneAt);
+      // nothing to send: it only checks in (and looks for late replies, "remove" and bounces) every 15 minutes
+      if (!force && !blasts.length && !testDue && prev.lastRun && now - new Date(prev.lastRun) < 14 * 60000) return "idle";
+      // its turn: a second copy that read the same check-in steps aside (its write finds this one's). busyUntil tells setup
+      // in another project that a run is under way; the save at the end clears it.
+      const lease = { kind: "sender", scriptId: sid, lastRun: st.lastRun, account: me(), version: VERSION, busyUntil: new Date(now.getTime() + 6 * 60000).toISOString(), leaseId: Utilities.getUuid() };
+      const lr = call("post", ":commit", { writes: [{ update: { name: "projects/" + PROJECT + "/databases/(default)/documents/settings/blast-sender", fields: fieldsOf(lease) },
+        updateMask: { fieldPaths: Object.keys(lease) }, currentDocument: prev._t ? { updateTime: prev._t } : { exists: false } }] });
+      if (lr.code >= 300) {
+        if (!conflict(lr)) throw fail("check in", lr);
+        const cur = get("settings/blast-sender") || {};
+        if (cur.leaseId === lease.leaseId) leaseT = cur._t; // its own check-in, whose answer was lost and was sent again
+        else { st = null; if (force) throw new Error("Another copy of the sender checked in at the same moment. Run setup again in a minute."); return "other"; }
+      } else leaseT = ((lr.json.writeResults || [])[0] || {}).updateTime || "";
+      const ctx = { runs: {}, dirty: {}, gone: {}, mail: loadMail(docs), threads: {} };
+      ctx.who = whoIn(blasts, ctx.mail);
+      docs.filter(isRun).forEach(d => { ctx.runs[d.blastId] = d; });
+      // the email threads each address was sent, so an answer from someone else in the thread counts for it
+      // (a thread Gmail put several addresses' emails in, by their subject, belongs to none of them)
+      Object.keys(ctx.mail.sent).forEach(k => (ctx.mail.sent[k].th || []).forEach(t => mapThread(ctx, t, k)));
+      Object.keys(ctx.runs).forEach(id => (ctx.runs[id].people || []).forEach(p => (p.threads || []).forEach(t => mapThread(ctx, t, p.key))));
+      blasts.forEach(b => { const run = ctx.runs[b.id] || (ctx.runs[b.id] = { blastId: b.id }); if (!Array.isArray(run.people)) run.people = []; if (!Array.isArray(run.log)) run.log = []; });
+      // a send that didn't finish last time is sorted out first
+      blasts.forEach(b => ctx.runs[b.id].people.forEach(p => { if (p.status === "sending") settle(b, ctx.runs[b.id], p, st, ctx, now); }));
+      // and in a blast stopped since (its email may have gone just before the Stop)
+      docs.filter(d => isBlast(d) && blasts.indexOf(d) < 0 && ctx.runs[d.id] && Array.isArray(ctx.runs[d.id].people)).forEach(b => ctx.runs[b.id].people.forEach(p => { if (p.status === "sending") settle(b, ctx.runs[b.id], p, st, ctx, now); }));
+      const checkInboxNow = force || !st.lastReplyCheck || now - new Date(st.lastReplyCheck) >= 14 * 60000;
+      if (checkInboxNow) checkInbox(ctx, st.lastReplyCheck, now);
+      st.quotaLeft = MailApp.getRemainingDailyQuota();
+      if (testDue) sendTest(test, docs, st);
+      if (!st.restUntil || now >= new Date(st.restUntil)) { st.restUntil = ""; sendNext(blasts, ctx, st, now); }
+      Object.keys(ctx.dirty).forEach(id => { if (!ctx.gone[id]) saveRun(ctx.runs[id], ctx); });
+      if (ctx.sentKeys) saveSent(ctx.mail, ctx.sentKeys);
+      // only now that everything it found is saved, so a run that fails looks again next time
+      if (checkInboxNow) st.lastReplyCheck = now.toISOString();
+      st.quotaLeft = MailApp.getRemainingDailyQuota();
+      // saved over its own check-in only: a copy that took over since keeps its own
+      return putIf("settings/blast-sender", st, leaseT) ? "ok" : "other";
+    } catch (err) {
+      const msg = String((err && err.message) || err).slice(0, 300); console.error(msg);
+      try {
+        const e = { lastRun: now.toISOString(), lastError: msg, lastErrorAt: now.toISOString() };
+        if (st && leaseT) putIf("settings/blast-sender", Object.assign({}, st, e, { lastReplyCheck: prev.lastReplyCheck || "" }), leaseT);
+        // not over another copy that's partway through a run (its save at the end would be thrown away)
+        else { const cur = get("settings/blast-sender") || {}; if (!(cur.scriptId && cur.scriptId !== scriptId() && cur.busyUntil && new Date(cur.busyUntil) > new Date())) merge("settings/blast-sender", Object.assign({ kind: "sender", account: me(), version: VERSION }, e), cur._t || ""); }
+      } catch (e2) {}
+      if (force) throw err;
+      return "error";
+    } finally { lock.releaseLock(); }
+  }
+  // run once from the editor: it asks for access, starts the 5-minute timer and checks in with the CRM
+  function setup() {
+    ScriptApp.getProjectTriggers().forEach(t => { if (t.getHandlerFunction() === "tick") ScriptApp.deleteTrigger(t); });
+    ScriptApp.newTrigger("tick").timeBased().everyMinutes(5).create();
+    tick(true);
+    console.log("All set. Blasts send from " + me() + ". The CRM shows the sender as on.");
+  }
+  return { setup: setup, tick: tick, wantsOut: wantsOut, outCheck: outCheck };
+}
+const blastScript = () => `// Get It Clean CRM: email blasts. Sends the blasts you start in the CRM from this Gmail account, on their schedule.
+// Made by the CRM (Settings > Email blasts). Paste it into a project at script.google.com, then run setup once.
+const APP = blastSender(${JSON.stringify(((window.GIC_CONFIG || {}).firebase || {}).projectId || "")}, ${BLAST_SENDER_VERSION}, blastCore, ${JSON.stringify(BLAST_BLOCKED_SHA)});
+function setup() { APP.setup(); }
+function tick() { APP.tick(false); }
+
+${blastSender.toString()}
+
+${blastCore.toString()}
+`;
+const BLAST_MANIFEST = JSON.stringify({ timeZone: "America/New_York", runtimeVersion: "V8", exceptionLogging: "STACKDRIVER",
+  oauthScopes: ["https://mail.google.com/", "https://www.googleapis.com/auth/datastore", "https://www.googleapis.com/auth/script.external_request", "https://www.googleapis.com/auth/script.scriptapp", "https://www.googleapis.com/auth/script.send_mail", "https://www.googleapis.com/auth/userinfo.email"] }, null, 2);
+
+// ---------- Settings > Email blasts: setting up the sender ----------
+if (BL_ON()) {
+  SET_TABS.splice(SET_TABS.length - 1, 0, ["blasts", "Email blasts"]);
+  SET_EXTRA.blasts = () => {
+    const me = window.GIC.me() || {};
+    if (!me.isOwner) return `<section class="panel"><p class="note">Only the owner can set up the email sender.</p></section>`;
+    const s = S.blastSender || {}, st = senderState();
+    if (S.blastRulesOk !== true && Date.now() - blastRulesAt > 15000) setTimeout(() => blastRulesCheck(), 0);
+    const pill = { none: ["s-lost", "Not set up"], old: ["due", "Needs the new code"], stale: ["due", "Not checking in"], ok: ["s-scheduled", "On"] }[st];
+    const step = (n, title, body) => `<div class="tpl"><b>${n}. ${title}</b>${body}</div>`;
+    return `<section class="panel"><div class="panel-h"><h2>Email blast sender</h2><span class="pill ${pill[0]}">${pill[1]}</span></div>
+      <p class="note">Blasts go out from your Gmail through a small script in your own Google account, so they keep sending when the CRM is closed and there's nothing to pay for. It checks every 5 minutes from 7 AM to 9 PM, sends at most one email each time (about 12 an hour), and stops emailing anyone who replies, bounces or asks to be removed. Google lets a script in a free Gmail account email about 100 people a day, so blasts send 80 a day at most, all blasts together. Set it up once, on a computer.</p>
+      <p class="note">Gmail's rules are strict about marketing email from a personal account: lots of bounces or people marking it as spam can get the account blocked from sending, or suspended. Keeping it to a few dozen a day, to people likely to want it, keeps it safe. Bounced addresses come off your blasts on their own.</p>
+      ${st !== "none" ? `<p class="note">${s.account ? `Sending from <b>${esc(s.account)}</b>. ` : ""}Last check ${esc(fmtWhen(new Date(s.lastRun)))}.${s.quotaLeft != null ? ` Gmail lets it send ${esc(s.quotaLeft)} more today.` : ""}${s.lastError ? ` <span class="pill due">Last problem</span> ${esc(s.lastError)}` : ""}</p>` : ""}
+      ${step(1, `Update your database rules <span class="pill ${S.blastRulesOk ? "s-scheduled" : S.blastRulesOk === false ? "due" : ""}">${S.blastRulesOk ? "Done" : S.blastRulesOk === false ? "Needed" : "Couldn't check"}</span>`, `<p class="note">${S.blastRulesOk ? "Your rules are up to date: only you can start or change blasts." : "New rules make blasts owner-only, so a crew login can't start or change one. Blasts can't start until this is done."} Open <a href="https://console.firebase.google.com/" target="_blank" rel="noopener">console.firebase.google.com</a>, pick your CRM project, then Firestore Database and the Rules tab. Select everything there, paste these rules in, and tap Publish.</p><div class="row"><button class="btn" data-act="bl-copy-rules">Copy the rules</button></div>`)}
+      ${step(2, "Open a new Google Apps Script project", `<p class="note">Open <a href="https://script.google.com/home/projects/create" target="_blank" rel="noopener">script.google.com</a> signed in as <b>${esc(BUSINESS.email)}</b>. Blasts come from that Gmail, and it has to be the account that owns your Firebase project (the same one used for the Angi link).</p>`)}
+      ${step(3, "Paste the code", `<p class="note">Select everything in the editor, delete it, and paste this in. Name the project “CRM email blasts”.</p><div class="row"><button class="btn" data-act="bl-copy-code">Copy the code</button></div>`)}
+      ${step(4, "Paste the settings", `<p class="note">Tap the gear (Project Settings), tick <b>Show "appsscript.json" manifest file in editor</b>, go back to the editor, open <b>appsscript.json</b>, and replace it with these settings.</p><div class="row"><button class="btn" data-act="bl-copy-manifest">Copy the settings</button></div>`)}
+      ${step(5, "Run setup once", `<p class="note">Tap the save icon. In the bar at the top, pick <b>setup</b> next to Debug, then tap <b>Run</b>. Google asks for access: pick your account, tap Advanced, then Go to the project (unsafe), tick <b>Select all</b>, then Continue. Google warns the app isn't verified because it's yours. That's expected. If a box is left unticked, the sender can't run.</p><p class="note">When it says “All set”, this page shows the sender as On. Nothing is sent until you start a blast.</p>`)}
+      ${step(6, "If you change the code later", `<p class="note">Paste the new code over the old one, save, and run <b>setup</b> again. To stop everything at once, pause your blasts here, or delete the timer under Triggers (the clock icon) at script.google.com.</p>`)}
+    </section>${blastOutHTML()}`;
+  };
+  // addresses the sender saw ask to be removed or bounce. They get no blast emails again unless you allow them, which is
+  // only for a mistake (a bounce from a full mailbox, a "remove" that meant something else).
+  let allowSure = ""; // the entry whose Allow again was tapped once (kept when the page redraws); a changed entry asks again
+  const allowSig = (k) => { const o = S.blastOut[k] || {}; return k + "|" + (o.why || "") + "|" + (o.at || ""); };
+  const blastOutHTML = () => {
+    const ks = Object.keys(S.blastOut || {}).sort((a, b) => String((S.blastOut[b] || {}).at || "").localeCompare(String((S.blastOut[a] || {}).at || "")));
+    if (!ks.length) return "";
+    return `<section class="panel flush"><div class="panel-h"><h2>Never emailed again</h2><span class="pill">${ks.length}</span></div>
+      <p class="note" style="padding:0 14px">No blast emails these addresses again: they asked to be removed, bounced, or wrote back (you answer those yourself). Allow one again if it was a mistake, or to put someone who wrote back on your blasts again. Someone who asked to be removed has to stay off.</p>
+      <div class="list">${ks.slice(0, 300).map(k => { const o = S.blastOut[k] || {}; return `<div class="item static flow"><div class="main-col"><span class="t">${esc(k)}</span><span class="s" style="white-space:normal">${o.why === "bounced" ? "Bounced" : o.why === "replied" ? "Wrote back" : "Asked to be removed"}${o.at ? " " + esc(fmtDay(new Date(o.at))) : ""}${(() => { const x = String(o.note || "").replace(/^(Bounced|Asked to be removed|Replied) [A-Z][a-z]{2} \d{1,2}:?\s*/, ""); return x ? " · " + esc(x) : ""; })()}</span></div><div class="r"><button class="btn sm${allowSure === allowSig(k) ? " danger" : ""}" data-act="bl-allow" data-k="${esc(k)}">${allowSure === allowSig(k) ? "Tap again to allow" : "Allow again"}</button></div></div>`; }).join("")}</div></section>`;
+  };
+  Object.assign(EXTRA_ACTS, {
+    "bl-allow": async (t) => {
+      const k = t.dataset.k; if (!k) return;
+      if (!S.blastOut[k]) return;
+      if (allowSure !== allowSig(k)) { allowSure = allowSig(k); schedule(); return; }
+      allowSure = ""; t.disabled = true;
+      // read before saving: the save takes it off S.blastOut at once
+      const was = S.blastOut[k] || {}, flag = was.why === "bounced" ? "emailBounced" : was.why === "replied" ? "" : "unsubscribed";
+      try {
+        // the time of the "remove" or bounce being undone: that one and anything older is ignored, a newer one still counts
+        await saveDoc("settings", "blast-allow", { allow: { [k]: was.at || new Date().toISOString() }, updatedAt: new Date().toISOString() }, true);
+        // their contacts can be picked again too: a bounce clears "bounced", a "remove" clears "asked to be taken off"
+        const at = S.leads.filter(x => emailKey(x.email).split(/[\s,;<>()"']+/).includes(k));
+        for (const l of at.filter(x => flag && x[flag])) await saveDoc("leads", l.id, { [flag]: false, activity: activity(l, "note", "Allowed email blasts to " + k + " again") }, true);
+        const still = at.find(x => x.dnc || x.noAutoEmail || (flag === "emailBounced" ? x.unsubscribed : flag ? x.emailBounced : x.unsubscribed || x.emailBounced));
+        const why = !still ? "" : still.dnc ? "is marked do not contact" : still.noAutoEmail ? "is one you email yourself" : still.unsubscribed && flag !== "unsubscribed" ? "asked to be taken off emails" : "is marked as bounced";
+        toast(still ? k + " is off the never-email list, but " + (still.name || still.company || "a contact") + " (same email) " + why + ", so blasts still skip it." : k + " can get blast emails again.", 6000);
+      } catch (e) { t.disabled = false; }
+    },
+    "bl-copy-code": async () => { await copy(blastScript(), "Code"); },
+    "bl-copy-manifest": async () => { await copy(BLAST_MANIFEST, "Settings"); },
+    "bl-copy-rules": async () => {
+      let txt = ""; try { const r = await fetch("firestore.rules", { cache: "no-store" }); if (r.ok) txt = await r.text(); } catch (e) {}
+      if (!/rules_version/.test(txt)) { toast("Couldn't load the rules. Check your connection and try again."); return; }
+      await copy(txt, "Rules");
+    }
+  });
+}
+
 // ---------- CSV export ----------
 function toCSV(rows) { return rows.map(r => r.map(v => { const s = String(v ?? ""); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }).join(",")).join("\n"); }
 
@@ -3637,7 +5062,13 @@ document.addEventListener("click", async (e) => {
       case "save-lead": await saveLead(); break;
       case "delete-lead": $("#del-confirm").innerHTML = `<div class="banner bad spread"><span>Delete this contact and its history?</span><span class="row"><button class="btn sm danger" data-act="delete-lead-yes">Delete</button><button class="btn sm" data-act="delete-lead-no">Keep</button></span></div>`; break;
       case "delete-lead-no": $("#del-confirm").innerHTML = ""; break;
-      case "delete-lead-yes": if (l) { await delDoc("leads", l.id); closeModal(); toast("Deleted"); } break;
+      // a contact marked do not contact (or that asked out, bounced or isn't interested) is remembered after it's deleted,
+      // so loading an older backup can't bring it back without that
+      case "delete-lead-yes": if (l) {
+        const flags = ["dnc", "crashOut", "unsubscribed", "emailBounced", "noAutoEmail"].filter(f => l[f] === true);
+        if (flags.length || l.stage === "lost") await saveDoc("settings", "gone-contacts", { kind: "gone", list: { [l.id]: { at: new Date().toISOString(), email: String(l.email || "").trim().toLowerCase(), flags, lost: l.stage === "lost" } } }, true).catch(() => {});
+        await delDoc("leads", l.id); closeModal(); toast("Deleted");
+      } break;
       case "toggle-filters": S.showFilters = !S.showFilters; render(); break;
       case "clear-filters": S.leadFilter.city = ""; S.leadFilter.group = ""; render(); break;
       case "promote": if (l) { await promote(l, "They replied. Moved from email outreach to Leads."); toast("Moved to Leads"); } break;
@@ -3762,7 +5193,7 @@ document.addEventListener("click", async (e) => {
         break; }
       case "import": importModal(); break;
       case "do-import": await doImport(t); break;
-      case "mf-open": if (S.money.form !== t.dataset.f || S.money.formLead) forgetTyped(/^m[je]-/); S.money.gen = (S.money.gen || 0) + 1; S.money.form = t.dataset.f; S.money.formLead = ""; S.money.dropPaid = ""; render(); { const f = $("#view .panel input[autofocus], #mj-lead"); if (f) f.focus(); } window.scrollTo({ top: 0, behavior: "smooth" }); break;
+      case "mf-open": if (S.money.form !== t.dataset.f || S.money.formLead) forgetTyped(/^m[je]-/); S.money.gen = (S.money.gen || 0) + 1; S.money.form = t.dataset.f; S.money.formLead = ""; S.money.dropPaid = ""; S.money.jobQuote = undefined; render(); { const f = $("#view .panel input[autofocus], #mj-lead"); if (f) f.focus(); } window.scrollTo({ top: 0, behavior: "smooth" }); break;
       case "mf-close": S.money.form = ""; S.money.dropPaid = ""; S.money.gen = (S.money.gen || 0) + 1; forgetTyped(/^m[je]-/); render(); break;
       case "save-mjob": await saveMoneyJob(t); break;
       case "save-mexp": await saveMoneyExpense(t); break;
@@ -3777,21 +5208,23 @@ document.addEventListener("click", async (e) => {
         const bank = q("#pay-bank").value;
         const upd = { status: "paid", amount: amt, method: q("#pay-method").value, paidDate: q("#pay-date").value || today(), cost: Number(costRaw) || 0, crew: crewVal("pay-crew", box), updatedAt: new Date().toISOString() };
         if (bank !== "") upd.bankPct = Math.max(0, Math.min(100, Number(bank) || 0)) / 100;
-        const fromDrop = S.payOpen && S.payOpen.dropPaid === j.leadId;
-        const dropQs = fromDrop ? S.quotes.filter(q => q.leadId === j.leadId && q.docType !== "INVOICE" && q.status === "sent") : [];
-        if (!isEst && dropQs.length === 1 && !j.quoteId) upd.quoteId = dropQs[0].id;
-        // one save at a time, so a second tap can't make the estimate's job twice
-        if (S.paying) break; S.paying = j.id;
+        // dropped on Paid for a job that isn't tied to an estimate yet: the estimate they were sent is the one being
+        // paid, when it's clear which one (the only one sent, or the only one for this amount)
+        const fromDrop = !isEst && S.payOpen && S.payOpen.dropPaid === j.leadId && !jobEstimates().has(j.id);
+        const dropQ = fromDrop ? sentFor(S.quotes.filter(q => q.leadId === j.leadId && q.docType !== "INVOICE" && q.status === "sent"), amt) : null;
+        if (dropQ) upd.quoteId = dropQ.id;
+        // one save at a time for each job, so a second tap can't make the estimate's job twice
+        S.paying = S.paying || new Set();
+        if (S.paying.has(j.id)) { toast("Saving that payment…"); break; } S.paying.add(j.id);
         try {
         // an accepted estimate paid without booking it first becomes a paid job, tied to the estimate
         if (isEst) { const l0 = leadById(j.leadId); await saveDoc("jobs", uid("job"), Object.assign({ kind: "job", leadId: j.leadId, quoteId: j.est.id, title: j.title, service: j.service, start: upd.paidDate, end: upd.paidDate, address: j.address, source: (l0 && l0.source) || "", createdAt: upd.updatedAt }, upd)); }
         else await saveDoc("jobs", j.id, upd, true);
         S.payOpen = null; dropDraft(/^pay-/);
-        // dropped on Paid: the estimate they were sent is the one being paid
-        for (const q of dropQs) await saveDoc("quotes", q.id, { status: "accepted", updatedAt: new Date().toISOString() }, true);
+        if (dropQ) await saveDoc("quotes", dropQ.id, { status: "accepted", updatedAt: new Date().toISOString() }, true);
         const jl = leadById(j.leadId); if (jl) { const lu = { stage: "paid" }; const fu = endFollowUp(jl, lu); Object.assign(lu, { activity: activity(jl, "paid", `Paid ${money(amt, true)} by ${upd.method}${fu ? " · " + fu : ""}`), updatedAt: new Date().toISOString() }); if (!jl.value) lu.value = amt; await saveDoc("leads", jl.id, lu, true); }
         toast("Payment recorded"); schedule(); refreshLeadModal();
-        } finally { S.paying = null; }
+        } finally { S.paying.delete(j.id); }
         break; }
       case "m-book": { const q = S.quotes.find(x => x.id === t.dataset.id); if (!q) break; openQuoteEditor(q); if (QD && QD.id === q.id && $("#modal #q-acts")) startBooking(); break; }
       case "cancel-pay": { S.payOpen = null; const b = t.closest("#pay-box"); if (b) b.innerHTML = ""; dropDraft(/^pay-/); break; }
@@ -3805,7 +5238,8 @@ document.addEventListener("click", async (e) => {
   } catch (err) { /* saveDoc already told the viewer */ }
 });
 document.addEventListener("input", (e) => {
-  if (e.target.id === "mj-addr") delete e.target.dataset.auto; // typed by hand: picking another customer won't replace it
+  if (e.target.dataset && e.target.dataset.bank) { const el = e.target, k = el.dataset.bank; clearTimeout(bankT[k]); bankT[k] = setTimeout(() => { const now = document.getElementById(el.id); if (now) saveBankPct(now, true); }, 800); } // a redraw meanwhile puts what was typed in a new box
+  if (["mj-addr", "mj-price", "mj-svc"].includes(e.target.id)) delete e.target.dataset.auto; // typed by hand: picking another customer or estimate won't replace it
   if (S.book && e.target.id === "bk-hrs") { const h = +e.target.value; if (h > 0 && h <= 12) { S.book.dur = Math.round(h * 60); refreshBook(); } return; }
   if (S.book && e.target.id === "bk-time") { S.book.auto = ""; refreshBook(); return; }
   const it = e.target.closest && e.target.closest(".qitem");
@@ -3848,18 +5282,27 @@ document.addEventListener("change", async (e) => {
     fuQueue(openLeadId, v, 700);
   }
   if (e.target.id === "mj-lead") syncJobForm(true);
-  if (e.target.dataset && e.target.dataset.bank) saveBankPct(e.target);
+  if (e.target.id === "mj-quote") { S.money.jobQuote = e.target.value; fillFromEstimate(true); }
+  if (e.target.dataset && e.target.dataset.bank) { clearTimeout(bankT[e.target.dataset.bank]); saveBankPct(e.target); }
   if (e.target.id === "bk-date" && e.target.value) bookPickDay(e.target.value);
   if (e.target.matches && e.target.matches('[data-dk="channel"]')) { S.setDraft = readSettingsForm(); S.setDirty = true; render(); } // shows or hides the email subject
 });
-// the % to bank typed on a row of Jobs to finish or collect: on the job, or on the estimate until it has a job
-async function saveBankPct(el) {
+// the % to bank typed on a row of Jobs to finish or collect: on the job, or on the estimate until it has a job.
+// Saved a moment after typing stops (typing), and right away when the box is left.
+const bankT = {};
+async function saveBankPct(el, typing) {
   const id = el.dataset.bank, raw = String(el.value).trim();
-  if (raw !== "" && !(Number(raw) >= 0)) { toast("Type the percent as a number, like 20"); return; }
-  const v = raw === "" ? null : Math.min(100, Number(raw)) / 100; el.value = raw === "" ? "" : Math.round(v * 1000) / 10;
   const isEst = id.startsWith("q:"), cur = isEst ? S.quotes.find(q => q.id === id.slice(2)) : S.jobs.find(j => j.id === id); if (!cur) return;
-  if ((cur.bankPct == null ? null : +cur.bankPct) === v) return;
-  try { await saveDoc(isEst ? "quotes" : "jobs", cur.id, { bankPct: v, updatedAt: new Date().toISOString() }, true); toast(v == null ? "% to bank cleared" : `${Math.round(v * 1000) / 10}% to bank saved`); schedule(); } catch (e) {}
+  const est = isEst ? null : jobEstimates().get(cur.id), had = cur.bankPct != null ? +cur.bankPct : est && est.bankPct != null ? +est.bankPct : null;
+  // something that isn't a number (a letter, "20%") reads as an empty box: put the saved % back instead of clearing it
+  if ((el.validity && el.validity.badInput) || (raw !== "" && !(Number(raw) >= 0))) { if (typing) return; toast("Type the percent as a number, like 20"); el.value = had == null ? "" : Math.round(had * 1000) / 10; return; }
+  const v = raw === "" ? null : Math.round(Math.min(100, Number(raw)) * 10) / 1000; if (!typing) el.value = v == null ? "" : Math.round(v * 1000) / 10;
+  if ((cur.bankPct == null ? null : +cur.bankPct) === v && (isEst || !est || est.bankPct == null || +est.bankPct === v)) return;
+  const at = new Date().toISOString();
+  try { await saveDoc(isEst ? "quotes" : "jobs", cur.id, { bankPct: v, updatedAt: at }, true);
+    // the estimate keeps the same %, so it's still right if the job is canceled and the estimate shows here again
+    if (est && (est.bankPct == null ? null : +est.bankPct) !== v) await saveDoc("quotes", est.id, { bankPct: v, updatedAt: at }, true);
+    toast(v == null ? "% to bank cleared" : `${Math.round(v * 1000) / 10}% to bank saved`); schedule(); } catch (e) {}
 }
 // one waiting save per lead, so setting another lead's date right after doesn't drop this one
 const fuTimers = {};
@@ -3920,13 +5363,14 @@ async function init() {
       S[key] = snap.docs.map(d => Object.assign({ id: d.id }, d.data())); loaded[key] = true;
       const all = loaded.leads && loaded.quotes && loaded.jobs; if (all) applyCarried();
       schedule(); if (key === "leads" || key === "quotes" || key === "jobs") refreshLeadModal(); if (key === "jobs") refreshBook();
-      if (key === "leads") { autoPromote(); if (S.sweepAngi) S.sweepAngi(); }
+      if (key === "leads") { autoPromote(); if (S.sweepAngi) S.sweepAngi(); if (S.blastPromote) S.blastPromote(); }
       if (all && S.pendingOpen && leadById(S.pendingOpen) && !$("#modal").innerHTML) {
         const pid = S.pendingOpen, pt = S.pendingOpenTab; S.pendingOpen = null; S.pendingOpenTab = null; openLead(pid, pt || undefined);
         if (S.tabDraft && S.tabDraft.leadId === pid) showTab(S.leadTab); // puts back what was typed before the trip to Google
       }
     }, err => { if (err.code === "revoked") { S.db = null; } toast("Lost the connection to your CRM data. Reload the page."); schedule(); });
     sub("leads", "leads"); sub("quotes", "quotes"); sub("jobs", "jobs"); sub("expenses", "expenses");
+    if (BL_ON()) blastListen(db);
     if (STANDALONE) db.doc("settings/angi").onSnapshot(s => { S.angi = s.exists ? s.data() : null; if (S.view === "settings" && ["angi", "sources"].includes(S.setTab)) schedule(); }, () => {});
     db.doc("settings/main").onSnapshot(s => { S.settings = s.exists ? Object.assign({}, DEFAULT_SETTINGS, s.data()) : null; if (S.view !== "settings") schedule(); }, () => {});
   }

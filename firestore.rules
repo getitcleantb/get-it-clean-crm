@@ -20,7 +20,19 @@ service cloud.firestore {
       allow write: if isTeam() && request.auth.uid == userId;
     }
     match /{coll}/{docId} {
-      allow read, write: if isTeam() && coll in ['leads', 'quotes', 'jobs', 'expenses', 'settings'];
+      allow read, write: if isTeam() && coll in ['leads', 'quotes', 'jobs', 'expenses'];
+    }
+    // email blasts (settings/blast-*) are the owner's: crew can see them but not start or change them,
+    // or save another settings document dressed up as one
+    match /settings/{docId} {
+      allow read: if isTeam();
+      allow create, update: if isOwner() || (isCrew() && !docId.matches('blast.*')
+        && !(request.resource.data.get('kind', '') in ['blast', 'blastrun', 'blastout', 'sender']));
+      allow delete: if isOwner() || (isCrew() && !docId.matches('blast.*'));
+    }
+    // lets the CRM check these rules are published
+    match /rulesv/{v} {
+      allow read: if isTeam() && v == 'blasts1';
     }
   }
 }
