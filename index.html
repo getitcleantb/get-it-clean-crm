@@ -43,6 +43,8 @@
   --bad-soft: #fbe2df;
   --plum: #6d35b0;
   --plum-soft: #efe5fb;
+  --teal: #0b6f8a;
+  --teal-soft: #dcf1f8;
   --f-display: "Bricolage Grotesque", "Figtree", system-ui, sans-serif;
   --f-body: "Figtree", system-ui, -apple-system, "Segoe UI", sans-serif;
   --r: 14px;
@@ -51,12 +53,12 @@
   --gold: #e6b734; --gold-ink: #1f1600; --gold-dot: #f2c230;
   --bg: #0b1320; --surface: #131e2d; --surface-2: #0f1826; --wash: #1b2a3c; --ink: #edf2f8; --ink-2: #c0cbda; --muted: #92a0b5; --line: #253447;
   --navy: #0b1d52; --accent: #7f99ff; --accent-soft: #1d2a5c; --sky: #3fc2ff; --rev: #3987e5; --exp: #e0652f;
-  --good: #4cc38a; --good-soft: #10301f; --warn: #e5aa45; --warn-soft: #33260c; --bad: #f08079; --bad-soft: #3a1513; --plum: #c9a2f5; --plum-soft: #2b1c42; color-scheme: dark; } }
+  --good: #4cc38a; --good-soft: #10301f; --warn: #e5aa45; --warn-soft: #33260c; --bad: #f08079; --bad-soft: #3a1513; --plum: #c9a2f5; --plum-soft: #2b1c42; --teal: #5cc8e6; --teal-soft: #0d2c36; color-scheme: dark; } }
 :root[data-theme="dark"] {
   --gold: #e6b734; --gold-ink: #1f1600; --gold-dot: #f2c230;
   --bg: #0b1320; --surface: #131e2d; --surface-2: #0f1826; --wash: #1b2a3c; --ink: #edf2f8; --ink-2: #c0cbda; --muted: #92a0b5; --line: #253447;
   --navy: #0b1d52; --accent: #7f99ff; --accent-soft: #1d2a5c; --sky: #3fc2ff; --rev: #3987e5; --exp: #e0652f;
-  --good: #4cc38a; --good-soft: #10301f; --warn: #e5aa45; --warn-soft: #33260c; --bad: #f08079; --bad-soft: #3a1513; --plum: #c9a2f5; --plum-soft: #2b1c42; color-scheme: dark; }
+  --good: #4cc38a; --good-soft: #10301f; --warn: #e5aa45; --warn-soft: #33260c; --bad: #f08079; --bad-soft: #3a1513; --plum: #c9a2f5; --plum-soft: #2b1c42; --teal: #5cc8e6; --teal-soft: #0d2c36; color-scheme: dark; }
 
 * { box-sizing: border-box; }
 html, body { height: 100%; }
@@ -160,6 +162,7 @@ p { margin: 0; }
 .pill { display: inline-flex; align-items: center; gap: 5px; border-radius: 999px; padding: 2px 10px; font-size: 12px; font-weight: 600; white-space: nowrap; background: var(--surface-2); color: var(--ink-2); border: 1px solid var(--line); }
 .pill.s-new { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
 .pill.s-working, .pill.s-visit, .pill.s-quoted { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+.pill.s-estimate { background: var(--teal-soft); color: var(--teal); border-color: transparent; }
 .pill.s-selling { background: var(--plum-soft); color: var(--plum); border-color: transparent; }
 .pill.s-scheduled, .pill.s-completed { background: var(--good-soft); color: var(--good); border-color: transparent; }
 .pill.s-paid { background: var(--good); color: #fff; border-color: transparent; }
@@ -209,14 +212,15 @@ label.check { display: flex; align-items: center; gap: 9px; font-size: 14px; fon
 
 /* pipeline board */
 .board-wrap { overflow-x: auto; padding-bottom: 6px; }
-.board { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(140px, 1fr); gap: 12px; min-width: min-content; }
+.board { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(120px, 1fr); gap: 10px; min-width: min-content; }
 .bcol { background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r); display: flex; flex-direction: column; min-height: 200px; }
 .bcol.drop { outline: 2px dashed var(--sky); }
-.bcol > h3 { font-size: 15px; padding: 12px 14px; display: flex; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--line); }
+.bcol > h3 { font-size: 15px; padding: 12px 14px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 8px; border-bottom: 1px solid var(--line); }
 .bcol > h3 small { font-family: var(--f-body); font-weight: 600; color: var(--muted); }
 .cards { display: flex; flex-direction: column; gap: 8px; padding: 10px; max-height: 70vh; overflow-y: auto; }
-.card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; cursor: grab; display: flex; flex-direction: column; gap: 4px; text-align: left; color: inherit; width: 100%; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; cursor: grab; display: flex; flex-direction: column; gap: 4px; text-align: left; color: inherit; width: 100%; overflow-wrap: anywhere; }
 .card .t { font-weight: 600; font-size: 14px; }
+.card .pill { white-space: normal; align-self: flex-start; max-width: 100%; border-radius: 8px; }
 .card .s { font-size: 12.5px; color: var(--muted); }
 
 /* modal */
@@ -1263,6 +1267,7 @@ html.gated, html.gated body { overflow: hidden; }
     pendingWrites: () => pendingWrites,
     // a document as the database has it now, not the copy on this device (fails with no connection)
     serverDoc: async (coll, id) => { const d = await F.getDocFromServer(F.doc(fs, coll, id)); return d.exists() ? toPlain(d.data()) : null; },
+    serverColl: async (coll) => { checkPath(coll); const s = await F.getDocsFromServer(F.collection(fs, coll)); return s.docs.map(d => Object.assign({ id: d.id }, toPlain(d.data()))); },
     signOut: () => F.signOut(auth),
     resetPassword: (email) => F.sendPasswordResetEmail(auth, email || (me && me.email)),
     members: async () => { const s = await F.getDocs(F.collection(fs, "members")); return s.docs.map(d => Object.assign({ email: d.id }, toPlain(d.data()))); },
@@ -1399,11 +1404,11 @@ const STANDALONE = !!window.GIC_STANDALONE;
 const SET_EXTRA = {}; const EXTRA_ACTS = {};
 
 const STAGES = [
-  ["new", "New"], ["contacted", "Contacted"], ["working", "Working"], ["selling", "Selling"],
+  ["new", "New"], ["contacted", "Contacted"], ["working", "Working"], ["estimate", "Estimate booked"], ["selling", "Selling"],
   ["scheduled", "Won / Scheduled"], ["completed", "Done"], ["paid", "Paid"], ["lost", "Lost"]
 ];
 const STAGE_LABEL = Object.fromEntries(STAGES);
-const OPEN_STAGES = ["new", "contacted", "working", "selling", "scheduled", "completed"];
+const OPEN_STAGES = ["new", "contacted", "working", "estimate", "selling", "scheduled", "completed"];
 const TYPES = ["Residential", "HOA / Condo", "Property manager", "Commercial", "Church / School", "Other"];
 // the crew: EL (Elias), AL (his brother), TL (his dad). A job can have any mix of them, saved as "EL + AL".
 const CREW = ["EL", "AL", "TL"];
@@ -1419,6 +1424,7 @@ const DISPO_GROUPS = [
     { k: "Wrong number", flagPhone: true, hint: "Flags the number" }] },
   { name: "Interested", tone: "good", items: [
     { k: "Wants quote", stage: "working", next: 1, promote: true, hint: "Schedule the estimate" },
+    { k: "Estimate booked", stage: "estimate", promote: true, hint: "Put the estimate on the calendar" },
     { k: "Booked", promote: true, hint: "Book the job" }] },
   { name: "Not right now", tone: "warn", items: [
     { k: "Budget next year", nextYear: true, promote: true, hint: "Follow up in January" },
@@ -1467,6 +1473,9 @@ const DEFAULT_SETTINGS = {
       { day: 14, channel: "text", name: "Two-week check-in", body: "Hi {first}, Elias with Get It Clean Tampa Bay. Checking back in on {service}. Want me to swing by for a free estimate?" }
     ],
     working: [
+      { day: 1, channel: "text", name: "Estimate time", body: "Hi {first}, Elias with Get It Clean Tampa Bay. Happy to come out for your free estimate. I have availability {times}. Which works best for you?" }
+    ],
+    estimate: [
       { day: 0, channel: "text", name: "Estimate confirmation", body: "Hi {first}, Elias with Get It Clean Tampa Bay confirming your free estimate at {place}. See you then!" }
     ],
     selling: [
@@ -1585,6 +1594,12 @@ function freeSlots(n) {
 function slotText(slots) {
   const f = d => d.toLocaleDateString("en-US", { weekday: "long" }) + " at " + d.toLocaleTimeString("en-US", { hour: "numeric", minute: d.getMinutes() ? "2-digit" : undefined });
   const a = slots.map(f); return a.length > 1 ? a.slice(0, -1).join(", ") + " or " + a[a.length - 1] : (a[0] || "this week");
+}
+// Drips saved before the Estimate booked stage existed get its default, and their estimate confirmation moves there from Working
+function withStageDrips(dr) {
+  if (!dr || "estimate" in dr) return dr;
+  const w = dr.working || [], conf = w.filter(x => /^estimate confirmation$/i.test(String(x.name || "").trim()));
+  return Object.assign({}, dr, { estimate: conf.length ? conf : DEFAULT_SETTINGS.drips.estimate, working: !conf.length ? w : w.length > conf.length ? w.filter(x => !conf.includes(x)) : DEFAULT_SETTINGS.drips.working });
 }
 function dripSteps(l) {
   if (l.dnc || l.dripOff || isOutreach(l)) return [];
@@ -1810,7 +1825,7 @@ function boardHTML(list) {
     cols.push(`<div class="bcol" data-drop="${k}"><h3>${t} <small class="num">${items.length}${val ? " · " + money(val) : ""}</small></h3><div class="cards">${items.slice(0, 150).map(l => `<button class="card" draggable="true" data-drag="${esc(l.id)}" data-open-lead="${esc(l.id)}"><span class="t">${esc(leadName(l))}</span><span class="s">${esc([l.company ? l.name : "", l.city].filter(Boolean).join(" · "))}</span>${l.value ? `<span class="s num">${money(l.value)}</span>` : ""}${dueState(l) ? `<span class="pill ${dueState(l)}">Follow up ${fmtD(l.nextFollowUp)}</span>` : ""}</button>`).join("")}${items.length > 150 ? `<div class="note">+${items.length - 150} more, use the list</div>` : ""}</div></div>`);
   });
   if (drops.length) cols.push(`<div class="bdrops">${drops.join("")}<p class="note">See past customers with “Paid (past customers)” or “Lost” in the list above.</p></div>`);
-  return `<div class="board-wrap"><div class="board" style="grid-template-columns:repeat(${cols.length - (drops.length ? 1 : 0)}, minmax(140px, 1fr))${drops.length ? " minmax(112px, .6fr)" : ""}">${cols.join("")}</div></div>`;
+  return `<div class="board-wrap"><div class="board" style="grid-template-columns:repeat(${cols.length - (drops.length ? 1 : 0)}, minmax(120px, 1fr))${drops.length ? " minmax(100px, .6fr)" : ""}">${cols.join("")}</div></div>`;
 }
 after.leads = () => {
   const bind = (id, key, ev) => { const el = document.getElementById(id); if (el) el.addEventListener(ev || "change", () => { S.leadFilter[key] = el.value; if (key === "show") { try { localStorage.setItem("gic-lead-show", el.value); } catch (_) {} } schedule(); }); };
@@ -1976,7 +1991,7 @@ function leadBanners(l) {
     + (l.emailBounced && !l.dnc ? `<div class="banner warn">${l.emailWrong ? "Their email reached the wrong person" : "Their email bounced"}, so they stay off email blasts. Fix the address under Edit to put them back.</div>` : "");
 }
 // which text templates fit each stage, matched on the template name
-const STAGE_TPL = { new: /intro|follow/i, contacted: /follow|intro/i, working: /confirm|estimate|follow/i, selling: /quote/i, scheduled: /way|confirm/i, completed: /done|review/i, paid: /review|done|again|year/i, lost: /follow/i };
+const STAGE_TPL = { new: /intro|follow/i, contacted: /follow|intro/i, working: /estimate|follow/i, estimate: /confirm|way|estimate/i, selling: /quote/i, scheduled: /way|confirm/i, completed: /done|review/i, paid: /review|done|again|year/i, lost: /follow/i };
 const nextSteps = () => `<div class="next-steps"><button class="btn big" data-act="schedule-lead" data-kind="visit">Schedule estimate</button><button class="btn big primary" data-act="quote-lead">New quote</button><button class="btn big" data-act="schedule-lead" data-kind="job">Book job</button></div>`;
 const nowLocal = () => { const d = new Date(); return `${ymd(d)}T${pad(d.getHours())}:${pad(d.getMinutes())}:00`; };
 // the lead's next booked estimate or job that hasn't happened yet
@@ -2147,6 +2162,31 @@ function showTab(k) {
   $("#modal .scrim").scrollTop = 0;
 }
 const stageOrder = (s) => STAGES.findIndex(x => x[0] === s);
+// Before Estimate booked existed, Schedule estimate put a lead in Working. Once, on the first load after the update, Working
+// leads with an estimate still on the calendar move to Estimate booked. It reads the database itself (this device's copy
+// can be days old), and settings/stages remembers it was done, so a lead moved back to Working by hand stays there.
+// Their drip day stays the same, and a confirmation already sent counts. With no connection it waits for the next load.
+let estSwept = false;
+async function sweepEstimates() {
+  const G = window.GIC; if (estSwept || !S.db || !G || !G.serverDoc || !G.serverColl) return;
+  estSwept = true;
+  try {
+    const flag = await G.serverDoc("settings", "stages"); if (flag && flag.estimateSweep) return;
+    const [leads, jobs] = await Promise.all([G.serverColl("leads"), G.serverColl("jobs")]);
+    const booked = new Set(jobs.filter(j => j.kind === "visit" && j.status === "scheduled").map(j => j.leadId));
+    let moved = 0;
+    for (const id of leads.filter(l => l.stage === "working" && booked.has(l.id)).map(l => l.id)) {
+      // read again just before the change, so an edit made a moment ago (here or on another device) isn't undone
+      const l = await G.serverDoc("leads", id); if (!l || l.stage !== "working") continue;
+      const since = l.stageSince || (l.createdAt || "").slice(0, 10) || today(), done = l.dripDone || [];
+      const upd = { stage: "estimate", stageSince: since, activity: activity(l, "stage", "Moved to Estimate booked (the new stage for leads with an estimate on the calendar)"), updatedAt: new Date().toISOString() };
+      if (done.includes(`working:0:${since}`) && !done.includes(`estimate:0:${since}`)) upd.dripDone = done.concat([`estimate:0:${since}`]).slice(-100);
+      await saveDoc("leads", id, upd, true); moved++;
+    }
+    await saveDoc("settings", "stages", { kind: "stages", estimateSweep: new Date().toISOString(), moved }, true);
+    if (moved) toast(`${plural(moved, "lead")} with an estimate on the calendar moved to the new Estimate booked stage`, 6000);
+  } catch (e) {}
+}
 // what a call result (or an email result, from Email > Inbox) changes on a lead, its line in the history, and what Undo puts back
 function dispoChange(l, d, k, via) {
   const email = via === "email", upd = email ? { lastEmailDispo: k, lastEmailAt: today(), lastContact: today() } : { lastDisposition: k, lastContact: today() };
@@ -2177,10 +2217,10 @@ async function logDispo(k) {
   const l = leadById(openLeadId); if (!l) return; const d = DISPOSITIONS.find(x => x.k === k); if (!d) return;
   const { upd, prev } = dispoChange(l, d, k, "call");
   await saveDoc("leads", l.id, upd, true);
-  S.lastDispo = { leadId: l.id, prev, actAt: upd.activity[0].at, stamp: upd.updatedAt, opensForm: k === "Wants quote" || k === "Booked" };
+  S.lastDispo = { leadId: l.id, prev, actAt: upd.activity[0].at, stamp: upd.updatedAt, opensForm: k === "Wants quote" || k === "Estimate booked" || k === "Booked" };
   S.dispoMsg = { leadId: l.id, text: `Logged “${k}”.` + (upd.nextFollowUp ? ` Next follow-up ${fmtD(upd.nextFollowUp, { weekday: "short", month: "short", day: "numeric" })}.` : "") + (upd.stage && upd.stage !== l.stage ? ` Now ${STAGE_LABEL[upd.stage]}.` : "") + (upd.list === "leads" && isOutreach(l) ? " Moved to Leads." : "") };
   refreshLeadModal();
-  if (k === "Wants quote" || k === "Booked") scheduleForm(leadById(l.id) || l, k === "Booked" ? "job" : "visit");
+  if (k === "Wants quote" || k === "Estimate booked" || k === "Booked") scheduleForm(leadById(l.id) || l, k === "Booked" ? "job" : "visit");
 }
 async function undoDispo() {
   const u = S.lastDispo; if (!u) return; const l = leadById(u.leadId); if (!l) return;
@@ -2347,7 +2387,7 @@ async function bookAppt(l, kind, f, statusEl) {
   }
   try {
     await saveDoc("jobs", id, job);
-    const upd = { stage: kind === "visit" ? (["new", "contacted"].includes(l.stage || "new") || (l.stage === "lost" && !l.dnc) ? "working" : l.stage) : "scheduled", updatedAt: new Date().toISOString() };
+    const upd = { stage: kind === "visit" ? (["new", "contacted", "working"].includes(l.stage || "new") || (l.stage === "lost" && !l.dnc) ? "estimate" : l.stage) : "scheduled", updatedAt: new Date().toISOString() };
     let txt = `${kind === "visit" ? "Estimate" : "Job"} scheduled for ${fmtDT(start)}${job.eventId ? " (on Google Calendar)" : ""}`;
     if (isOutreach(l)) { Object.assign(upd, PROMOTE()); txt += " · moved from outreach to Leads"; }
     if (calErr) txt += " · NOT added to Google Calendar";
@@ -2365,7 +2405,7 @@ async function bookAppt(l, kind, f, statusEl) {
 const isInvoice = (q) => !!q && q.docType === "INVOICE";
 const QSTAT = { draft: "Draft", sent: "Sent", accepted: "Accepted", declined: "Declined", paid: "Paid" };
 const QSTAT_CLS = { draft: "", sent: "s-quoted", accepted: "s-scheduled", declined: "s-lost", paid: "s-paid" };
-const PRE_SALE = ["new", "contacted", "working", "selling"];
+const PRE_SALE = ["new", "contacted", "working", "estimate", "selling"];
 // the customer's name for lists, file names and emails (Bill To's second line can be a phone or an email)
 function quoteCust(q) { const l = leadById(q.leadId); return (l && (l.company || l.name)) || (q.billTo || [])[0] || ""; }
 const qPill = (q) => q.id ? `<span class="pill ${QSTAT_CLS[q.status] || ""}">${esc(QSTAT[q.status] || "Draft")}</span>` : "";
@@ -5261,6 +5301,7 @@ const IB_PAGE = 25, IB_FIRST_PAGES = 4; // the first look reads 4 pages, so repl
 const EMAIL_DISPO_GROUPS = [
   { name: "Interested", tone: "good", items: [
     { k: "Wants quote", stage: "working", next: 1, promote: true, hint: "Schedule the estimate" },
+    { k: "Estimate booked", stage: "estimate", promote: true, hint: "Put the estimate on the calendar" },
     { k: "Booked", promote: true, hint: "Book the job" }] },
   { name: "Keep in touch", tone: "", items: [
     { k: "Follow up later", next: 14, promote: true, hint: "Follow up in 2 weeks" },
@@ -5600,7 +5641,7 @@ async function ibDispo(id, k) {
   const whose = old === 1 && targets.length === 1 ? "theirs" : plural(old, "contact");
   const oldNote = !old || !entry ? "" : d.dnc ? ` ${entry.email} is an old address of ${whose}. If someone else uses it now, press Undo.` : d.flagEmail || d.unsub ? ` ${entry.email} is an old address of ${whose}, so their current email wasn't changed.` : "";
   S.inbox.last = { id, k, items, was };
-  S.inbox.msg = { id, lead: l.id, form: k === "Wants quote" ? "visit" : k === "Booked" ? "job" : "",
+  S.inbox.msg = { id, lead: l.id, form: k === "Wants quote" || k === "Estimate booked" ? "visit" : k === "Booked" ? "job" : "",
     text: `Logged “${k}” for ${leadName(l)}${others ? ` and ${plural(others, "other contact")} with the same email` : ""}.` + (upd.nextFollowUp ? ` Next follow-up ${fmtD(upd.nextFollowUp, { weekday: "short", month: "short", day: "numeric" })}.` : "") + (upd.stage && upd.stage !== l.stage ? ` Now ${STAGE_LABEL[upd.stage]}.` : "") + (upd.list === "leads" && isOutreach(l) ? " Moved to Leads." : "")
       + oldNote + (stops ? " Your HOA follow-up emails stop on their own when someone replies; if they didn't write back, ask Claude in your project to take them off." : "") };
   schedule();
@@ -6143,7 +6184,7 @@ async function init() {
     const loaded = {};
     const sub = (coll, key) => db.collection(coll).onSnapshot(snap => {
       S[key] = snap.docs.map(d => Object.assign({ id: d.id }, d.data())); loaded[key] = true;
-      const all = loaded.leads && loaded.quotes && loaded.jobs; if (all) applyCarried();
+      const all = loaded.leads && loaded.quotes && loaded.jobs; if (all) { applyCarried(); sweepEstimates(); }
       schedule(); if (key === "leads" || key === "quotes" || key === "jobs") refreshLeadModal(); if (key === "jobs") refreshBook();
       if (key === "leads") { autoPromote(); if (S.sweepAngi) S.sweepAngi(); if (S.blastPromote) S.blastPromote(); }
       if (all && S.pendingOpen && leadById(S.pendingOpen) && !$("#modal").innerHTML) {
@@ -6154,7 +6195,7 @@ async function init() {
     sub("leads", "leads"); sub("quotes", "quotes"); sub("jobs", "jobs"); sub("expenses", "expenses");
     if (BL_ON()) blastListen(db);
     if (STANDALONE) db.doc("settings/angi").onSnapshot(s => { S.angi = s.exists ? s.data() : null; if (S.view === "settings" && ["angi", "sources"].includes(S.setTab)) schedule(); }, () => {});
-    db.doc("settings/main").onSnapshot(s => { S.settings = s.exists ? Object.assign({}, DEFAULT_SETTINGS, s.data()) : null; if (S.view !== "settings") schedule(); }, () => {});
+    db.doc("settings/main").onSnapshot(s => { S.settings = s.exists ? Object.assign({}, DEFAULT_SETTINGS, s.data()) : null; if (S.settings) S.settings.drips = withStageDrips(S.settings.drips); if (S.view !== "settings") schedule(); }, () => {});
   }
   if (GC()) {
     // back from the trip to Google: open the same tab and lead as before, with what was typed
