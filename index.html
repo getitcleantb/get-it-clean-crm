@@ -1429,8 +1429,13 @@ let pressed = false, pressT = 0, heldDraw = false;
 function pressOver() { pressed = false; clearTimeout(pressT); if (heldDraw) { heldDraw = false; schedule(); } }
 document.addEventListener("pointerdown", () => { pressed = true; clearTimeout(pressT); pressT = setTimeout(pressOver, 1500); }, true);
 ["pointerup", "pointercancel", "click"].forEach(ev => document.addEventListener(ev, () => setTimeout(pressOver, 0), true));
+// A redraw also waits while a % to bank box is being typed in: the new box would put the cursor at the front.
+let bankHeld = false;
+const bankFocus = () => { const a = document.activeElement; return !!(a && a.dataset && a.dataset.bank && $("#view").contains(a)); };
+document.addEventListener("focusout", (e) => { if (bankHeld && e.target.dataset && e.target.dataset.bank) setTimeout(() => { if (bankHeld && !bankFocus()) { bankHeld = false; schedule(); } }, 0); });
 function schedule() { if (renderQueued) return; renderQueued = true; requestAnimationFrame(() => { renderQueued = false;
   if (pressed) { heldDraw = true; return; }
+  if (bankFocus()) { bankHeld = true; return; }
   // price, drip and text forms don't depend on live data, so a data update doesn't redraw them mid-typing
   if (S.view === "settings" && ["prices", "drips", "texts"].includes(S.setTab) && $("#view [data-act='save-settings']")) { renderNav(); return; }
   render(); }); }
@@ -1598,7 +1603,7 @@ function dropOnStage(l, stage) {
   if (stage === "paid") {
     const open = S.jobs.find(j => j.leadId === l.id && j.kind === "job" && ["scheduled", "completed"].includes(j.status));
     if (open) { openLead(l.id, "work"); setTimeout(() => { payBox(open, "modal"); if (S.payOpen) S.payOpen.dropPaid = l.id; }, 30); toast("Record the payment to mark them paid"); }
-    else { closeModal(); S.view = "money"; S.money.form = "job"; S.money.formLead = l.id; S.money.dropPaid = l.id; S.money.jobQuote = undefined; S.money.gen = (S.money.gen || 0) + 1; forgetTyped(/^mj-/); render(); window.scrollTo(0, 0); toast("Add the paid job to mark them paid"); }
+    else { closeModal(); S.view = "money"; S.money.form = "job"; S.money.formLead = l.id; S.money.dropPaid = l.id; S.money.jobQuote = undefined; S.money.auto = {}; S.money.gen = (S.money.gen || 0) + 1; forgetTyped(/^mj-/); render(); window.scrollTo(0, 0); toast("Add the paid job to mark them paid"); }
     return;
   }
   setStage(l, stage, null, stage === "lost" ? "Find them with “Lost” in the list above." : "").catch(() => {});
@@ -2042,7 +2047,8 @@ function scheduleForm(l, kind, preset) {
   const box = $("#lead-extra"); if (!box) return; clearExtra();
   const dur = kind === "visit" ? 30 : 240;
   const booked = nextAppt(l, kind);
-  // a job for an accepted estimate that has no job yet is tied to it (picked for them when there's only one)
+  // a job for an accepted estimate that has no job yet is tied to it (picked for them when there's only one; with more,
+  // one has to be picked). Picking one puts its price and service in, unless they were typed.
   const ests = kind === "job" && !preset?.quoteId ? waitingEstimatesFor(l) : [], est1 = ests.length === 1 ? ests[0] : null;
   box.innerHTML = `<div class="tpl stack" style="margin-top:4px"><div class="spread"><h3 style="font-size:17px">${kind === "visit" ? "Schedule estimate" : "Book job"}</h3><button class="btn ghost sm" data-act="close-extra">Close</button></div>
     ${booked ? `<div class="banner warn">${kind === "visit" ? "An estimate" : "A job"} is already booked for ${esc(fmtDT(booked.start))}. Save this only if it's an extra one.</div>` : ""}
@@ -2050,9 +2056,9 @@ function scheduleForm(l, kind, preset) {
       <label class="f">Date<input type="date" id="sc-date" value="${esc(preset?.date || addDays(1))}"></label>
       <label class="f">Start time<input type="time" id="sc-time" value="${kind === "visit" ? "10:00" : "08:00"}"></label>
       <label class="f">Length (minutes)<input type="number" id="sc-dur" min="15" step="15" value="${dur}"></label>
-      ${kind === "job" ? `<label class="f">Job price ($)<input type="number" id="sc-amt" min="0" step="1" value="${esc(preset?.amount || (est1 && quoteTotals(est1).total) || l.value || "")}"></label>
-      <label class="f">Service<input type="text" id="sc-svc" value="${esc((l.services || []).join(", "))}"></label>
-      ${crewPick("sc-crew", "EL")}${estPickHTML("sc-quote", ests, est1 ? est1.id : "")}` : `<span></span>`}
+      ${kind === "job" ? `<label class="f">Job price ($)<input type="number" id="sc-amt" min="0" step="1" value="${esc(preset?.amount || (est1 && quoteTotals(est1).total) || l.value || "")}"${preset?.amount ? "" : ' data-auto="1"'}></label>
+      <label class="f">Service<input type="text" id="sc-svc" value="${esc((est1 && estSvc(est1)) || (l.services || []).join(", "))}" data-auto="1"></label>
+      ${crewPick("sc-crew", "EL")}${estPickHTML("sc-quote", ests, est1 ? est1.id : PICK_EST)}` : `<span></span>`}
       <label class="f full">Address<input type="text" id="sc-addr" value="${esc([l.address, l.city].filter(Boolean).join(", "))}"></label>
       <label class="f full">Calendar title<input type="text" id="sc-title" value="${esc((kind === "visit" ? "Estimate: " : "Job: ") + [l.company, l.name].filter(Boolean).join(", "))}"></label>
       <label class="check full"><input type="checkbox" id="sc-gcal" checked> ${S.mcp || calConnected() || !STANDALONE ? "Add to my Google Calendar" : "Add it to my Google Calendar (opens Google Calendar so you can save it there)"}</label>
@@ -2074,8 +2080,9 @@ async function saveSchedule(btn) {
   const kind = btn.dataset.kind; const date = $("#sc-date").value;
   if (!date) { toast("Pick a date"); return; }
   if (!fuYearOk(date)) { toast("Finish typing the year in the date"); return; }
+  const qp = $("#sc-quote"); if (qp && qp.value === PICK_EST) { toast("Pick which estimate this job is for under For estimate, or pick Not for an estimate.", 6000); qp.focus(); return; }
   btn.disabled = true;
-  const ok = await bookAppt(l, kind, { date, time: $("#sc-time").value, dur: +$("#sc-dur").value, title: $("#sc-title").value, addr: $("#sc-addr").value, amount: $("#sc-amt")?.value, service: $("#sc-svc")?.value, crew: kind === "job" ? crewVal("sc-crew") : "", cal: $("#sc-gcal").checked, quoteId: btn.dataset.quote || ($("#sc-quote") ? $("#sc-quote").value : "") }, $("#sc-status"));
+  const ok = await bookAppt(l, kind, { noEstimate: !!qp && qp.value === "", date, time: $("#sc-time").value, dur: +$("#sc-dur").value, title: $("#sc-title").value, addr: $("#sc-addr").value, amount: $("#sc-amt")?.value, service: $("#sc-svc")?.value, crew: kind === "job" ? crewVal("sc-crew") : "", cal: $("#sc-gcal").checked, quoteId: btn.dataset.quote || ($("#sc-quote") ? $("#sc-quote").value : "") }, $("#sc-status"));
   if (ok) clearExtra(); else btn.disabled = false;
 }
 // Saves an estimate (kind "visit") or a job for a lead and puts it on Google Calendar; f holds the form's values.
@@ -2087,7 +2094,7 @@ async function bookAppt(l, kind, f, statusEl) {
   const start = `${date}T${time}:00`; const endD = new Date(start); endD.setMinutes(endD.getMinutes() + durMin);
   const end = `${ymd(endD)}T${pad(endD.getHours())}:${pad(endD.getMinutes())}:00`;
   const job = { kind, leadId: l.id, title: String(f.title || "").trim(), start, end, address: String(f.addr || "").trim(), amount: kind === "job" ? (+f.amount || 0) : 0, status: "scheduled", quoteId: f.quoteId || "", createdAt: new Date().toISOString() };
-  if (kind === "job") { job.service = String(f.service || "").trim(); job.crew = f.crew || "";
+  if (kind === "job") { job.service = String(f.service || "").trim(); job.crew = f.crew || ""; if (f.noEstimate && !job.quoteId) job.noEstimate = true;
     // the % to bank typed on the Money tab for this estimate goes on its job
     try { await tieToEstimate(job, f.quoteId, l); } catch (e) { return false; } }
   say("Saving…");
@@ -2227,7 +2234,7 @@ function quoteActsHTML() {
   if (!QD.id) return send;
   const opts = inv ? [["draft", "Draft"], ["sent", "Sent"], ["paid", "Paid"]] : [["draft", "Draft"], ["sent", "Sent"], ["accepted", "Accepted"], ["declined", "Declined"]];
   const cur = QD.status || "draft";
-  const status = `<div class="qsec"><span class="lab">Status</span><div class="seg wide" role="group" aria-label="Status">${opts.map(([k, t]) => `<button data-act="q-status" data-s="${k}" aria-pressed="${cur === k}">${t}</button>`).join("")}</div>${!inv && !["accepted", "declined"].includes(cur) ? `<p class="note">Tap Accepted when they say yes: a calendar opens to book the job.</p>` : ""}${!inv && cur === "accepted" ? (() => { const mine = bookedFrom(QD.id), j = mine || (l && nextAppt(l, "job")); return `<div class="row" style="margin-top:8px">${j ? `<span class="note">${mine ? "Job" : `${esc(leadName(l))} has a job`} booked for ${esc(fmtDT(j.start))}.</span><button class="btn sm" data-act="bk-open">Book another visit</button>` : `<button class="btn sm primary" data-act="bk-open">Book the job</button>`}</div>`; })() : ""}</div>`;
+  const status = `<div class="qsec"><span class="lab">Status</span><div class="seg wide" role="group" aria-label="Status">${opts.map(([k, t]) => `<button data-act="q-status" data-s="${k}" aria-pressed="${cur === k}">${t}</button>`).join("")}</div>${!inv && !["accepted", "declined"].includes(cur) ? `<p class="note">Tap Accepted when they say yes: a calendar opens to book the job.</p>` : ""}${!inv && cur === "accepted" ? (() => { const mine = bookedFrom(QD.id), j = mine || (l && nextAppt(l, "job")); return `<div class="row" style="margin-top:8px">${j ? `<span class="note">${mine ? "Job" : `${esc(leadName(l))} has a job`} booked for ${esc(fmtDT(j.start))}.</span>${!mine && canTieJob(j, QD.id) ? `<button class="btn sm" data-act="q-tie" data-id="${esc(j.id)}">That's the job for this estimate</button>` : ""}<button class="btn sm" data-act="bk-open">Book another visit</button>` : `<button class="btn sm primary" data-act="bk-open">Book the job</button>`}</div>`; })() : ""}</div>`;
   const more = `<details class="qmore"><summary>More</summary><div class="actions">${!inv ? `<button class="btn" data-act="q-to-invoice">Make invoice from this</button>` : ""}<button class="btn danger" data-act="q-delete">Delete</button></div></details>`;
   return status + send + more;
 }
@@ -2642,20 +2649,24 @@ function bookFirstDay(durMin) {
 }
 const bookedFrom = (quoteId) => S.jobs.find(j => quoteId && j.quoteId === quoteId && j.kind === "job" && j.status !== "canceled");
 // The job each accepted estimate turned into: the one booked from it or tied to it when it was saved; else a job of
-// that customer whose own estimate was declined or redone (the new estimate replaced it); else, for a job saved before
-// jobs were tied to estimates, that customer's next job made and dated on or after the estimate.
-// A job counts for one estimate only.
-const LINK_SINCE = "2026-10-20T04:30:00.000Z"; // jobs saved since then are tied to their estimate by the person saving them
+// that customer whose own estimate was declined, redone or deleted (the new estimate replaced it) and that wasn't paid
+// before this estimate; else that customer's next job with no estimate (booked before the estimate was accepted, or
+// saved before jobs were tied to estimates) dated on or after the estimate and not paid before it. A job booked before
+// the estimate was written counts only when it's for the same price or service (another job for a repeat customer
+// isn't the new estimate's). A job saved as "Not for an estimate" is never one. A job counts for one estimate only.
+const estDay = (q) => q.date || String(q.createdAt || "").slice(0, 10);
+const paidBefore = (j, d) => j.status === "paid" && String(j.paidDate || j.start || "").slice(0, 10) < d;
+const svcSet = (x) => String(x || "").toLowerCase().split(/\s*[,+&/]\s*|\s+and\s+/).map(t => t.trim()).filter(Boolean);
+const sameWork = (j, q) => Math.abs((+j.amount || 0) - quoteTotals(q).total) < 0.005 || svcSet(j.service).some(t => svcSet(estSvc(q)).includes(t));
 function estimateJobs() {
   const ests = S.quotes.filter(q => !isInvoice(q) && q.status === "accepted").sort((a, b) => (a.date || "").localeCompare(b.date || "") || (a.number || "").localeCompare(b.number || ""));
   const live = S.jobs.filter(j => j.kind === "job" && j.status !== "canceled"), byId = new Map(S.quotes.map(q => [q.id, q]));
   const got = new Map(), used = new Set(), take = (q, j) => { if (j) { got.set(q.id, j); used.add(j.id); } };
   const first = (xs) => xs.sort((a, b) => (a.start || "").localeCompare(b.start || ""))[0];
+  const next = (q, ok) => { if (got.has(q.id) || !q.leadId) return; const d = estDay(q); take(q, first(live.filter(j => j.leadId === q.leadId && !used.has(j.id) && !paidBefore(j, d) && ok(j, d)))); };
   ests.forEach(q => take(q, live.find(j => j.quoteId === q.id && !used.has(j.id))));
-  ests.forEach(q => { if (got.has(q.id) || !q.leadId) return;
-    take(q, first(live.filter(j => j.leadId === q.leadId && !used.has(j.id) && byId.has(j.quoteId) && byId.get(j.quoteId).status !== "accepted"))); });
-  ests.forEach(q => { if (got.has(q.id) || !q.leadId) return; const d = q.date || String(q.createdAt || "").slice(0, 10);
-    take(q, first(live.filter(j => j.leadId === q.leadId && !used.has(j.id) && !byId.has(j.quoteId) && String(j.createdAt || "") < LINK_SINCE && String(j.start || "").slice(0, 10) >= d && (!j.createdAt || String(j.createdAt).slice(0, 10) >= d)))); });
+  ests.forEach(q => next(q, (j) => { if (!j.quoteId) return false; const o = byId.get(j.quoteId); return !o || (!isInvoice(o) && o.status !== "accepted"); }));
+  ests.forEach(q => next(q, (j, d) => !j.quoteId && !j.noEstimate && String(j.start || "").slice(0, 10) >= d && (!j.createdAt || String(j.createdAt).slice(0, 10) >= d || sameWork(j, q))));
   return got;
 }
 // the estimate each job is for, the other way round
@@ -2667,19 +2678,34 @@ function waitingEstimatesFor(l) {
   return S.quotes.filter(q => !isInvoice(q) && q.status === "accepted" && !m.has(q.id) && (q.leadId === l.id || (!leadById(q.leadId) && names.includes(nm((q.billTo || [])[0])))))
     .sort((a, b) => (a.date || "").localeCompare(b.date || "") || (a.number || "").localeCompare(b.number || ""));
 }
+// the services on an estimate, for a job's Service box
+const estSvc = (q) => [...new Set((q.items || []).filter(isLine).map(i => String(i.service || "").trim()).filter(Boolean))].join(", ");
+// with two or more, the person saving picks one (or "Not for an estimate"): PICK_EST is the "Pick one" placeholder
+const PICK_EST = "?";
 function estPickHTML(id, xs, sel) {
   if (!xs.length) return "";
+  const ask = xs.length > 1 && !xs.some(q => q.id === sel) && sel !== "";
   const svc = (q) => [...new Set((q.items || []).filter(isLine).map(i => String(i.service || "").trim()).filter(Boolean))].join(", ");
-  return `<label class="f full">For estimate<select id="${id}"><option value="">Not for an estimate</option>${xs.map(q => { const t = quoteTotals(q).total, s = svc(q);
+  return `<label class="f full">For estimate<select id="${id}">${ask ? `<option value="${PICK_EST}" selected>Pick one</option>` : ""}<option value=""${sel === "" ? " selected" : ""}>Not for an estimate</option>${xs.map(q => { const t = quoteTotals(q).total, s = svc(q);
     return `<option value="${esc(q.id)}"${q.id === sel ? " selected" : ""}>#${esc(q.number)} · ${money(t, t % 1 !== 0)}${s ? " · " + esc(s.length > 40 ? s.slice(0, 39) + "…" : s) : ""}</option>`; }).join("")}</select></label>`;
 }
 // a job saved for an accepted estimate: tie them together, carry the estimate's % to bank when none was typed, and
 // put the customer on an estimate that was saved without one
 async function tieToEstimate(job, quoteId, l) {
   const q = quoteId && S.quotes.find(x => x.id === quoteId && !isInvoice(x)); if (!q) return null;
-  job.quoteId = q.id; if (job.bankPct == null && q.bankPct != null) job.bankPct = q.bankPct;
+  job.quoteId = q.id; delete job.noEstimate; if (job.bankPct == null && q.bankPct != null) job.bankPct = q.bankPct;
   if (l && !leadById(q.leadId)) await saveDoc("quotes", q.id, { leadId: l.id, updatedAt: new Date().toISOString() }, true);
   return q;
+}
+// a job booked before its estimate was accepted can be tied to it by hand, unless it's another accepted estimate's job
+function canTieJob(j, quoteId) { const o = j && j.quoteId && S.quotes.find(x => x.id === j.quoteId); return !!j && j.quoteId !== quoteId && !(o && !isInvoice(o) && o.status === "accepted"); }
+async function tieJobHere(jobId) {
+  const j = S.jobs.find(x => x.id === jobId), q = QD && QD.id && S.quotes.find(x => x.id === QD.id); if (!j || !q || !canTieJob(j, q.id)) return;
+  const upd = { quoteId: q.id, noEstimate: false, updatedAt: new Date().toISOString() }; if (j.bankPct == null && q.bankPct != null) upd.bankPct = q.bankPct;
+  try { await saveDoc("jobs", j.id, upd, true); } catch (e) { return; }
+  toast(`The job on ${fmtDT(j.start)} is now the one for estimate #${q.number}`, 4000);
+  if (S.book && !S.book.saving) { S.book = null; $("#modal .sheet").innerHTML = quoteEditorHTML(); renderItems(); updatePreview(); S.dirty = false; } else syncQuoteChrome();
+  schedule();
 }
 // accepted estimates whose job isn't paid yet: the Accepted number on the Quotes tab and the Jobs accepted card on Today
 function acceptedWaiting() { const m = estimateJobs(); return S.quotes.filter(q => !isInvoice(q) && q.status === "accepted" && !(m.get(q.id) && m.get(q.id).status === "paid")); }
@@ -2702,7 +2728,7 @@ function bookHTML(l) {
   return `<div class="sh"><h2 id="bk-h" tabindex="-1">Book the job</h2><button class="x" data-close="1" aria-label="Close">×</button></div>
   <div class="sb stack">
     <p class="note">${esc(leadName(l))} accepted estimate #${esc(b.number)} for ${money(b.amount, b.amount % 1 !== 0)}. Pick the day on the calendar, then the time you'll do the job.</p>
-    ${had ? `<div class="banner warn">${mine ? "A job from this estimate" : `A job for ${esc(leadName(l))}`} is already booked for ${esc(fmtDT(had.start))}. Book this one only if it's another visit.</div>` : ""}
+    ${had ? `<div class="banner warn${!mine && canTieJob(had, b.quoteId) ? " spread" : ""}"><span>${mine ? "A job from this estimate" : `A job for ${esc(leadName(l))}`} is already booked for ${esc(fmtDT(had.start))}. ${!mine && canTieJob(had, b.quoteId) ? "If that's the job for this estimate, tap That's this job instead of booking another." : "Book this one only if it's another visit."}</span>${!mine && canTieJob(had, b.quoteId) ? `<button class="btn sm" data-act="q-tie" data-id="${esc(had.id)}">That's this job</button>` : ""}</div>` : ""}
     <div id="bk-cal">${bookCalHTML(first)}</div>
     <section class="panel"><div class="panel-h"><h2>The job</h2></div><div class="form">
       <label class="f">Date<input type="date" id="bk-date" value="${esc(b.day)}"></label>
@@ -3105,6 +3131,8 @@ async function saveMoneyJob(btn) {
   const F = moneySnap("mj-"), crew = crewVal("mj-crew"), gen = S.money.gen; const v = id => F[id] || "";
   const price = Number(v("mj-price")); if (!(price > 0)) { toast("Enter the job price (more than $0)"); return; }
   if (v("mj-cost") !== "" && !(Number(v("mj-cost")) >= 0)) { toast("Job cost can't be negative"); return; }
+  if (v("mj-quote") === PICK_EST) { toast("Pick which estimate this job is for under For estimate, or pick Not for an estimate.", 6000); const sel = $("#mj-quote"); if (sel) sel.focus(); return; }
+  const noEst = "mj-quote" in F && v("mj-quote") === ""; // "Not for an estimate" picked
   let leadId = v("mj-lead"); const date = v("mj-date") || today(); const status = v("mj-status"); const svc = v("mj-svc"); const now = new Date().toISOString();
   let name = "", kept = "", matched = "", dropQuote = "";
   if (!leadId) {
@@ -3132,7 +3160,7 @@ async function saveMoneyJob(btn) {
         else if (l.stage === "selling" && open.length) kept = `${leadName(l)} stays in Selling because an estimate is still open.`;
         // dropped on Paid with no accepted estimate picked: the estimate they were sent is the one being paid, when it's
         // clear which one (the only one sent, or the only one for this price); the others are left as they are
-        if (fromDrop && !v("mj-quote")) { const q = sentFor(open.filter(x => x.status === "sent"), price); if (q) { await saveDoc("quotes", q.id, { status: "accepted", updatedAt: now }, true); dropQuote = q.id; } }
+        if (fromDrop && !v("mj-quote") && !noEst) { const q = sentFor(open.filter(x => x.status === "sent"), price); if (q) { await saveDoc("quotes", q.id, { status: "accepted", updatedAt: now }, true); dropQuote = q.id; } }
         if (!l.value) upd.value = price;
         if (!l.address && !l.city && v("mj-addr")) upd.address = v("mj-addr");
         if (isOutreach(l)) Object.assign(upd, PROMOTE());
@@ -3140,6 +3168,7 @@ async function saveMoneyJob(btn) {
     }
     const job = { kind: "job", leadId, title: "Job: " + name, service: svc, start: date, end: date, address: v("mj-addr"), amount: price, cost: Number(v("mj-cost")) || 0, crew, source: v("mj-src"), status, paidDate: status === "paid" ? date : "", method: status === "paid" ? v("mj-method") : "", createdAt: now };
     if (v("mj-bank") !== "") job.bankPct = Math.max(0, Math.min(100, Number(v("mj-bank")) || 0)) / 100;
+    if (noEst) job.noEstimate = true;
     await tieToEstimate(job, dropQuote || v("mj-quote"), leadById(leadId));
     await saveDoc("jobs", uid("job"), job);
     // the form closes only if it's still the one that was saved (not one opened since)
@@ -3196,7 +3225,7 @@ function payBox(j, where) {
 }
 function payBoxHTML(j) {
   // a job tied to an estimate starts with the % typed on the estimate, until one is typed on the job
-  const est = j.est || j.bankPct != null && j.bankPct !== "" ? null : jobEstimates().get(j.id), bp = est && est.bankPct != null ? est.bankPct : j.bankPct;
+  const est = j.est || j.bankCleared || j.bankPct != null && j.bankPct !== "" ? null : jobEstimates().get(j.id), bp = est && est.bankPct != null ? est.bankPct : j.bankPct;
   return `<div class="pad stack" style="padding-top:14px;border-top:1px solid var(--line)"><b>Record payment: ${esc(leadName(leadById(j.leadId)) || (j.title || "").replace(/^Job: /, ""))}</b><div class="form">
     <label class="f">Amount ($)<input type="number" id="pay-amt" step="0.01" value="${esc(j.amount || "")}"></label>
     <label class="f">Paid by<select id="pay-method">${PAY_METHODS.map(m => `<option>${m}</option>`).join("")}</select></label>
@@ -3217,20 +3246,24 @@ function syncJobForm(fromChange) {
   if (ad && fromChange && (!was || ad.dataset.auto === "1" || S.leads.some(x => leadAddr(x) === was))) { ad.value = l ? leadAddr(l) : ""; ad.dataset.auto = "1"; }
   const box = $("#mj-open"); if (!box) return;
   const open = l ? S.jobs.filter(j => j.leadId === l.id && j.kind === "job" && ["scheduled", "completed"].includes(j.status)) : [];
-  // their accepted estimates with no job yet: this job is tied to the one picked (picked for them when there's only one)
+  // their accepted estimates with no job yet: this job is tied to the one picked (picked for them when there's only one;
+  // with more, one has to be picked). S.money.jobQuote is what was picked, undefined until something is.
   const ests = waitingEstimatesFor(l);
-  if (fromChange || S.money.jobQuote === undefined || (S.money.jobQuote && !ests.some(q => q.id === S.money.jobQuote))) S.money.jobQuote = ests.length === 1 ? ests[0].id : "";
-  const pick = estPickHTML("mj-quote", ests, S.money.jobQuote);
+  if (fromChange || (S.money.jobQuote !== "" && !ests.some(q => q.id === S.money.jobQuote))) S.money.jobQuote = undefined;
+  const pick = estPickHTML("mj-quote", ests, S.money.jobQuote !== undefined ? S.money.jobQuote : ests.length === 1 ? ests[0].id : PICK_EST);
   box.innerHTML = (pick ? `<div class="form" style="margin-bottom:10px">${pick}</div>` : "") + (open.length ? `<div class="banner warn spread"><span>${esc(leadName(l))} already has ${open.length === 1 ? `a ${money(open[0].amount)} job that's ${open[0].status === "completed" ? "done but not paid" : "scheduled"}` : `${open.length} open jobs`}. If this is that job, record the payment on it instead.</span><button class="btn sm" data-act="use-open-job" data-id="${esc(open[0].id)}">Record payment on it</button></div>` : "");
   fillFromEstimate(fromChange);
 }
-// the picked estimate's price and service go in the form, unless something was typed there
+// the picked estimate's price and service go in the form, unless something was typed there. What was filled in is
+// also kept in S.money.auto, so it still counts as filled in (not typed) after a redraw drops the mark.
 function fillFromEstimate(force) {
-  const q = S.quotes.find(x => x.id === S.money.jobQuote), pr = $("#mj-price"), sv = $("#mj-svc");
-  if (!q) { if (force) [pr, sv].forEach(el => { if (el && el.dataset.auto === "1") { el.value = ""; delete el.dataset.auto; } }); return; }
-  if (pr && (!pr.value || force && pr.dataset.auto === "1")) { pr.value = quoteTotals(q).total; pr.dataset.auto = "1"; }
+  const qs = $("#mj-quote"), q = qs && S.quotes.find(x => x.id === qs.value), pr = $("#mj-price"), sv = $("#mj-svc");
+  const auto = S.money.auto = S.money.auto || {}, filled = (el) => el.dataset.auto === "1" || (auto[el.id] != null && el.value.trim() === auto[el.id]);
+  const put = (el, x) => { el.value = x; el.dataset.auto = "1"; auto[el.id] = String(x); };
+  if (!q) { if (force) [pr, sv].forEach(el => { if (el && el.value && filled(el)) { el.value = ""; delete el.dataset.auto; delete auto[el.id]; } }); return; }
+  if (pr && (!pr.value || force && filled(pr))) put(pr, quoteTotals(q).total);
   const s = [...new Set((q.items || []).filter(isLine).map(i => String(i.service || "").trim()).filter(Boolean))].join(", ");
-  if (sv && s && (!sv.value || force && sv.dataset.auto === "1")) { sv.value = s; sv.dataset.auto = "1"; }
+  if (sv && s && (!sv.value || force && filled(sv))) put(sv, s);
 }
 after.money = () => syncJobForm(false);
 
@@ -4476,12 +4509,13 @@ function blastSender(PROJECT, VERSION, coreFn, BLOCKED_SHA) {
     "discontinue (?:these|the|your|all) " + OUT_MAIL,
     "cease and desist"
   ].join("|") + ")" + OUT_TAIL);
-  // a legal notice ("If you are not the intended recipient, please delete this email"), never the person's own request
-  const NOTICE = /\bintended recipient|\b(?:received|sent to you|reached you) (?:this|it) (?:e-?mail |message |communication )?(?:in error|by mistake)|\bin error,? please\b|\bconfidentiality notice\b/;
+  // a legal notice ("If you are not the intended recipient, please delete this email"), never the person's own request.
+  // A notice talks to the reader; "I received this in error, please remove me" is the person asking out.
+  const NOTICE = /\bif you (?:are not|aren't|were not|have received|received|got)\b|\byou (?:are not|aren't) the intended recipient|\b(?:reader|recipient) of this (?:e-?mail|message|communication) is not\b|\bconfidentiality notice\b/;
   // a pause, not a goodbye ("Don't contact us, the board is on break until January"): a plain reply
   const PAUSE = /\b(?:until|till|til|on (?:vacation|break|leave|hold)|out of (?:town|the office)|travel(?:l)?ing|next (?:week|month|year|season|spring|summer|fall)|in the (?:spring|summer|fall|winter|new year)|after the (?:holidays|new year|first))\b/;
   // signature lines: an address, a web page, a phone number, office hours
-  const SIGLINE = /^(?:<?[\w.+'-]+@[\w.-]+>?|(?:https?:\/\/|www\.)\S+|(?:(?:p|ph|phone|cell|c|o|office|fax|f|tel|t|m|mobile|direct)[:.]?\s*)?[\d\s().+-]{7,}(?:\s*(?:x|ext\.?)\s*\d+)?|(?:(?:office|business) )?hours?\b.*|(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?\s*(?:-|to|through|thru)\s*(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?:?,?\s*\d.*)$/;
+  const SIGLINE = /^(?:<?[\w.+'-]+@[\w.-]+>?|(?:https?:\/\/|www\.)\S+|(?:(?:p|ph|phone|cell|c|o|office|fax|f|tel|t|m|mobile|direct)[:.]?\s*)?[\d\s().+-]{7,}(?:\s*(?:x|ext\.?)\s*\d+)?|(?:(?:office|business) )?hours?\b.*|(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?\s*(?:-|to|through|thru)\s*(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?:?,?\s*\d{1,2}(?::\d{2})?\s*(?:[ap]\.?m\.?)?\s*(?:-|to|until|till)\s*\d{1,2}(?::\d{2})?\s*(?:[ap]\.?m\.?)?\s*(?:e[sd]?t|eastern)?\.?|\d{1,6}\s+(?:[\w.'#-]+\s+){0,5}(?:st|street|ave|avenue|rd|road|dr|drive|blvd|boulevard|ln|lane|way|ct|court|pl|place|cir|circle|hwy|highway|pkwy|parkway|ter|terrace|trl|trail)\b[\w\s.,#-]*|(?:suite|ste|unit)\.?\s*#?\s*\w+|[a-z .'-]+,\s*(?:fl|florida|[a-z]{2})\.?\s+\d{5}(?:-\d{4})?)$/;
   // the reply's own words: the email it quotes (above or below it), its signature, or a legal notice under it
   function ownWords(body) {
     const low = String(body || "").replace(/\r/g, "").replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/[–—]/g, " - ").toLowerCase()
@@ -4508,7 +4542,9 @@ function blastSender(PROJECT, VERSION, coreFn, BLOCKED_SHA) {
     const sents = [], flat = [];
     const add = (t, into) => String(t || "").split(/(?<=[.!?;])\s+|\n/).forEach(s => { s = s.replace(/["*_]+/g, "").replace(/^'+|'+(?=[\s.!?,]*$)/g, "").trim(); if (s) into.push(s); });
     add(fresh, sents);
-    fresh.split(/\n\s*\n/).forEach(p => { if (/\n/.test(p)) add(p.replace(/\s*\n\s*/g, " "), sents); add(p.split("\n").filter(x => !SIGLINE.test(x.trim())).join(" "), flat); });
+    // (an address alone on its line after "is", "email", "contact" or a colon points to someone: it stays)
+    const POINT = /(?:\b(?:is|to|at|contact|e-?mail|reach|try|cc|forward)|:)\s*$/;
+    fresh.split(/\n\s*\n/).forEach(p => { if (/\n/.test(p)) add(p.replace(/\s*\n\s*/g, " "), sents); const ls = p.split("\n"); add(ls.filter((x, i) => !SIGLINE.test(x.trim()) || (/@/.test(x) && i > 0 && POINT.test(ls[i - 1].trim()))).join(" "), flat); });
     const hits = [], used = [];
     sents.forEach(s => {
       if (s.length > 300 || NOTICE.test(s)) return; // a long sentence is never just the request
@@ -4516,7 +4552,7 @@ function blastSender(PROJECT, VERSION, coreFn, BLOCKED_SHA) {
       // so "Fence - remove" or "2. Fence - no, remove" in a job list isn't one
       const whole = s.replace(OUT_LEAD, "");
       if (OUT_FORMS.test(whole)) { hits.push(whole); used.push(s); return; }
-      if (PAUSE.test(s)) return;
+      if (PAUSE.test(s) && !/\b(?:remove|removed|unsubscribe|unsub|opt(?:[\s-]?out)|optout|off (?:of )?(?:your|the|this|ur) )/.test(s)) return;
       const raw = s.split(/\s*[,:]\s+|\s+-\s+|\s+(?=(?:and|but|so) )/).map(c => c.replace(/^(?:and|but|so) /, ""));
       raw.forEach((r, i) => {
         const c = r.replace(OUT_LEAD, ""); if (!c || !OUT_FORMS.test(c)) return;
@@ -4531,8 +4567,12 @@ function blastSender(PROJECT, VERSION, coreFn, BLOCKED_SHA) {
     // what's left once the request is taken out: more only when it asks for something or points to someone
     // ("No more mailings. Come Tuesday.", "Remove me. Jane at jane@oak.test handles vendors"), not a reason or a signature
     // (read from whole paragraphs, so a request Gmail wrapped onto two lines comes out whole, and without signature lines)
-    const rest = used.slice().sort((x, y) => y.length - x.length).reduce((t, u) => t.split(u).join(" "), flat.join("\n"));
-    const more = /\?|\b(?:at|to|e-?mail|contact|reach|cc|try|add|use|send|forward|colleague|manager|is)\s+<?[a-z0-9._%+'-]+@[a-z0-9]|(?:^|\n|[.!] )[a-z0-9._%+'-]+@[a-z0-9.-]+\s+[a-z]{2,}|\b(quotes?|estimates?|prices?|pricing|cost|how much|schedule|book|come (out|by|on|over|do|look|see|wash|clean|tues|mon|wed|thur|fri|sat|sun)|send (someone|somebody|a crew|your crew|a guy|over)|look at|call (me|us|\d+)|give (me|us) a call|text (me|us)|reach me|my (cell|number|phone)|available|availability|interested in|can you|could you|would you|do you|when can|next (week|month)|tomorrow|(mon|tues|wednes|thurs|fri|satur|sun)day|reach out to|contact (her|him|them|our|the (office|manager|board))|instead|(want|need|'d like|would like)(?: to have)? (the|a|an|our|my|some|someone|you to)|january|february|march|april|june|july|august|september|october|november|december|\d{1,2}(st|nd|rd|th))\b/.test(rest);
+    const rest = used.slice().sort((x, y) => y.length - x.length).reduce((t, u) => t.split(u).join(" "), flat.join("\n"))
+      .replace(/\b(?:don't|do not|doesn't|does not|didn't|did not|won't|will not|no longer|never)\s+(?:really\s+)?(?:want|need)\b[^.!?\n]*/g, " ");
+    // a day or a month counts only with a visit word near it ("come Tuesday", "March works"), not in a reason ("we moved in March")
+    const WHEN = "(?:january|february|march|april|may|june|july|august|september|october|november|december|\\d{1,2}(?:st|nd|rd|th)|next (?:week|month)|tomorrow|(?:mon|tues|wednes|thurs|fri|satur|sun)day)";
+    const visit = new RegExp("\\b(?:come|coming|do it|do the|done|wash|clean|schedule|book|start|stop by|swing by|be (?:there|here)|works?|available|free|open)\\b[^.!?\\n]{0,30}\\b" + WHEN + "\\b|\\b" + WHEN + "\\b[^.!?\\n]{0,20}\\b(?:works?|would work|is (?:good|fine|open|best)|if you can)\\b").test(rest);
+    const more = /\?|\b(?:at|to|e-?mail|contact|reach|cc|try|add|use|send|forward|colleague|manager|is)(?:\s*:\s*|\s+)<?[a-z0-9._%+'-]+@[a-z0-9]|(?:^|\n|[.!] )[a-z0-9._%+'-]+@[a-z0-9.-]+\s+[a-z]{2,}|\b(quotes?|estimates?|prices?|pricing|cost|how much|schedule|book|come (out|by|on|over|do|look|see|wash|clean|tues|mon|wed|thur|fri|sat|sun)|send (someone|somebody|a crew|your crew|a guy|over)|look at|call (me|us|\d+)|give (me|us) a call|text (me|us)|reach me|my (cell|number|phone)|available|availability|interested in|can you|could you|would you|do you|when can|reach out to|contact (her|him|them|our|the (office|manager|board))|instead|(want|need|'d like|would like)(?: to have)? (the|a|an|our|my|some|someone|you to))\b/.test(rest) || visit;
     // everyone at the address only when the request itself says so ("remove us"), not its reason ("remove me as we moved")
     return { out: hits.map(h => h.replace(/\s(?:as|because|since)\s.*$/, "")).some(h => /\b(us|our|we|everyone|all of us|both of us)\b/.test(h) || (/\bthis (e-?mail )?address\b/.test(h) && !/\b(me|my|i)\b/.test(h))) ? 2 : 1, more: more };
   }
@@ -4570,6 +4610,7 @@ function blastSender(PROJECT, VERSION, coreFn, BLOCKED_SHA) {
     // them yourself from then on. A "remove" replaces a reply or a bounce, and a reply replaces a bounce, so allowing the
     // lesser one again can't undo it (a bounce still marks the contacts as bounced).
     const RANK = { bounced: 1, replied: 2, removed: 3 }, was = ctx.mail.out[k];
+    const works = status === "replied" && was && was.why === "bounced" && new Date(was.at) <= when; // they wrote back after it bounced
     if (!allowed && (!was || RANK[status] > (RANK[was.why] || 3))) { ctx.mail.out[k] = { why: status, at: when.toISOString(), note: text }; saveOut(ctx.mail, [k]); }
     const from = live.concat(old), named = from[0].b, ids = {};
     from.forEach(x => (x.r.leadIds || []).forEach(id => { ids[id] = 1; }));
@@ -4580,7 +4621,8 @@ function blastSender(PROJECT, VERSION, coreFn, BLOCKED_SHA) {
         return l.unsubscribed && l.blastOutMore === tag ? null : { unsubscribed: true, blastReplied: tag, blastOutMore: tag, activity: act(l, "Asked for no more blast emails, but wrote more in their reply to “" + named.name + "”. Read it in Gmail: " + text.replace(/^Asked to be removed [^:]*: /, "")) }; }
       if (status === "removed") return l.unsubscribed ? null : { unsubscribed: true, activity: act(l, "Asked to be taken off your emails (replied to “" + named.name + "”)") };
       if (status === "bounced") return l.emailBounced ? null : { emailBounced: true, activity: act(l, "Email to " + k + " bounced (blast “" + named.name + "”)") };
-      return String(l.blastReplied || "").indexOf(named.id + "|") === 0 ? null : { blastReplied: named.id + "|" + when.toISOString(), activity: act(l, "Replied to your email blast “" + named.name + "”: " + text.replace(/^Replied [^:]*: /, "")) };
+      const fix = works && l.emailBounced ? { emailBounced: false } : null;
+      return String(l.blastReplied || "").indexOf(named.id + "|") === 0 ? fix : Object.assign({ blastReplied: named.id + "|" + when.toISOString(), activity: act(l, "Replied to your email blast “" + named.name + "”: " + text.replace(/^Replied [^:]*: /, "")) }, fix);
     }));
   }
   // a sender that's a system, not a person (a help desk's "we got your message", a mailing list)
@@ -5026,8 +5068,9 @@ document.addEventListener("click", async (e) => {
   }
   if (t.dataset.pay) { const j = estItemById(t.dataset.pay) || S.jobs.find(x => x.id === t.dataset.pay); if (!j) return;
     // a % to bank typed on the row but not saved yet goes in the payment box
-    const bi = document.getElementById("bank-" + j.id), bv = bi ? String(bi.value).trim() : "";
-    payBox(bv !== "" && Number(bv) >= 0 ? Object.assign({}, j, { bankPct: Math.min(100, Number(bv)) / 100 }) : j, t.closest("#modal") ? "modal" : "view"); return; }
+    // (a % shown there and just erased is no %, not the estimate's)
+    const bi = document.getElementById("bank-" + j.id), bv = bi ? String(bi.value).trim() : "", cleared = !!bi && bv === "" && !(bi.validity && bi.validity.badInput) && bi.defaultValue !== "";
+    payBox(bv !== "" && Number(bv) >= 0 ? Object.assign({}, j, { bankPct: Math.min(100, Number(bv)) / 100 }) : cleared ? Object.assign({}, j, { bankPct: null, bankCleared: true }) : j, t.closest("#modal") ? "modal" : "view"); return; }
   if (t.dataset.drip) {
     const dl = leadById(t.dataset.lead); if (!dl) return; const key = t.dataset.key;
     try {
@@ -5166,6 +5209,7 @@ document.addEventListener("click", async (e) => {
       case "q-status": await quoteStatus(t.dataset.s); break;
       case "bk-open": if (await saveQuote(true)) startBooking(); break;
       case "bk-save": await bookSave(t); break;
+      case "q-tie": await tieJobHere(t.dataset.id); break;
       case "bk-back": S.book = null; $("#modal .sheet").innerHTML = quoteEditorHTML(); renderItems(); updatePreview(); S.dirty = false; break;
       case "q-to-invoice": { if (!(await saveQuote(true))) break; const src = QD; const inv = Object.assign(JSON.parse(JSON.stringify(src)), { id: "", docType: "INVOICE", date: today(), status: "draft", fromQuote: src.id }); inv.number = nextNumber(inv.date); QD = inv; $("#modal .sheet").innerHTML = quoteEditorHTML(); renderItems(); updatePreview(); toast("Invoice started from the estimate. Save it when ready."); break; }
       case "q-delete": $("#q-status-line").innerHTML = `<span class="row">Delete this quote? <button class="btn sm danger" data-act="q-delete-yes">Delete</button><button class="btn sm" data-act="q-delete-no">Keep</button></span>`; break;
@@ -5193,7 +5237,7 @@ document.addEventListener("click", async (e) => {
         break; }
       case "import": importModal(); break;
       case "do-import": await doImport(t); break;
-      case "mf-open": if (S.money.form !== t.dataset.f || S.money.formLead) forgetTyped(/^m[je]-/); S.money.gen = (S.money.gen || 0) + 1; S.money.form = t.dataset.f; S.money.formLead = ""; S.money.dropPaid = ""; S.money.jobQuote = undefined; render(); { const f = $("#view .panel input[autofocus], #mj-lead"); if (f) f.focus(); } window.scrollTo({ top: 0, behavior: "smooth" }); break;
+      case "mf-open": if (S.money.form !== t.dataset.f || S.money.formLead) forgetTyped(/^m[je]-/); S.money.gen = (S.money.gen || 0) + 1; S.money.form = t.dataset.f; S.money.formLead = ""; S.money.dropPaid = ""; S.money.jobQuote = undefined; S.money.auto = {}; render(); { const f = $("#view .panel input[autofocus], #mj-lead"); if (f) f.focus(); } window.scrollTo({ top: 0, behavior: "smooth" }); break;
       case "mf-close": S.money.form = ""; S.money.dropPaid = ""; S.money.gen = (S.money.gen || 0) + 1; forgetTyped(/^m[je]-/); render(); break;
       case "save-mjob": await saveMoneyJob(t); break;
       case "save-mexp": await saveMoneyExpense(t); break;
@@ -5209,10 +5253,12 @@ document.addEventListener("click", async (e) => {
         const upd = { status: "paid", amount: amt, method: q("#pay-method").value, paidDate: q("#pay-date").value || today(), cost: Number(costRaw) || 0, crew: crewVal("pay-crew", box), updatedAt: new Date().toISOString() };
         if (bank !== "") upd.bankPct = Math.max(0, Math.min(100, Number(bank) || 0)) / 100;
         // dropped on Paid for a job that isn't tied to an estimate yet: the estimate they were sent is the one being
-        // paid, when it's clear which one (the only one sent, or the only one for this amount)
-        const fromDrop = !isEst && S.payOpen && S.payOpen.dropPaid === j.leadId && !jobEstimates().has(j.id);
+        // paid, when it's clear which one (the only one sent, or the only one for this amount); else their accepted
+        // estimate with no job yet that's for this amount
+        const fromDrop = !isEst && S.payOpen && S.payOpen.dropPaid === j.leadId && !jobEstimates().has(j.id) && !j.noEstimate;
         const dropQ = fromDrop ? sentFor(S.quotes.filter(q => q.leadId === j.leadId && q.docType !== "INVOICE" && q.status === "sent"), amt) : null;
-        if (dropQ) upd.quoteId = dropQ.id;
+        const dropW = fromDrop && !dropQ ? (ws => ws.length === 1 ? ws[0] : null)(waitingEstimatesFor(leadById(j.leadId)).filter(q => Math.abs(quoteTotals(q).total - amt) < 0.005)) : null;
+        if (dropQ || dropW) { upd.quoteId = (dropQ || dropW).id; if (upd.bankPct == null && j.bankPct == null && (dropQ || dropW).bankPct != null) upd.bankPct = (dropQ || dropW).bankPct; }
         // one save at a time for each job, so a second tap can't make the estimate's job twice
         S.paying = S.paying || new Set();
         if (S.paying.has(j.id)) { toast("Saving that payment…"); break; } S.paying.add(j.id);
@@ -5239,7 +5285,7 @@ document.addEventListener("click", async (e) => {
 });
 document.addEventListener("input", (e) => {
   if (e.target.dataset && e.target.dataset.bank) { const el = e.target, k = el.dataset.bank; clearTimeout(bankT[k]); bankT[k] = setTimeout(() => { const now = document.getElementById(el.id); if (now) saveBankPct(now, true); }, 800); } // a redraw meanwhile puts what was typed in a new box
-  if (["mj-addr", "mj-price", "mj-svc"].includes(e.target.id)) delete e.target.dataset.auto; // typed by hand: picking another customer or estimate won't replace it
+  if (["mj-addr", "mj-price", "mj-svc", "sc-amt", "sc-svc"].includes(e.target.id)) { delete e.target.dataset.auto; if (S.money.auto) delete S.money.auto[e.target.id]; } // typed by hand: picking another customer or estimate won't replace it
   if (S.book && e.target.id === "bk-hrs") { const h = +e.target.value; if (h > 0 && h <= 12) { S.book.dur = Math.round(h * 60); refreshBook(); } return; }
   if (S.book && e.target.id === "bk-time") { S.book.auto = ""; refreshBook(); return; }
   const it = e.target.closest && e.target.closest(".qitem");
@@ -5283,13 +5329,15 @@ document.addEventListener("change", async (e) => {
   }
   if (e.target.id === "mj-lead") syncJobForm(true);
   if (e.target.id === "mj-quote") { S.money.jobQuote = e.target.value; fillFromEstimate(true); }
+  if (e.target.id === "sc-quote") { const q = S.quotes.find(x => x.id === e.target.value);
+    [["sc-amt", q && quoteTotals(q).total], ["sc-svc", q && estSvc(q)]].forEach(([id, x]) => { const el = $("#" + id); if (el && x && (!el.value || el.dataset.auto === "1")) { el.value = x; el.dataset.auto = "1"; } }); }
   if (e.target.dataset && e.target.dataset.bank) { clearTimeout(bankT[e.target.dataset.bank]); saveBankPct(e.target); }
   if (e.target.id === "bk-date" && e.target.value) bookPickDay(e.target.value);
   if (e.target.matches && e.target.matches('[data-dk="channel"]')) { S.setDraft = readSettingsForm(); S.setDirty = true; render(); } // shows or hides the email subject
 });
 // the % to bank typed on a row of Jobs to finish or collect: on the job, or on the estimate until it has a job.
 // Saved a moment after typing stops (typing), and right away when the box is left.
-const bankT = {};
+const bankT = {}, bankTyped = {};
 async function saveBankPct(el, typing) {
   const id = el.dataset.bank, raw = String(el.value).trim();
   const isEst = id.startsWith("q:"), cur = isEst ? S.quotes.find(q => q.id === id.slice(2)) : S.jobs.find(j => j.id === id); if (!cur) return;
@@ -5297,12 +5345,15 @@ async function saveBankPct(el, typing) {
   // something that isn't a number (a letter, "20%") reads as an empty box: put the saved % back instead of clearing it
   if ((el.validity && el.validity.badInput) || (raw !== "" && !(Number(raw) >= 0))) { if (typing) return; toast("Type the percent as a number, like 20"); el.value = had == null ? "" : Math.round(had * 1000) / 10; return; }
   const v = raw === "" ? null : Math.round(Math.min(100, Number(raw)) * 10) / 1000; if (!typing) el.value = v == null ? "" : Math.round(v * 1000) / 10;
-  if ((cur.bankPct == null ? null : +cur.bankPct) === v && (isEst || !est || est.bankPct == null || +est.bankPct === v)) return;
+  const said = () => toast(v == null ? "% to bank cleared" : `${Math.round(v * 1000) / 10}% to bank saved`);
+  // the estimate keeps the same %, so it's still right if the job is canceled and the estimate shows here again
+  const same = (x) => (x == null ? null : +x) === v, jobSame = same(cur.bankPct), estSame = isEst || !est || same(est.bankPct);
+  if (jobSame && estSame) { if (!typing && bankTyped[id]) { delete bankTyped[id]; said(); } return; }
   const at = new Date().toISOString();
-  try { await saveDoc(isEst ? "quotes" : "jobs", cur.id, { bankPct: v, updatedAt: at }, true);
-    // the estimate keeps the same %, so it's still right if the job is canceled and the estimate shows here again
-    if (est && (est.bankPct == null ? null : +est.bankPct) !== v) await saveDoc("quotes", est.id, { bankPct: v, updatedAt: at }, true);
-    toast(v == null ? "% to bank cleared" : `${Math.round(v * 1000) / 10}% to bank saved`); schedule(); } catch (e) {}
+  // both at once, so neither shows the old % meanwhile
+  try { await Promise.all([jobSame ? null : saveDoc(isEst ? "quotes" : "jobs", cur.id, { bankPct: v, updatedAt: at }, true), estSame ? null : saveDoc("quotes", est.id, { bankPct: v, updatedAt: at }, true)]);
+    // saved while typing: said once the box is left
+    if (typing) bankTyped[id] = true; else { delete bankTyped[id]; said(); } schedule(); } catch (e) {}
 }
 // one waiting save per lead, so setting another lead's date right after doesn't drop this one
 const fuTimers = {};
