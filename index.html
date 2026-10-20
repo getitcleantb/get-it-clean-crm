@@ -2652,12 +2652,13 @@ const bookedFrom = (quoteId) => S.jobs.find(j => quoteId && j.quoteId === quoteI
 // that customer whose own estimate was declined, redone or deleted (the new estimate replaced it) and that wasn't paid
 // before this estimate; else that customer's next job with no estimate (booked before the estimate was accepted, or
 // saved before jobs were tied to estimates) dated on or after the estimate and not paid before it. A job booked before
-// the estimate was written counts only when it's for the same price or service (another job for a repeat customer
+// the estimate was written counts only when it's for the same price or the same services (another job for a repeat customer
 // isn't the new estimate's). A job saved as "Not for an estimate" is never one. A job counts for one estimate only.
 const estDay = (q) => q.date || String(q.createdAt || "").slice(0, 10);
 const paidBefore = (j, d) => j.status === "paid" && String(j.paidDate || j.start || "").slice(0, 10) < d;
 const svcSet = (x) => String(x || "").toLowerCase().split(/\s*[,+&/]\s*|\s+and\s+/).map(t => t.trim()).filter(Boolean);
-const sameWork = (j, q) => Math.abs((+j.amount || 0) - quoteTotals(q).total) < 0.005 || svcSet(j.service).some(t => svcSet(estSvc(q)).includes(t));
+const sameSvc = (a, b) => { const x = [...new Set(svcSet(a))], y = new Set(svcSet(b)); return x.length > 0 && x.length === y.size && x.every(t => y.has(t)); };
+const sameWork = (j, q) => Math.abs((+j.amount || 0) - quoteTotals(q).total) < 0.005 || sameSvc(j.service, estSvc(q));
 function estimateJobs() {
   const ests = S.quotes.filter(q => !isInvoice(q) && q.status === "accepted").sort((a, b) => (a.date || "").localeCompare(b.date || "") || (a.number || "").localeCompare(b.number || ""));
   const live = S.jobs.filter(j => j.kind === "job" && j.status !== "canceled"), byId = new Map(S.quotes.map(q => [q.id, q]));
@@ -4486,7 +4487,8 @@ function blastSender(PROJECT, VERSION, coreFn, BLOCKED_SHA) {
   const OUT_FORMS = new RegExp("^(?:" + [
     "remove|unsubscribe|unsub|stop|opt[\\s-]?out|optout|opting out",
     // "Please remove me as I am no longer on the board": a reason after it, said as one
-    "(?:remove|unsubscribe|delete|drop|erase) " + OUT_WHO + "(?: out| off)?" + OUT_FROM + "(?: (?:as|because|since) (?:i|we|i'm|we're|i've|we've|she|he|they)\\b.*)?",
+    // ("delete this email" alone is a legal footer's "delete this email from your system", not asking out)
+    "(?:remove|unsubscribe|drop|(?:delete|erase)(?! (?:this|that) e-?mail(?! address| (?:from|off(?: of)?) (?:(?:your|the|ur|all) )*(?:\\w+ )?(?:lists?|database|contacts)\\b))) " + OUT_WHO + "(?: out| off)?" + OUT_FROM + "(?: (?:as|because|since) (?:i|we|i'm|we're|i've|we've|she|he|they)\\b.*)?",
     "(?:take|get) " + OUT_WHO + " off(?: of)?(?:\\s+" + OUT_TARGET + ")?", "opt " + OUT_WHO + " out" + OUT_FROM,
     "(?:remove|unsubscribe|opt out)(?:\\s+(?:from|off(?: of)?|of)\\s+" + OUT_TARGET + ")",
     "(?:i|we)(?:'d| would)? (?:like|want|wish|need|ask|am asking|are asking|request)(?: you)? to (?:be|get) " + OUT_GONE,
@@ -4511,7 +4513,7 @@ function blastSender(PROJECT, VERSION, coreFn, BLOCKED_SHA) {
   ].join("|") + ")" + OUT_TAIL);
   // a legal notice ("If you are not the intended recipient, please delete this email"), never the person's own request.
   // A notice talks to the reader; "I received this in error, please remove me" is the person asking out.
-  const NOTICE = /\bif you (?:are not|aren't|were not|have received|received|got)\b|\byou (?:are not|aren't) the intended recipient|\b(?:reader|recipient) of this (?:e-?mail|message|communication) is not\b|\bconfidentiality notice\b/;
+  const NOTICE = /\bif you (?:are not|aren't|were not) (?:the|an) (?:intended |named |addressed )?(?:recipient|addressee)\b|\bif you (?:have )?(?:received|got) (?:this|it)\b[^.!?]{0,40}\b(?:in error|by mistake)|\byou (?:are not|aren't) the intended recipient|\b(?:reader|recipient) of this (?:e-?mail|message|communication) is not\b|\bconfidentiality notice\b/;
   // a pause, not a goodbye ("Don't contact us, the board is on break until January"): a plain reply
   const PAUSE = /\b(?:until|till|til|on (?:vacation|break|leave|hold)|out of (?:town|the office)|travel(?:l)?ing|next (?:week|month|year|season|spring|summer|fall)|in the (?:spring|summer|fall|winter|new year)|after the (?:holidays|new year|first))\b/;
   // signature lines: an address, a web page, a phone number, office hours
@@ -4552,8 +4554,10 @@ function blastSender(PROJECT, VERSION, coreFn, BLOCKED_SHA) {
       // so "Fence - remove" or "2. Fence - no, remove" in a job list isn't one
       const whole = s.replace(OUT_LEAD, "");
       if (OUT_FORMS.test(whole)) { hits.push(whole); used.push(s); return; }
-      if (PAUSE.test(s) && !/\b(?:remove|removed|unsubscribe|unsub|opt(?:[\s-]?out)|optout|off (?:of )?(?:your|the|this|ur) )/.test(s)) return;
       const raw = s.split(/\s*[,:]\s+|\s+-\s+|\s+(?=(?:and|but|so) )/).map(c => c.replace(/^(?:and|but|so) /, ""));
+      // a pause stays a reply, unless the request itself is a removal ("Remove me, we're moving next month"), not its
+      // reason ("... on hold until the mold is removed")
+      if (PAUSE.test(s) && !raw.some(r => { const c = r.replace(OUT_LEAD, ""); return OUT_FORMS.test(c) && /\b(?:remove|unsubscribe|unsub|opt(?:[\s-]?out)|optout|off (?:of )?(?:your|the|this|ur) )/.test(c); })) return;
       raw.forEach((r, i) => {
         const c = r.replace(OUT_LEAD, ""); if (!c || !OUT_FORMS.test(c)) return;
         // a bare "remove" only leads the sentence, with just a reason or a thank-you after it ("Please remove - we have a vendor")
@@ -4568,11 +4572,11 @@ function blastSender(PROJECT, VERSION, coreFn, BLOCKED_SHA) {
     // ("No more mailings. Come Tuesday.", "Remove me. Jane at jane@oak.test handles vendors"), not a reason or a signature
     // (read from whole paragraphs, so a request Gmail wrapped onto two lines comes out whole, and without signature lines)
     const rest = used.slice().sort((x, y) => y.length - x.length).reduce((t, u) => t.split(u).join(" "), flat.join("\n"))
-      .replace(/\b(?:don't|do not|doesn't|does not|didn't|did not|won't|will not|no longer|never)\s+(?:really\s+)?(?:want|need)\b[^.!?\n]*/g, " ");
+      .replace(/\b(?:don't|do not|doesn't|does not|didn't|did not|won't|will not|no longer|never)\s+(?:really\s+)?(?:want|need)\b(?:(?!\s+(?:but|though|however|although|and (?:we|i|our))\b|\s+-\s)[^.!?\n,;])*/g, " ");
     // a day or a month counts only with a visit word near it ("come Tuesday", "March works"), not in a reason ("we moved in March")
-    const WHEN = "(?:january|february|march|april|may|june|july|august|september|october|november|december|\\d{1,2}(?:st|nd|rd|th)|next (?:week|month)|tomorrow|(?:mon|tues|wednes|thurs|fri|satur|sun)day)";
-    const visit = new RegExp("\\b(?:come|coming|do it|do the|done|wash|clean|schedule|book|start|stop by|swing by|be (?:there|here)|works?|available|free|open)\\b[^.!?\\n]{0,30}\\b" + WHEN + "\\b|\\b" + WHEN + "\\b[^.!?\\n]{0,20}\\b(?:works?|would work|is (?:good|fine|open|best)|if you can)\\b").test(rest);
-    const more = /\?|\b(?:at|to|e-?mail|contact|reach|cc|try|add|use|send|forward|colleague|manager|is)(?:\s*:\s*|\s+)<?[a-z0-9._%+'-]+@[a-z0-9]|(?:^|\n|[.!] )[a-z0-9._%+'-]+@[a-z0-9.-]+\s+[a-z]{2,}|\b(quotes?|estimates?|prices?|pricing|cost|how much|schedule|book|come (out|by|on|over|do|look|see|wash|clean|tues|mon|wed|thur|fri|sat|sun)|send (someone|somebody|a crew|your crew|a guy|over)|look at|call (me|us|\d+)|give (me|us) a call|text (me|us)|reach me|my (cell|number|phone)|available|availability|interested in|can you|could you|would you|do you|when can|reach out to|contact (her|him|them|our|the (office|manager|board))|instead|(want|need|'d like|would like)(?: to have)? (the|a|an|our|my|some|someone|you to))\b/.test(rest) || visit;
+    const WHEN = "(?:january|february|march|april|june|july|august|september|october|november|december|\\d{1,2}(?:st|nd|rd|th)|next (?:week|month|year|spring|summer|fall)|(?:the )?(?:spring|summer|fall|winter)|tomorrow|(?:mon|tues|wednes|thurs|fri|satur|sun)day)";
+    const visit = new RegExp("\\b(?:come|coming|do it|do the|done|wash(?:ed|es|ing)?|clean(?:ed|s|ing)?|pressure[- ]wash\\w*|schedule|book|start|stop by|swing by|be (?:there|here)|works|available|free|open)\\b[^.!?\\n]{0,30}\\b" + WHEN + "\\b|\\b" + WHEN + "\\b[^.!?\\n]{0,20}\\b(?:works?|would work|is (?:good|fine|open|best)|if you can)\\b").test(rest);
+    const more = /\?|\b(?:at|to|e-?mail|contact|reach|cc|try|add|use|send|forward|colleague|manager|is)\s+<?[a-z0-9._%+'-]+@[a-z0-9]|\b(?:at|to|reach|cc|try|add|use|send|forward|colleague|manager|is)\s*:\s*<?[a-z0-9._%+'-]+@[a-z0-9]|(?:^|\n|[.!] )[a-z0-9._%+'-]+@[a-z0-9.-]+\s+[a-z]{2,}|\b(quotes?|estimates?|prices?|pricing|cost|how much|schedule|book|come (out|by|on|over|do|look|see|wash|clean|tues|mon|wed|thur|fri|sat|sun)|send (someone|somebody|a crew|your crew|a guy|over)|look at|call (me|us|\d+)|give (me|us) a call|text (me|us)|reach me|my (cell|number|phone)|available|availability|interested in|can you|could you|would you|do you|when can|reach out to|contact (her|him|them|our|the (office|manager|board))|instead|(want|need|'d like|would like|'d love|would love)(?: to have)? (the|a|an|our|my|some|someone|you to))\b/.test(rest) || visit;
     // everyone at the address only when the request itself says so ("remove us"), not its reason ("remove me as we moved")
     return { out: hits.map(h => h.replace(/\s(?:as|because|since)\s.*$/, "")).some(h => /\b(us|our|we|everyone|all of us|both of us)\b/.test(h) || (/\bthis (e-?mail )?address\b/.test(h) && !/\b(me|my|i)\b/.test(h))) ? 2 : 1, more: more };
   }
@@ -4598,6 +4602,8 @@ function blastSender(PROJECT, VERSION, coreFn, BLOCKED_SHA) {
   function stopAddr(k, xs, when, status, text, ctx, more) {
     const allowed = ctx.mail.allow[k] && new Date(ctx.mail.allow[k]) >= when; // allowed again since
     if (status !== "replied" && allowed) return;
+    // a bounce read again (or late) after they wrote back or asked out since: the mailbox works, nothing to do
+    const was0 = ctx.mail.out[k]; if (status === "bounced" && was0 && (was0.why === "replied" || was0.why === "removed") && new Date(was0.at) >= when) return;
     const live = xs.filter(x => !x.old && when >= new Date(x.b.startedAt || 0));
     const old = xs.filter(x => x.old && when >= new Date(x.b.startedAt || 0) && (status !== "replied" || when - new Date(x.last || 0) <= REPLY_DAYS * DAY));
     if (!live.length && !old.length) return;
@@ -4620,7 +4626,7 @@ function blastSender(PROJECT, VERSION, coreFn, BLOCKED_SHA) {
       if (status === "removed" && more) { const tag = String(l.blastReplied || "").indexOf(named.id + "|") === 0 ? l.blastReplied : named.id + "|" + when.toISOString();
         return l.unsubscribed && l.blastOutMore === tag ? null : { unsubscribed: true, blastReplied: tag, blastOutMore: tag, activity: act(l, "Asked for no more blast emails, but wrote more in their reply to “" + named.name + "”. Read it in Gmail: " + text.replace(/^Asked to be removed [^:]*: /, "")) }; }
       if (status === "removed") return l.unsubscribed ? null : { unsubscribed: true, activity: act(l, "Asked to be taken off your emails (replied to “" + named.name + "”)") };
-      if (status === "bounced") return l.emailBounced ? null : { emailBounced: true, activity: act(l, "Email to " + k + " bounced (blast “" + named.name + "”)") };
+      if (status === "bounced") return l.emailBounced || (was && RANK[was.why] > 1 && new Date(was.at) >= when) ? null : { emailBounced: true, activity: act(l, "Email to " + k + " bounced (blast “" + named.name + "”)") };
       const fix = works && l.emailBounced ? { emailBounced: false } : null;
       return String(l.blastReplied || "").indexOf(named.id + "|") === 0 ? fix : Object.assign({ blastReplied: named.id + "|" + when.toISOString(), activity: act(l, "Replied to your email blast “" + named.name + "”: " + text.replace(/^Replied [^:]*: /, "")) }, fix);
     }));
@@ -5284,7 +5290,7 @@ document.addEventListener("click", async (e) => {
   } catch (err) { /* saveDoc already told the viewer */ }
 });
 document.addEventListener("input", (e) => {
-  if (e.target.dataset && e.target.dataset.bank) { const el = e.target, k = el.dataset.bank; clearTimeout(bankT[k]); bankT[k] = setTimeout(() => { const now = document.getElementById(el.id); if (now) saveBankPct(now, true); }, 800); } // a redraw meanwhile puts what was typed in a new box
+  if (e.target.dataset && e.target.dataset.bank) { const el = e.target, k = el.dataset.bank; clearTimeout(bankT[k]); bankT[k] = setTimeout(() => { delete bankT[k]; const now = document.getElementById(el.id); if (now) saveBankPct(now, true); }, 800); } // a redraw meanwhile puts what was typed in a new box
   if (["mj-addr", "mj-price", "mj-svc", "sc-amt", "sc-svc"].includes(e.target.id)) { delete e.target.dataset.auto; if (S.money.auto) delete S.money.auto[e.target.id]; } // typed by hand: picking another customer or estimate won't replace it
   if (S.book && e.target.id === "bk-hrs") { const h = +e.target.value; if (h > 0 && h <= 12) { S.book.dur = Math.round(h * 60); refreshBook(); } return; }
   if (S.book && e.target.id === "bk-time") { S.book.auto = ""; refreshBook(); return; }
@@ -5329,15 +5335,19 @@ document.addEventListener("change", async (e) => {
   }
   if (e.target.id === "mj-lead") syncJobForm(true);
   if (e.target.id === "mj-quote") { S.money.jobQuote = e.target.value; fillFromEstimate(true); }
-  if (e.target.id === "sc-quote") { const q = S.quotes.find(x => x.id === e.target.value);
-    [["sc-amt", q && quoteTotals(q).total], ["sc-svc", q && estSvc(q)]].forEach(([id, x]) => { const el = $("#" + id); if (el && x && (!el.value || el.dataset.auto === "1")) { el.value = x; el.dataset.auto = "1"; } }); }
-  if (e.target.dataset && e.target.dataset.bank) { clearTimeout(bankT[e.target.dataset.bank]); saveBankPct(e.target); }
+  // (no estimate picked: the customer's own price and services go back in, unless they were typed)
+  if (e.target.id === "sc-quote") { const q = S.quotes.find(x => x.id === e.target.value), l = leadById(openLeadId) || {};
+    [["sc-amt", q ? quoteTotals(q).total : l.value || ""], ["sc-svc", q ? estSvc(q) : (l.services || []).join(", ")]].forEach(([id, x]) => { const el = $("#" + id); if (el && (q ? x && (!el.value || el.dataset.auto === "1") : el.dataset.auto === "1")) { el.value = x; el.dataset.auto = "1"; } }); }
+  if (e.target.dataset && e.target.dataset.bank) { clearTimeout(bankT[e.target.dataset.bank]); delete bankT[e.target.dataset.bank]; saveBankPct(e.target); }
   if (e.target.id === "bk-date" && e.target.value) bookPickDay(e.target.value);
   if (e.target.matches && e.target.matches('[data-dk="channel"]')) { S.setDraft = readSettingsForm(); S.setDirty = true; render(); } // shows or hides the email subject
 });
 // the % to bank typed on a row of Jobs to finish or collect: on the job, or on the estimate until it has a job.
 // Saved a moment after typing stops (typing), and right away when the box is left.
 const bankT = {}, bankTyped = {};
+// leaving the box saves what's still waiting, even when it ends on what it showed before (no change event then). This
+// runs before the redraw that was held while typing.
+document.addEventListener("focusout", (e) => { const k = e.target.dataset && e.target.dataset.bank; if (k && bankT[k]) { clearTimeout(bankT[k]); delete bankT[k]; saveBankPct(e.target); } });
 async function saveBankPct(el, typing) {
   const id = el.dataset.bank, raw = String(el.value).trim();
   const isEst = id.startsWith("q:"), cur = isEst ? S.quotes.find(q => q.id === id.slice(2)) : S.jobs.find(j => j.id === id); if (!cur) return;
@@ -5348,12 +5358,13 @@ async function saveBankPct(el, typing) {
   const said = () => toast(v == null ? "% to bank cleared" : `${Math.round(v * 1000) / 10}% to bank saved`);
   // the estimate keeps the same %, so it's still right if the job is canceled and the estimate shows here again
   const same = (x) => (x == null ? null : +x) === v, jobSame = same(cur.bankPct), estSame = isEst || !est || same(est.bankPct);
-  if (jobSame && estSame) { if (!typing && bankTyped[id]) { delete bankTyped[id]; said(); } return; }
+  if (jobSame && estSame) { const w = bankTyped[id]; if (!typing && w) { delete bankTyped[id]; w.then(ok => { if (ok) said(); }); } return; }
   const at = new Date().toISOString();
   // both at once, so neither shows the old % meanwhile
-  try { await Promise.all([jobSame ? null : saveDoc(isEst ? "quotes" : "jobs", cur.id, { bankPct: v, updatedAt: at }, true), estSame ? null : saveDoc("quotes", est.id, { bankPct: v, updatedAt: at }, true)]);
-    // saved while typing: said once the box is left
-    if (typing) bankTyped[id] = true; else { delete bankTyped[id]; said(); } schedule(); } catch (e) {}
+  const w = Promise.all([jobSame ? null : saveDoc(isEst ? "quotes" : "jobs", cur.id, { bankPct: v, updatedAt: at }, true), estSame ? null : saveDoc("quotes", est.id, { bankPct: v, updatedAt: at }, true)]);
+  // saved while typing: said once the box is left (even if that's before the server answers)
+  if (typing) bankTyped[id] = w.then(() => true, () => false); else delete bankTyped[id];
+  try { await w; if (!typing) said(); schedule(); } catch (e) {}
 }
 // one waiting save per lead, so setting another lead's date right after doesn't drop this one
 const fuTimers = {};
