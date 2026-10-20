@@ -1382,12 +1382,13 @@ function kpiData() {
   const pdate = j => (j.paidDate || j.start || "");
   const monthRev = sum(paid.filter(j => pdate(j).startsWith(m)), j => j.amount);
   const ytdRev = sum(paid.filter(j => pdate(j).startsWith(y)), j => j.amount);
-  const owed = sum(S.jobs.filter(j => j.kind === "job" && j.status === "completed"), j => j.amount);
+  // the same estimates the Quotes tab counts as Accepted
+  const acc = S.quotes.filter(q => !isInvoice(q) && q.status === "accepted"), accV = sum(acc, q => q.total);
   const openQ = S.quotes.filter(q => q.status === "sent" || q.status === "draft");
   const openQv = sum(openQ, q => q.total);
   const newLeads = leadsOnly().filter(l => l.stage === "new" && !l.dnc).length;
-  const cts = [monthRev, ytdRev, owed, openQv].some(v => Math.round(v * 100) % 100 !== 0); // cents only when something has cents, as on Money
-  return { monthRev, ytdRev, owed, openQ, openQv, newLeads, cts };
+  const cts = [monthRev, ytdRev, openQv].some(v => Math.round(v * 100) % 100 !== 0); // cents only when something has cents, as on Money
+  return { monthRev, ytdRev, acc, accV, openQ, openQv, newLeads, cts };
 }
 VIEWS.today = () => {
   const k = kpiData();
@@ -1399,7 +1400,7 @@ VIEWS.today = () => {
   return `
   ${pageHead(`${greeting()}, Elias`, new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }), `<button class="btn hide-mob" data-act="new-lead">+ New lead</button><button class="btn primary" data-act="new-quote">+ New quote</button>`)}
   ${noDbBanner()}
-  ${kpiStrip([["Paid this month", money(k.monthRev, k.cts), `${money(k.ytdRev, k.cts)} this year`], ["Waiting on payment", money(k.owed, k.cts), "Jobs done, not paid yet"], ["Open quotes", money(k.openQv, k.cts), `${plural(k.openQ.length, "quote")} out`], ["New leads", k.newLeads, "Waiting on first contact"]])}
+  ${kpiStrip([["Paid this month", money(k.monthRev, k.cts), `${money(k.ytdRev, k.cts)} this year`], ["Jobs accepted", money(k.accV), `${plural(k.acc.length, "job")} waiting for completion`], ["Open quotes", money(k.openQv, k.cts), `${plural(k.openQ.length, "quote")} out`], ["New leads", k.newLeads, "Waiting on first contact"]])}
   <div class="today-grid">
     <section class="panel flush"><div class="panel-h"><h2>To do today</h2><span class="count">${todo ? plural(todo, "thing") : ""}</span></div>
       ${todo ? `<div class="list">
