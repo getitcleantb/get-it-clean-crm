@@ -4481,14 +4481,16 @@ function blastSender(PROJECT, VERSION, coreFn, BLOCKED_SHA) {
   const OUT_TAIL = "(?:[\\s,.!]+(?:please|thanks?|thank you(?: (?:so|very) much)?|thx|ty|asap|now|right now|immediately|right away|again|anymore|any more|ever again|for good|permanently|going forward|moving forward|from now on|at this time))*[\\s.!?,]*$";
   const OUT_WHO = "(?:me|us|(?:all|both) of us|everyone(?: here| at this (?:e-?mail|address))?|(?:my|our|this|that) (?:e-?mail(?: address)?|address|name|info(?:rmation)?|contact(?: info(?:rmation)?)?)|(?:our|this) (?:association|hoa|board|community|office|company))";
   const OUT_TARGET = "(?:(?:your|the|this|these|all|any|all of your|future|further|upcoming|ur|you)\\s+){0,3}(?:(?:mailing|e-?mail|contact|distribution|marketing|promotional|vendor|solicitation|hoa|sales|newsletter|blast|client|customer)\\s+){0,2}(?:lists?|e-?mails?|e-?mailings?|mailings?|contacts|database|newsletters?|blasts?|distribution|communications?|correspondence|solicitations?|system|records|files)";
+  // a list of yours, not "your system", "your records" or "your files" (what a legal footer says to delete it from)
+  const OUT_LIST = OUT_TARGET.replace("|system|records|files)", ")");
   const OUT_FROM = "(?:\\s+(?:from|off(?: of)?|of)\\s+" + OUT_TARGET + ")?";
   const OUT_GONE = "(?:(?:removed|unsubscribed)" + OUT_FROM + "|taken (?:off|out)(?: of)?(?:\\s+" + OUT_TARGET + ")?)";
   const OUT_MAIL = "(?:e-?mails?|e-?mailings?|messages|mailings?|communications?|correspondence|solicitations?)";
   const OUT_FORMS = new RegExp("^(?:" + [
     "remove|unsubscribe|unsub|stop|opt[\\s-]?out|optout|opting out",
     // "Please remove me as I am no longer on the board": a reason after it, said as one
-    // ("delete this email" alone is a legal footer's "delete this email from your system", not asking out)
-    "(?:remove|unsubscribe|drop|(?:delete|erase)(?! (?:this|that) e-?mail(?! address| (?:from|off(?: of)?) (?:(?:your|the|ur|all) )*(?:\\w+ )?(?:lists?|database|contacts)\\b))) " + OUT_WHO + "(?: out| off)?" + OUT_FROM + "(?: (?:as|because|since) (?:i|we|i'm|we're|i've|we've|she|he|they)\\b.*)?",
+    // ("delete this email" alone, or "remove/delete this email from your system", is a legal footer, not asking out)
+    "(?:remove(?! (?:this|that) e-?mail (?:from|off(?: of)?) (?:(?:your|the|ur|all) )*(?:\\w+ )?(?:systems?|records|files|computers?)\\b)|unsubscribe|drop|(?:delete|erase)(?! (?:this|that) e-?mail(?! address|\\s+(?:from|off(?: of)?)\\s+" + OUT_LIST + "\\b(?!\\s+(?:system|records|files)\\b)))) " + OUT_WHO + "(?: out| off)?" + OUT_FROM + "(?: (?:as|because|since) (?:i|we|i'm|we're|i've|we've|she|he|they)\\b.*)?",
     "(?:take|get) " + OUT_WHO + " off(?: of)?(?:\\s+" + OUT_TARGET + ")?", "opt " + OUT_WHO + " out" + OUT_FROM,
     "(?:remove|unsubscribe|opt out)(?:\\s+(?:from|off(?: of)?|of)\\s+" + OUT_TARGET + ")",
     "(?:i|we)(?:'d| would)? (?:like|want|wish|need|ask|am asking|are asking|request)(?: you)? to (?:be|get) " + OUT_GONE,
@@ -4544,9 +4546,10 @@ function blastSender(PROJECT, VERSION, coreFn, BLOCKED_SHA) {
     const sents = [], flat = [];
     const add = (t, into) => String(t || "").split(/(?<=[.!?;])\s+|\n/).forEach(s => { s = s.replace(/["*_]+/g, "").replace(/^'+|'+(?=[\s.!?,]*$)/g, "").trim(); if (s) into.push(s); });
     add(fresh, sents);
-    // (an address alone on its line after "is", "email", "contact" or a colon points to someone: it stays)
+    // (an address alone on its line after "is", "email", "contact" or a colon points to someone: it stays; an
+    // "Email: jim@..." signature line, at the start of a line or after a "|", doesn't)
     const POINT = /(?:\b(?:is|to|at|contact|e-?mail|reach|try|cc|forward)|:)\s*$/;
-    fresh.split(/\n\s*\n/).forEach(p => { if (/\n/.test(p)) add(p.replace(/\s*\n\s*/g, " "), sents); const ls = p.split("\n"); add(ls.filter((x, i) => !SIGLINE.test(x.trim()) || (/@/.test(x) && i > 0 && POINT.test(ls[i - 1].trim()))).join(" "), flat); });
+    fresh.split(/\n\s*\n/).forEach(p => { if (/\n/.test(p)) add(p.replace(/\s*\n\s*/g, " "), sents); const ls = p.split("\n"); add(ls.filter((x, i) => !SIGLINE.test(x.trim()) || (/@/.test(x) && i > 0 && POINT.test(ls[i - 1].trim()))).map(x => x.replace(/(?:^|\|)\s*(?:e-?mail|contact)\s*:\s*<?[\w.+'-]+@[\w.-]+>?/g, " ")).join(" "), flat); });
     const hits = [], used = [];
     sents.forEach(s => {
       if (s.length > 300 || NOTICE.test(s)) return; // a long sentence is never just the request
@@ -4572,11 +4575,11 @@ function blastSender(PROJECT, VERSION, coreFn, BLOCKED_SHA) {
     // ("No more mailings. Come Tuesday.", "Remove me. Jane at jane@oak.test handles vendors"), not a reason or a signature
     // (read from whole paragraphs, so a request Gmail wrapped onto two lines comes out whole, and without signature lines)
     const rest = used.slice().sort((x, y) => y.length - x.length).reduce((t, u) => t.split(u).join(" "), flat.join("\n"))
-      .replace(/\b(?:don't|do not|doesn't|does not|didn't|did not|won't|will not|no longer|never)\s+(?:really\s+)?(?:want|need)\b(?:(?!\s+(?:but|though|however|although|and (?:we|i|our))\b|\s+-\s)[^.!?\n,;])*/g, " ");
+      .replace(/\b(?:don't|do not|doesn't|does not|didn't|did not|won't|will not|no longer|never)\s+(?:really\s+)?(?:want|need)\b(?:(?!\s+(?:but|though|however|although|and (?:we|i|our))\b|\s+-\s|,\s*(?:i|we|i'm|we're|i'd|we'd|i've|we've|our|my)\b)[^.!?\n;])*/g, " ");
     // a day or a month counts only with a visit word near it ("come Tuesday", "March works"), not in a reason ("we moved in March")
     const WHEN = "(?:january|february|march|april|june|july|august|september|october|november|december|\\d{1,2}(?:st|nd|rd|th)|next (?:week|month|year|spring|summer|fall)|(?:the )?(?:spring|summer|fall|winter)|tomorrow|(?:mon|tues|wednes|thurs|fri|satur|sun)day)";
-    const visit = new RegExp("\\b(?:come|coming|do it|do the|done|wash(?:ed|es|ing)?|clean(?:ed|s|ing)?|pressure[- ]wash\\w*|schedule|book|start|stop by|swing by|be (?:there|here)|works|available|free|open)\\b[^.!?\\n]{0,30}\\b" + WHEN + "\\b|\\b" + WHEN + "\\b[^.!?\\n]{0,20}\\b(?:works?|would work|is (?:good|fine|open|best)|if you can)\\b").test(rest);
-    const more = /\?|\b(?:at|to|e-?mail|contact|reach|cc|try|add|use|send|forward|colleague|manager|is)\s+<?[a-z0-9._%+'-]+@[a-z0-9]|\b(?:at|to|reach|cc|try|add|use|send|forward|colleague|manager|is)\s*:\s*<?[a-z0-9._%+'-]+@[a-z0-9]|(?:^|\n|[.!] )[a-z0-9._%+'-]+@[a-z0-9.-]+\s+[a-z]{2,}|\b(quotes?|estimates?|prices?|pricing|cost|how much|schedule|book|come (out|by|on|over|do|look|see|wash|clean|tues|mon|wed|thur|fri|sat|sun)|send (someone|somebody|a crew|your crew|a guy|over)|look at|call (me|us|\d+)|give (me|us) a call|text (me|us)|reach me|my (cell|number|phone)|available|availability|interested in|can you|could you|would you|do you|when can|reach out to|contact (her|him|them|our|the (office|manager|board))|instead|(want|need|'d like|would like|'d love|would love)(?: to have)? (the|a|an|our|my|some|someone|you to))\b/.test(rest) || visit;
+    const visit = new RegExp("\\b(?:come|coming|do it|do the|done|(?:pressure[- ])?(?:wash(?:es|ing)?|clean(?:s|ing)?)(?!\\s+(?:company|companies|crew|service|services|vendor|contractor|contract|business|team|guy|firm))|(?<!\\b(?:was|were|been|got)\\s(?:(?:just|already|recently|all)\\s)?(?:pressure[- ])?|\\b(?:had|got)\\b[^.!?\\n,;]{0,40})(?:pressure[- ])?(?:washed|cleaned)|schedule|book|start|stop by|swing by|be (?:there|here)|works|available|free|open)\\b[^.!?\\n]{0,30}\\b(?<!\\b(?:until|till|til|through|thru|since|every|last)\\s+(?:the\\s+)?)" + WHEN + "\\b|\\b" + WHEN + "\\b[^.!?\\n]{0,20}\\b(?:works?|would work|is (?:good|fine|open|best)|if you can)\\b").test(rest);
+    const more = /\?|\b(?:at|to|e-?mail|contact|reach|cc|try|add|use|send|forward|colleague|manager|is)(?:\s*:\s*|\s+)<?[a-z0-9._%+'-]+@[a-z0-9]|(?:^|\n|[.!] )[a-z0-9._%+'-]+@[a-z0-9.-]+\s+[a-z]{2,}|\b(quotes?|estimates?|prices?|pricing|cost|how much|schedule|book|come (out|by|on|over|do|look|see|wash|clean|tues|mon|wed|thur|fri|sat|sun)|send (someone|somebody|a crew|your crew|a guy|over)|look at|call (me|us|\d+)|give (me|us) a call|text (me|us)|reach me|my (cell|number|phone)|available|availability|interested in|can you|could you|would you|do you|when can|reach out to|contact (her|him|them|our|the (office|manager|board))|instead|(want|need|'d like|would like|'d love|would love)(?: to have)? (the|a|an|our|my|some|someone|you to))\b/.test(rest) || visit;
     // everyone at the address only when the request itself says so ("remove us"), not its reason ("remove me as we moved")
     return { out: hits.map(h => h.replace(/\s(?:as|because|since)\s.*$/, "")).some(h => /\b(us|our|we|everyone|all of us|both of us)\b/.test(h) || (/\bthis (e-?mail )?address\b/.test(h) && !/\b(me|my|i)\b/.test(h))) ? 2 : 1, more: more };
   }
