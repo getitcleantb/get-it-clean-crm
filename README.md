@@ -32,9 +32,21 @@ One-time setup in the Google Cloud console for the Firebase project (`get-it-cle
 
 Each person connects their own Google account once per device from the Calendar tab (or Settings > Connections); one sign-in covers both Calendar and Gmail. Google's access lasts about an hour; the CRM quietly renews it when it's opened, and asks for one tap if Google wants a fresh sign-in. Google shows an "unverified app" notice because this is a private app; that's expected. Disconnect under Settings > Connections.
 
+Booked estimates and jobs go straight onto the business calendar (getitclean.tb@gmail.com). A booking made on a crew phone, or while Google needs a reconnect, waits and is added by the owner's CRM the next time it's open and connected; the Calendar tab says how many are waiting.
+
+## Texting (Quo)
+
+Email & Texts has a text inbox and text blasts. Texts go out from the Quo business number through a small Google Apps Script in the business Google account, so the Quo API key never reaches a crew login and texting keeps working when the CRM is closed. The owner sets it up once, on a computer, under Settings > Texting: save the Quo API key, publish the security rules, paste the script and its settings at script.google.com, and run `textSetup`. Quo must also finish its US carrier registration (10DLC) before texts can go out.
+
+Numbers that text STOP (or ask in other words) are never texted again unless they text START. Every text blast ends with "Reply STOP to opt out.", sends only 8 AM to 8 PM Eastern, and sends one text per number. Start asks the owner to confirm that everyone on it agreed to get texts. Vacation mode on the Email & Texts tab pauses email blasts, text blasts and drips.
+
+## Money
+
+Money has a Crew bonus button that opens a page with every paid job, who worked it, what it put in the business bank and who's in the lead, for paying a year-end bonus as a percentage. Add expense can repeat every month for bills like insurance or a lead subscription; those bills make up Monthly overhead on Money and are counted once a month on their bill day until they're stopped.
+
 ## Backups
 
-Settings > Account > Backup downloads every lead, quote, job, expense and setting as one file. The same screen loads a backup file back in.
+Settings > Account > Backup downloads every lead, quote, job, expense and setting as one file. The same screen loads a backup file back in. Loading an older backup never undoes a do not contact, an opt-out, a bounce, a wrong number or a STOP saved since.
 
 ## Updates
 
