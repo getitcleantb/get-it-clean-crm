@@ -999,8 +999,10 @@ html.gated, html.gated body { overflow: hidden; }
     refresh: (force) => { if (!tokenOk()) { if (status === "ready") { status = "expired"; msg = "Google Calendar needs a quick reconnect."; fire(); } return Promise.resolve(); } if (!force && Date.now() - cache.at < 60000) return Promise.resolve(); return load(); },
     // id: the CRM's own id for the event, so one added on an earlier try (its answer lost) isn't added again. An id
     // whose event was deleted from the calendar can't be used again: that's error code "taken".
-    createEvent: async ({ id, summary, location, description, start, end }) => {
+    // transparency "transparent": shows as Free (estimate follow-ups, so they don't block a booking)
+    createEvent: async ({ id, summary, location, description, start, end, transparency }) => {
       const body = { summary, location: location || "", description: description || "", start: { dateTime: start, timeZone: tz() }, end: { dateTime: end, timeZone: tz() } };
+      if (transparency) body.transparency = transparency;
       if (id) body.id = id;
       let r;
       try { r = await call("/calendars/primary/events", { method: "POST", body: JSON.stringify(body) }); }
@@ -1014,9 +1016,11 @@ html.gated, html.gated body { overflow: hidden; }
       return { id: r.id || "", htmlLink: r.htmlLink || "" };
     },
     deleteEvent: async (id, calendarId) => {
+      let was = true;
       try { await call(`/calendars/${encodeURIComponent(calendarId || "primary")}/events/${encodeURIComponent(id)}`, { method: "DELETE" }); }
-      catch (e) { if (e.code !== "gone") throw e; }
+      catch (e) { if (e.code !== "gone") throw e; was = false; }
       load().catch(() => {});
+      return was; // false: it wasn't there (deleted already, or never made)
     }
   });
 
@@ -1356,6 +1360,8 @@ html.gated, html.gated body { overflow: hidden; }
     pendingWrites: () => pendingWrites,
     // a document as the database has it now, not the copy on this device (fails with no connection)
     serverDoc: async (coll, id) => { const d = await F.getDocFromServer(F.doc(fs, coll, id)); return d.exists() ? toPlain(d.data()) : null; },
+    // fields of a document that must still be there ("a.b" sets b inside map a): fails, and changes nothing, once it's deleted
+    patchDoc: (coll, id, fields) => F.updateDoc(F.doc(fs, coll, id), toStore(fields)),
     // the newest n texts, kept up to date (an error here never shows the "access turned off" screen: it's what crew
     // see until the owner publishes the rules that allow texts)
     textsListen: (n, cb, err) => F.onSnapshot(F.query(F.collection(fs, "texts"), F.orderBy("at", "desc"), F.limit(n)), snap => cb(snap.docs.map(d => Object.assign({ id: d.id }, toPlain(d.data())))), e => { if (err) err(mapErr(e)); }),
@@ -1742,7 +1748,7 @@ const NAV = [["today", "Today"], ["leads", "Leads"], ["quotes", "Quotes"], ["cal
 const icon = (k) => `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[k]}</svg>`;
 
 function renderNav() {
-  const due = fuDue().length; // the follow-ups on Today's To do today
+  const due = fuDue().length + efuDue().length; // the follow-ups on Today's To do today, the estimates' ones too
   const mails = (typeof ibCount === "function" ? ibCount() : 0) + (typeof txUnread === "function" ? txUnread() : 0); S.navMails = mails; // emails waiting on you (Email > Inbox) and unread texts
   const cur = S.view === "sold" ? "leads" : S.view === "bonus" ? "money" : S.view; // Sold clients opens from Leads, Crew bonus from Money
   $("#sideNav").innerHTML = NAV.map(([k, t]) => `<button class="nav-btn" data-nav="${k}" ${cur === k ? 'aria-current="page"' : ""}>${icon(k)}${t}${k === "today" && due ? `<span class="count num">${due}</span>` : ""}${k === "email" && mails ? `<span class="count num">${mails}</span>` : ""}</button>`).join("");
@@ -1843,10 +1849,11 @@ VIEWS.today = () => {
   // they're logged), and not a Free Google event (holidays, birthdays, all-day notes; Book the job skips them too). An
   // all-day block over several days shows once. Today's follow-ups come first, then the late ones, oldest first.
   const open = (e) => !e.free && (e.src !== "crm" || !["completed", "paid"].includes((S.jobs.find(j => j.id === e.id) || {}).status));
-  const t = today(), due = fuDue().sort((a, b) => (b.nextFollowUp === t) - (a.nextFollowUp === t)), booked = rangeItems(t, t).filter(open);
-  const d1 = addDays(1), days = [1, 2, 3, 4, 5, 6, 7].map(n => addDays(n)).map(d => [d, rangeItems(d, d).filter(e => open(e) && ((e.start || "").slice(0, 10) === d || (e.allDay && d === d1)))]).filter(x => x[1].length);
+  // estimate follow-ups (estfu.js): the one that's up on each estimate sent, and the ones ahead by day
+  const t = today(), due = fuDue().sort((a, b) => (b.nextFollowUp === t) - (a.nextFollowUp === t)), booked = rangeItems(t, t).filter(open), efu = efuDue();
+  const d1 = addDays(1), days = [1, 2, 3, 4, 5, 6, 7].map(n => addDays(n)).map(d => [d, rangeItems(d, d).filter(e => (open(e) || e.src === "fu") && ((e.start || "").slice(0, 10) === d || (e.allDay && d === d1)))]).filter(x => x[1].length);
   const fresh = leadsOnly().filter(l => l.stage === "new" && !l.dnc).sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")).slice(0, 6);
-  const todo = due.length + booked.length, wk = sum(days, x => x[1].length);
+  const todo = due.length + booked.length + efu.length, wk = sum(days, x => x[1].length);
   const noCal = S.cal.status === "ready" ? "" : " Open Calendar to add your Google Calendar too.";
   return `
   ${pageHead(`${greeting()}, Elias`, new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }), `<button class="btn hide-mob" data-act="new-lead">+ New lead</button><button class="btn primary" data-act="new-quote">+ New quote</button>`)}
@@ -1859,10 +1866,11 @@ VIEWS.today = () => {
       ${todo ? `<div class="list">
         ${booked.length ? `<div class="sub-h">Booked today · ${booked.length}</div>${booked.map(eventRow).join("")}` : ""}
         ${due.length ? `<div class="sub-h">Follow-ups · ${due.length}</div>${due.map(leadRow).join("")}` : ""}
-      </div>` : `<div class="empty">Nothing booked today and no follow-ups due. Today's estimates and jobs, and the follow-ups you schedule, show up here.</div>`}
+        ${efu.length ? `<div class="sub-h">Estimate follow-ups · ${efu.length}</div>${efu.map(efuRow).join("")}` : ""}
+      </div>` : `<div class="empty">Nothing booked today and no follow-ups due. Today's estimates and jobs, the follow-ups you schedule and the ones on estimates you've sent show up here.</div>`}
     </section>
     <section class="panel flush" id="todo-week"><div class="panel-h"><h2>To do this week</h2><span class="count">${wk ? plural(wk, "thing") : ""}</span><button class="btn ghost sm" data-nav="calendar">Calendar</button></div>
-      ${days.length ? `<div class="list">${days.map(([d, es]) => `<div class="sub-h">${esc(fmtD(d, { weekday: "long", month: "short", day: "numeric" }))} · ${es.length}</div>${es.map(eventRow).join("")}`).join("")}</div>` : `<div class="pad note">No estimates or jobs booked for the next 7 days.${noCal}</div>`}
+      ${days.length ? `<div class="list">${days.map(([d, es]) => `<div class="sub-h">${esc(fmtD(d, { weekday: "long", month: "short", day: "numeric" }))} · ${es.length}</div>${es.map(eventRow).join("")}`).join("")}</div>` : `<div class="pad note">No estimates, jobs or follow-ups for the next 7 days.${noCal}</div>`}
     </section>
     </div>
     <div class="col-stack">
@@ -1888,7 +1896,11 @@ function leadRow(l) {
   const ds = dueState(l);
   const sub = [l.company && l.name ? l.name : "", l.area && l.area !== l.city ? l.area : "", l.city, (l.services || []).slice(0, 2).join(", ")].filter(Boolean).join(" · ");
   const tag = l.crashOut ? '<span class="pill dnc">Crash out</span>' : l.dnc ? '<span class="pill dnc">Do not contact</span>' : isOutreach(l) ? '<span class="pill out">Outreach</span>' : stagePill(l.stage);
-  const fu = l.nextFollowUp && !l.dnc ? (ds ? `<span class="pill ${ds}">${ds === "over" ? "Overdue · " + esc(fmtD(l.nextFollowUp)) : "Call today"}</span>` : `<span class="note">Follow up ${esc(fmtD(l.nextFollowUp))}</span>`) : (l.value ? `<span class="note num">${money(l.value)}</span>` : "");
+  // an estimate out to them: its follow-up that's up (estfu.js) shows like a follow-up of theirs, when they have none due
+  const ef = !ds && !l.dnc ? efuLeadDue(l) : null, en = !l.nextFollowUp && !ef && !l.dnc ? efuLeadNext(l) : null;
+  const fu = ef ? `<span class="pill ${ef.over ? "over" : "due"}">${ef.over ? "Estimate follow-up overdue" : "Estimate follow-up today"}</span>`
+    : l.nextFollowUp && !l.dnc ? (ds ? `<span class="pill ${ds}">${ds === "over" ? "Overdue · " + esc(fmtD(l.nextFollowUp)) : "Call today"}</span>` : `<span class="note">Follow up ${esc(fmtD(l.nextFollowUp))}</span>`)
+    : en ? `<span class="note">Estimate follow-up ${esc(fmtD(en.at))}</span>` : (l.value ? `<span class="note num">${money(l.value)}</span>` : "");
   return `<button class="item" data-open-lead="${esc(l.id)}">
     <div class="main-col"><span class="t">${esc(leadName(l))}</span><span class="s">${esc(sub || l.email || l.phone || "")}</span></div>
     <div class="r">${tag}${fu}</div></button>`;
@@ -1905,7 +1917,7 @@ function dripRow(x, inLead) {
 // ---------- LEADS ----------
 function leadShows() {
   const L = leadsOnly();
-  const base = [["open", "Open leads", l => OPEN_STAGES.includes(l.stage) && !l.dnc], ["due", "Follow-up due", l => !!dueState(l)], ["all", "All leads", () => true]];
+  const base = [["open", "Open leads", l => OPEN_STAGES.includes(l.stage) && !l.dnc], ["due", "Follow-up due", l => !!dueState(l) || (!l.dnc && !!efuLeadDue(l))], ["all", "All leads", () => true]];
   const stages = STAGES.map(([k, t]) => [k, k === "paid" ? "Paid (past customers)" : k === "completed" ? "Done, waiting on payment" : t, l => l.stage === k]);
   const srcs = SOURCES.filter(s => L.some(l => l.source === s)).map(s => ["src:" + s, s, l => l.source === s]);
   const types = TYPES.filter(t => L.some(l => l.type === t)).map(t => ["type:" + t, t, l => l.type === t]);
@@ -2179,10 +2191,11 @@ const nowLocal = () => { const d = new Date(); return `${ymd(d)}T${pad(d.getHour
 function nextAppt(l, kind) { const now = nowLocal(); return S.jobs.filter(j => j.leadId === l.id && j.status === "scheduled" && (!kind || j.kind === kind) && (j.end || j.start || "") >= now).sort((a, b) => (a.start || "").localeCompare(b.start || ""))[0]; }
 const LEAD_TABS = {
   overview: (l) => {
-    const nx = nextAppt(l); const showFu = l.nextFollowUp && !l.dnc; const ds = dueState(l);
+    const nx = nextAppt(l); const showFu = l.nextFollowUp && !l.dnc; const ds = dueState(l); const ef = efuLeadNext(l);
     const pills = [isOutreach(l) ? '<span class="pill out">Email outreach</span>' : stagePill(l.stage || "new"), l.dnc ? '<span class="pill dnc">Do not contact</span>' : "",
       showFu ? `<span class="pill ${ds === "over" ? "over" : ds === "due" ? "due" : ""}">Follow up ${esc(fmtD(l.nextFollowUp, { weekday: "short", month: "short", day: "numeric" }))}</span>` : "",
-      nx ? `<span class="pill s-visit">${nx.kind === "visit" ? "Estimate" : "Job"} ${esc(fmtDT(nx.start))}</span>` : ""].filter(Boolean).join("");
+      nx ? `<span class="pill s-visit">${nx.kind === "visit" ? "Estimate" : "Job"} ${esc(fmtDT(nx.start))}</span>` : "",
+      ef ? `<span class="pill s-selling">Estimate follow-up ${esc(fmtDT(ef.at))}</span>` : ""].filter(Boolean).join("");
     const logged = S.dispoMsg && S.dispoMsg.leadId === l.id ? `<div class="logged" role="status"><span>${esc(S.dispoMsg.text)}</span>${S.lastDispo && S.lastDispo.leadId === l.id && S.lastDispo.stamp === l.updatedAt ? `<button class="btn sm" data-act="undo-dispo">Undo</button>` : ""}</div>` : "";
     return `${leadBanners(l)}
     ${isOutreach(l) ? `<div class="banner info spread"><span>Outreach contact, not a lead yet. They move to Leads when they reply or you schedule an estimate.</span><button class="btn sm" data-act="promote">They replied, move to Leads</button></div>` : ""}
@@ -2706,7 +2719,7 @@ function quoteActsHTML() {
   if (!QD.id) return send;
   const opts = inv ? [["draft", "Draft"], ["sent", "Sent"], ["paid", "Paid"]] : [["draft", "Draft"], ["sent", "Sent"], ["accepted", "Accepted"], ["declined", "Declined"]];
   const cur = QD.status || "draft";
-  const status = `<div class="qsec"><span class="lab">Status</span><div class="seg wide" role="group" aria-label="Status">${opts.map(([k, t]) => `<button data-act="q-status" data-s="${k}" aria-pressed="${cur === k}">${t}</button>`).join("")}</div>${!inv && !["accepted", "declined"].includes(cur) ? `<p class="note">Tap Accepted when they say yes: a calendar opens to book the job.</p>` : ""}${!inv && cur === "accepted" ? (() => { const mine = bookedFrom(QD.id), j = mine || (l && nextAppt(l, "job")); return `<div class="row" style="margin-top:8px">${j ? `<span class="note">${mine ? "Job" : `${esc(leadName(l))} has a job`} booked for ${esc(fmtDT(j.start))}.</span>${!mine && canTieJob(j, QD.id) ? `<button class="btn sm" data-act="q-tie" data-id="${esc(j.id)}">That's the job for this estimate</button>` : ""}<button class="btn sm" data-act="bk-open">Book another visit</button>` : `<button class="btn sm primary" data-act="bk-open">Book the job</button>`}</div>`; })() : ""}</div>`;
+  const status = `<div class="qsec"><span class="lab">Status</span><div class="seg wide" role="group" aria-label="Status">${opts.map(([k, t]) => `<button data-act="q-status" data-s="${k}" aria-pressed="${cur === k}">${t}</button>`).join("")}</div>${!inv && !["accepted", "declined"].includes(cur) ? `<p class="note">Tap Accepted when they say yes: a calendar opens to book the job.</p>` : ""}${!inv ? efuNote(QD) : ""}${!inv && cur === "accepted" ? (() => { const mine = bookedFrom(QD.id), j = mine || (l && nextAppt(l, "job")); return `<div class="row" style="margin-top:8px">${j ? `<span class="note">${mine ? "Job" : `${esc(leadName(l))} has a job`} booked for ${esc(fmtDT(j.start))}.</span>${!mine && canTieJob(j, QD.id) ? `<button class="btn sm" data-act="q-tie" data-id="${esc(j.id)}">That's the job for this estimate</button>` : ""}<button class="btn sm" data-act="bk-open">Book another visit</button>` : `<button class="btn sm primary" data-act="bk-open">Book the job</button>`}</div>`; })() : ""}</div>`;
   const more = `<details class="qmore"><summary>More</summary><div class="actions">${!inv ? `<button class="btn" data-act="q-to-invoice">Make invoice from this</button>` : ""}<button class="btn danger" data-act="q-delete">Delete</button></div></details>`;
   return status + send + more;
 }
@@ -2844,8 +2857,22 @@ async function saveQuoteNow(silent) {
   const { id: _, taxRate: _t, newName: _n, ...doc } = QD; doc.items = QD.items.filter(isLine); doc.updatedAt = new Date().toISOString(); if (isNew) doc.createdAt = doc.updatedAt;
   // the % to bank is set on the Money tab, so the latest one stays even if it changed while this estimate was open
   const was = S.quotes.find(x => x.id === id); if (was && was.bankPct !== undefined) doc.bankPct = was.bankPct;
-  await saveDoc("quotes", id, doc); QD.id = id;
+  // its follow-ups (estfu.js) aren't the editor's: an estimate already saved keeps them as the database has them (the
+  // editor's copy can be behind), and a copy made from one has none
+  EFU_FIELDS.forEach(f => { delete doc[f]; });
+  // so is its status, once it's saved: Sent, Accepted and so on are saved by quoteStatusNow, and an editor opened before
+  // another device marked it Accepted doesn't put it back to Sent
+  if (!isNew) delete doc.status;
+  await saveDoc("quotes", id, doc, !isNew); QD.id = id;
   const l = leadById(QD.leadId) || nc.made; const linked = (QD.leadId || "") !== QD_LEAD; QD_LEAD = QD.leadId || "";
+  // an estimate put on a customer: a job paid from it while it had none (and that job's invoice) goes on them too; an
+  // invoice put on one takes its job and the job's estimate along (nolead.js)
+  const moved = [];
+  if (l && linked) for (const j of S.jobs.filter(x => x.kind === "job" && (isInvoice(QD) ? x.id === QD.jobId && !jobLead(x) : x.quoteId === id && !leadById(x.leadId)))) {
+    const jf = { leadId: l.id, updatedAt: doc.updatedAt }; if (!j.title || /^(Job|Estimate): /.test(j.title)) jf.title = "Job: " + leadName(l); // (a title typed in by hand stays)
+    await saveDoc("jobs", j.id, jf, true).catch(() => {}); moved.push(j);
+    for (const d of [jobEst(j), jobInvoice(j)]) if (d && d.id !== id && !leadById(d.leadId)) await saveDoc("quotes", d.id, Object.assign({ leadId: l.id, updatedAt: doc.updatedAt }, (d.billTo || []).some(x => String(x).trim()) ? {} : { billTo: billToFor(l) }), true).catch(() => {});
+  }
   if (l && (isNew || linked || isOutreach(l))) {
     const upd = { updatedAt: doc.updatedAt };
     if (isNew || linked) {
@@ -2854,8 +2881,14 @@ async function saveQuoteNow(silent) {
       // only an open lead takes the estimate's total as its value; a past customer keeps their stage and value
       if (!isInvoice(QD) && PRE_SALE.includes(l.stage || "new")) { upd.value = t.total; if (acc) upd.stage = "scheduled"; else if (l.stage !== "selling" && QD.status !== "declined") upd.stage = "selling"; }
       else if (acc && l.stage === "lost" && !l.dnc) { upd.value = t.total; upd.stage = "scheduled"; }
+      // a job it carried along that's done or paid says where they are (as "Who was this job for?" does)
+      const ms = moved.some(j => j.status === "paid") ? "paid" : moved.some(j => j.status === "completed") ? "completed" : "";
+      if (ms && !l.dnc && (l.stage !== "paid" || nc.made) && (ms === "paid" || PRE_SALE.includes(l.stage || "new") || ["scheduled", "lost"].includes(l.stage))) {
+        upd.stage = ms; upd.stageSince = jobStageSince(ms, moved); upd.activity[0].text += ms === "paid" ? ", job paid" : ", job done";
+        const fu = endFollowUp(l, upd); if (fu) upd.activity[0].text += " · " + fu; if (!l.value && !upd.value) upd.value = sum(moved, j => j.amount);
+      }
     }
-    if (isOutreach(l)) Object.assign(upd, PROMOTE());
+    if (isOutreach(l)) { const ss = upd.stageSince; Object.assign(upd, PROMOTE()); if (ss) upd.stageSince = ss; }
     await saveDoc("leads", l.id, upd, true);
     if (nc.made) quoteMadeLead = Object.assign({}, nc.made, upd);
   }
@@ -2877,23 +2910,32 @@ async function quoteStatusNow(s) {
   const now = new Date().toISOString(); const inv = isInvoice(QD);
   // an invoice marked Paid keeps the day it was paid (Sold clients matches it to the job by that day)
   const patch = { status: s, updatedAt: now }; if (inv && s === "paid" && !QD.paidDate) patch.paidDate = today();
+  // sent: the follow-ups start (not for someone marked do not contact), saved with the status in one write
+  const l = leadById(QD.leadId), fu = s === "sent" && !inv && !(l && l.dnc) ? efuNewPlan() : null;
+  if (fu) Object.assign(patch, { fu, fuOff: "" });
   await saveDoc("quotes", QD.id, patch, true); Object.assign(QD, patch);
-  const l = leadById(QD.leadId);
   if (l && s !== "draft") {
+    // a follow-up day saved before the CRM noted who set it keeps its owner (fuMine reads the newest line, and this one
+    // used to set the day)
+    const fb = s === "sent" && !inv && l.nextFollowUp && !l.fuBy ? (fuMine(l) ? "you" : "auto") : "";
     const upd = { activity: activity(l, "quote", `${inv ? "Invoice" : "Estimate"} ${QD.number} ${s === "paid" ? "marked paid" : s}`), updatedAt: now };
+    if (fb) upd.fuBy = fb;
     // estimates move open leads only; a customer who already had work done stays Done or Paid
     const open = PRE_SALE.includes(l.stage || "new");
     if (!inv) {
       // sending a new estimate to someone marked Lost opens them again
-      if (s === "sent") { if ((open && l.stage !== "selling") || (l.stage === "lost" && !l.dnc)) upd.stage = "selling"; if (!l.dnc) { upd.nextFollowUp = addDays(3); upd.fuBy = "auto"; } }
+      // its follow-ups (estfu.js) take the place of the one follow-up 3 days later this used to set
+      if (s === "sent") { if ((open && l.stage !== "selling") || (l.stage === "lost" && !l.dnc)) upd.stage = "selling"; }
       if (s === "declined" && open) { upd.stage = "lost"; const fu = endFollowUp(l, upd); if (fu) upd.activity[0].text += " · " + fu; }
       if (s === "accepted" && (open || l.stage === "lost")) upd.stage = "scheduled";
     }
     if (isOutreach(l)) Object.assign(upd, PROMOTE());
     await saveDoc("leads", l.id, upd, true);
   }
+  if (fu) calSweepSoon();
   syncQuoteChrome();
   if (s === "paid" && l) toast("Marked paid. Record the payment on the job too, so Money counts it.", 9000, { label: "Open jobs", fn: () => { closeModal(); openLead(l.id, "work"); } });
+  else if (fu) efuStartedToast(fu, "Marked sent.", S.quotes.find(x => x.id === QD.id) || QD);
   else toast(`Marked ${QSTAT[s].toLowerCase()}`);
   // the calendar opens only if this estimate is still the one on screen
   if (s === "accepted" && !inv && QD === q0 && $("#modal #q-acts")) startBooking();
@@ -2971,7 +3013,7 @@ async function calConnectTap() {
 const calTodo = (j) => !!j && ((j.calPending && !j.eventId && j.status === "scheduled" && String(j.end || j.start || "") >= addDays(-1)) || (j.calRemove && j.eventId && j.status === "canceled"));
 const calTriedLately = (id) => Date.now() - (calTried.get(id) || 0) < 180000;
 const calWaiting = () => S.jobs.filter(j => j.calPending && !j.eventId && j.status === "scheduled" && String(j.end || j.start || "") >= addDays(-1));
-function calSweepSoon() { if (!STANDALONE) return; clearTimeout(calSweepT); calSweepT = setTimeout(() => { addPendingToCalendar().catch(() => {}); }, 1500); }
+function calSweepSoon() { if (!STANDALONE) return; clearTimeout(calSweepT); calSweepT = setTimeout(() => { addPendingToCalendar().catch(() => {}).then(() => efuSweep()).catch(() => {}); }, 1500); }
 async function addPendingToCalendar() {
   const G = window.GIC; if (calSweeping || !S.db || !G || !G.serverDoc || !calBusiness()) return;
   const todo = S.jobs.filter(j => !calTriedLately(j.id) && calTodo(j)); if (!todo.length) return;
@@ -3112,13 +3154,15 @@ function rangeItems(startT, endT) {
     return { src: "crm", id: j.id, title: j.title, start: ge ? ge.start.dateTime : j.start, end: ge ? (ge.end && ge.end.dateTime) || ge.start.dateTime : j.end, where: j.address, kind: j.kind, eventId: j.eventId, leadId: j.leadId, amount: j.amount }; }).filter(e => touches(e, startT, endT));
   // a canceled job's Google event, until it's taken off Google Calendar, isn't shown either
   const ids = new Set(crm.map(c => c.eventId).concat(S.jobs.filter(j => j.status === "canceled").map(j => j.eventId)).filter(Boolean));
-  const g = S.cal.events.filter(e => !ids.has(e.id)).map(e => ({ src: "g", id: e.id, title: e.summary || "(No title)", start: e.start?.dateTime || e.start?.date, end: e.end?.dateTime || e.end?.date, allDay: !e.start?.dateTime, free: e.transparency === "transparent", where: e.location || e.description || "", link: e.htmlLink, cal: e.calName || "" })).filter(e => touches(e, startT, endT));
-  return crm.concat(g).sort((a, b) => (a.start || "").localeCompare(b.start || ""));
+  // estimate follow-ups (estfu.js) show from the CRM, never their Google copies (the ones on estimates that stopped too)
+  const fu = efuItems(startT, endT);
+  const g = S.cal.events.filter(e => !ids.has(e.id) && !/^gicfu/.test(e.id || "")).map(e => ({ src: "g", id: e.id, title: e.summary || "(No title)", start: e.start?.dateTime || e.start?.date, end: e.end?.dateTime || e.end?.date, allDay: !e.start?.dateTime, free: e.transparency === "transparent", where: e.location || e.description || "", link: e.htmlLink, cal: e.calName || "" })).filter(e => touches(e, startT, endT));
+  return crm.concat(fu, g).sort((a, b) => (a.start || "").localeCompare(b.start || ""));
 }
 function upcomingItems(days) { return rangeItems(ymd(new Date()), addDays(days)); }
 function eventRow(e) {
-  const tag = e.src === "crm" ? `<span class="pill ${e.kind === "job" ? "s-scheduled" : "s-visit"}">${e.kind === "job" ? "Job" : "Estimate"}</span>` : `<span class="chip">${esc(e.cal || "Google")}</span>`;
-  const attrs = e.src === "crm" && e.leadId ? `data-open-lead="${esc(e.leadId)}"` : (e.link ? `data-href="${esc(e.link)}"` : "");
+  const tag = e.src === "crm" ? `<span class="pill ${e.kind === "job" ? "s-scheduled" : "s-visit"}">${e.kind === "job" ? "Job" : "Estimate"}</span>` : e.src === "fu" ? `<span class="pill s-selling">${e.done ? "Follow-up done" : "Follow-up"}</span>` : `<span class="chip">${esc(e.cal || "Google")}</span>`;
+  const attrs = (e.src === "crm" || e.src === "fu") && e.leadId && leadById(e.leadId) ? `data-open-lead="${esc(e.leadId)}"` : e.src === "crm" && e.kind === "job" ? jobCustAttr(e.id) : e.src === "fu" ? `data-open-quote="${esc(e.quoteId)}"` : (e.link ? `data-href="${esc(e.link)}"` : "");
   return `<button class="item" ${attrs}><div class="main-col"><span class="t">${esc(e.title)}</span><span class="s">${esc(e.allDay ? fmtD(e.start, { weekday: "short", month: "short", day: "numeric" }) + " · all day" : fmtDT(e.start))}${e.where ? " · " + esc(String(e.where).split("\n")[0]) : ""}</span></div><div class="r">${tag}${e.amount ? `<span class="note num">${money(e.amount)}</span>` : ""}</div></button>`;
 }
 // the note at the top of the Calendar tab, by connection state
@@ -3145,7 +3189,8 @@ function monthGrid(m, sel, dayAttr, compact) {
   const items = rangeItems(ymd(start), ymd(end)); const byDay = {}; items.forEach(e => daysOf(e).forEach(d => { (byDay[d] = byDay[d] || []).push(e); }));
   const t = today(); const cells = [];
   for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-    const k = ymd(d), list = byDay[k] || [], dim = monthKey(k) !== m;
+    // estimate follow-ups go after the bookings in a day (so a job isn't hidden behind them), and aren't on Book the job's
+    const k = ymd(d), list = (byDay[k] || []).filter(e => dayAttr === "data-cal-day" || e.src !== "fu").sort((a, b) => (a.src === "fu") - (b.src === "fu")), dim = monthKey(k) !== m;
     const kind = (e) => e.src === "crm" ? e.kind : "g";
     cells.push(`<button class="mday${k === t ? " today" : ""}${k === sel ? " sel" : ""}${dim ? " dim" : ""}" ${dayAttr}="${k}" aria-label="${esc(fmtD(k, { weekday: "long", month: "long", day: "numeric" }))}${list.length ? ", " + plural(list.length, "event") : ""}"${k === sel ? ' aria-current="date"' : ""}>
       <span class="dn">${d.getDate()}</span>
@@ -3344,7 +3389,7 @@ function bookGoogleNote() {
   return "Your Google Calendar isn't showing on this device, so these times only count the jobs and estimates in the CRM. Connect it on the Calendar tab.";
 }
 function bookCalHTML(cur) {
-  const b = S.book, items = rangeItems(b.day, b.day), times = openTimes(b.day, b.dur);
+  const b = S.book, items = rangeItems(b.day, b.day).filter(e => e.src !== "fu"), times = openTimes(b.day, b.dur);
   if (cur == null) cur = ($("#bk-time") || {}).value || "";
   const hrs = b.dur / 60, len = hrs === 1 ? "an hour" : hrs + " hours", sunday = new Date(b.day + "T12:00:00").getDay() === 0, past = b.day < today();
   const c = cur && !past ? clashFor(b.day, cur, b.dur) : null, gn = bookGoogleNote(), at = cur ? fmtT(b.day + "T" + cur.slice(0, 5) + ":00") : "";
@@ -3391,6 +3436,323 @@ async function bookSave(btn) {
   if (!r) { btn.disabled = false; return; }
   closeModal(); render();
 }
+// ---------- ESTIMATE FOLLOW-UPS (elias, 2026-10-25) ----------
+// "once I send an estimate out, and they don't approve it, within 2 hours, it automatically sets a" follow-up, on To do
+// today, To do this week and his Google Calendar, "as many as you can". Marking an estimate Sent (or emailing it from
+// the estimate) lays them out on the estimate (fu): 2 hours after, then the next day, 3 days, a week, 2 and 3 weeks, a
+// month, 45 days, 2 months and 3 months after, at 10 AM (a Sunday moves to Monday). They stop by themselves when the
+// estimate is accepted, declined or back to Draft, a job or estimate is booked for them after it went out, they accept
+// another estimate, they're Lost, in Follow up (their own day), Budget next year or do not contact, a newer estimate goes
+// out to them, or Stop follow-ups on the estimate; the ones still ahead come off Google Calendar then. One is done when Done is tapped on
+// Today, or a call, email or text to them is logged that day or later. Only a device connected to the business Google
+// account puts them on the calendar and takes them off (efuSweep), the way it does bookings.
+//   fu: { id, sent (when it went out), at: ["YYYY-MM-DDTHH:MM:00", ...] }, written once when it's sent
+//   fuEv: { "<id>_<n>": { id: Google event id ("" once taken off), at, v } }, fuDone: { "<id>_<n>": when },
+//   fuOff: when Stop follow-ups was tapped ("" when started again)
+// settings/efu-gone: the Google events of deleted estimates still to come off ({ ids: { eventId: at } }).
+const EFU_DAYS = [1, 3, 7, 14, 21, 30, 45, 60, 90];
+const EFU_AT = "10:00", EFU_MIN = 15;
+const EFU_FIELDS = ["fu", "fuEv", "fuDone", "fuOff"];
+const efuKey = (q, i) => q.fu.id + "_" + i;
+const efuISO = (d, hm) => `${ymd(d)}T${hm || pad(d.getHours()) + ":" + pad(d.getMinutes())}:00`;
+// the follow-up times for an estimate sent at `sent` (a Date)
+function efuPlan(sent) {
+  const monday = (d) => { if (d.getDay() === 0) d.setDate(d.getDate() + 1); return d; };
+  // the first: 2 hours after, at the next quarter hour, if that's 8 AM to 8 PM; later at night, 9 AM the next
+  // morning (Monday for a Sunday); before 8 in the morning, 9 AM
+  const f = new Date(sent.getTime() + 2 * 3600e3); f.setSeconds(0, 0);
+  const q = f.getMinutes() % 15; if (q) f.setMinutes(f.getMinutes() + 15 - q);
+  const mins = f.getHours() * 60 + f.getMinutes();
+  if (mins > 20 * 60) { f.setDate(f.getDate() + 1); f.setHours(9, 0, 0, 0); monday(f); }
+  else if (mins < 8 * 60) { f.setHours(9, 0, 0, 0); if (ymd(f) !== ymd(sent)) monday(f); }
+  const out = [efuISO(f)]; let last = ymd(f);
+  for (const n of EFU_DAYS) {
+    const d = new Date(ymd(sent) + "T12:00:00"); d.setDate(d.getDate() + n); monday(d);
+    // never two on one day: the next day instead
+    while (ymd(d) <= last) { d.setDate(d.getDate() + 1); monday(d); }
+    last = ymd(d); out.push(efuISO(d, EFU_AT));
+  }
+  return out;
+}
+// a newer estimate sent to them (one sent and then put back to Draft, by mistake, doesn't count)
+const EFU_OUT = ["sent", "accepted", "declined"];
+const efuNewerOf = (q) => q.leadId ? S.quotes.filter(x => x.id !== q.id && x.leadId === q.leadId && !isInvoice(x) && x.fu && EFU_OUT.includes(x.status) && String(x.fu.sent || "") > String(q.fu.sent || "")) : [];
+// a job or estimate booked for them since it went out: one made from it, or one for them added after it went out for a day
+// from then on (a past job typed in from the tracker isn't one)
+const efuBookedJobs = (q) => { const sent = String(q.fu.sent || ""), day = ymd(new Date(sent));
+  // (a job for another estimate of theirs isn't this one's: that estimate being accepted stops this one, efuWonOther)
+  return S.jobs.filter(j => j.status !== "canceled" && (j.quoteId === q.id || (q.leadId && j.leadId === q.leadId && !j.quoteId && String(j.createdAt || "") > sent && efuJobAfter(j, sent, day, q)))); };
+// a job for a day after it went out; on that same day, one at a time after it, or with no time that's still to do or
+// is for the estimate's price (not a morning job done or paid and typed in later that day)
+const efuJobAfter = (j, sent, day, q) => { const s = String(j.start || ""), d = s.slice(0, 10); if (d !== day) return d > day; return s.length > 10 ? s > localISO(new Date(sent)) : j.status === "scheduled" || Math.abs((+j.amount || 0) - quoteTotals(q).total) < 0.005; };
+// another estimate of theirs accepted after this one went out (the lead's history says when; a drop on Paid that
+// accepts one writes the same line)
+const efuWonOther = (q, l) => (l.activity || []).some(a => a.type === "quote" && String(a.at || "") > String(q.fu.sent || "") && (m => m && m[1] !== String(q.number || "") && S.quotes.some(x => x.id !== q.id && x.leadId === l.id && !isInvoice(x) && x.number === m[1] && x.status === "accepted"))(/^Estimate (\S+) accepted\b/.exec(a.text || "")));
+// their latest call or email result, picked after it went out, is "Budget next year"
+const efuNextYear = (q, l) => (a => !!a && String(a.at || "") > String(q.fu.sent || "") && /^(Call|Email): Budget next year\b/.test(a.text))((l.activity || []).find(a => ["call", "email"].includes(a.type) && /^(Call|Email): /.test(a.text || "")));
+// why an estimate's follow-ups aren't running ("" while they are)
+function efuOff(q) {
+  if (!q || isInvoice(q) || !q.fu || !Array.isArray(q.fu.at) || !q.fu.at.length) return "none";
+  if (q.status !== "sent") return q.status === "accepted" ? "accepted" : q.status === "declined" ? "declined" : "draft";
+  if (q.fuOff) return "stopped";
+  if (efuBookedJobs(q).length) return "booked";
+  if (q.leadId) {
+    const l = leadById(q.leadId);
+    if (!l) return "gone";
+    if (l.dnc || l.crashOut) return "dnc";
+    if (l.stage === "lost") return "lost";
+    if (l.stage === "followup") return "followup";
+    if (efuNextYear(q, l)) return "nextyear";
+    if (efuWonOther(q, l)) return "won";
+  }
+  if (efuNewerOf(q).length) return "newer";
+  return "";
+}
+const EFU_WHY = { accepted: "it was accepted", declined: "it was declined", draft: "it's back to Draft", stopped: "you stopped them", booked: "a job or estimate is booked for them", gone: "the lead was deleted", dnc: "they're marked do not contact", lost: "they're marked Lost", followup: "they're in Follow up with their own day", nextyear: "they said budget next year", won: "they accepted another estimate", newer: "a newer estimate went to them" };
+// a stop that comes from their lead, their jobs or another estimate, checked against the database before anything comes off
+// Google Calendar (this device's copy can be behind): "" when the database says it's still running
+async function efuOffSure(q) {
+  const off = efuOff(q), G = window.GIC;
+  if (!["gone", "dnc", "lost", "followup", "nextyear", "won", "booked", "newer"].includes(off)) return off;
+  if (off === "booked") { for (const j of efuBookedJobs(q)) { const s = await G.serverDoc("jobs", j.id); if (s && s.status !== "canceled") return off; } return ""; }
+  if (off === "newer") { for (const x of efuNewerOf(q)) { const s = await G.serverDoc("quotes", x.id); if (s && s.fu && EFU_OUT.includes(s.status) && String(s.fu.sent || "") > String(q.fu.sent || "")) return off; } return ""; }
+  const l = await G.serverDoc("leads", q.leadId); if (!l) return "gone";
+  if (l.dnc || l.crashOut) return "dnc"; if (l.stage === "lost") return "lost"; if (l.stage === "followup") return "followup";
+  if (efuNextYear(q, l)) return "nextyear"; if (efuWonOther(q, Object.assign({ id: q.leadId }, l))) return "won";
+  return "";
+}
+// a follow-up moved to another time in Google Calendar keeps its Google time
+function efuGoogleAt() { const m = new Map(); S.cal.events.forEach(e => { if (/^gicfu/.test(e.id || "") && e.start && e.start.dateTime) m.set(e.id, localISO(new Date(e.start.dateTime))); }); return m; }
+function efuAt(q, i, gm) { const e = (q.fuEv || {})[efuKey(q, i)]; return (e && e.id && gm && gm.get(e.id)) || q.fu.at[i]; }
+// a call, email or text to them logged since the follow-up's day began: by you, so not the estimate's own email being
+// drafted, email or text blasts, bounces, or their replies and asks to be taken off
+const EFU_NOT_TALK = /^(estimate|invoice) \S+ (drafted|opened)\b|^(Email|Text) blast\b|^Email to \S+ bounced|^Asked (for no more|to be taken off)|^Replied to your email blast/i;
+function efuTalked(l, q, at) {
+  if (!l) return false; const day = at.slice(0, 10), from = Date.parse(q.fu.sent) + 3600e3; // not the first hour: "it's on its way" isn't a follow-up
+  return (l.activity || []).some(a => ["call", "email", "text"].includes(a.type) && Date.parse(a.at) >= from && ymd(new Date(a.at)) >= day && !EFU_NOT_TALK.test(a.text || ""));
+}
+// the follow-up that's up on an estimate: the newest one whose day has come, unless it's done. One per estimate.
+function efuDueStep(q, gm) {
+  if (efuOff(q)) return null; const t = today(), n = q.fu.at.length;
+  let i = -1, best = ""; for (let k = 0; k < n; k++) { const a = efuAt(q, k, gm); if (a.slice(0, 10) <= t && a >= best) { best = a; i = k; } }
+  if (i < 0) return null;
+  const k = efuKey(q, i), at = efuAt(q, i, gm), l = q.leadId ? leadById(q.leadId) : null;
+  if ((q.fuDone || {})[k] || efuTalked(l, q, at)) return null;
+  return { q, l, i, k, at, n, over: at.slice(0, 10) < t };
+}
+const efuName = (q, l) => l ? leadName(l) : String(quoteCust(q) || "").trim() || "Customer";
+// To do today's estimate follow-ups: today's by time, then the late ones, oldest first. A lead already under
+// Follow-ups today isn't listed twice.
+function efuDue() {
+  const gm = efuGoogleAt(), mine = new Set(fuDue().map(l => l.id));
+  return S.quotes.map(q => efuDueStep(q, gm)).filter(x => x && !(x.l && mine.has(x.l.id)))
+    .sort((a, b) => (a.over - b.over) || a.at.localeCompare(b.at));
+}
+function efuRow(x) {
+  const q = x.q, sub = [`Follow-up ${x.i + 1} of ${x.n}`, `${money(quoteTotals(q).total)} estimate ${q.number || ""}`, `sent ${fmtD(ymd(new Date(q.fu.sent)), { weekday: "short", month: "short", day: "numeric" })}`].join(" · ");
+  const open = x.l ? `data-open-lead="${esc(x.l.id)}"` : `data-open-quote="${esc(q.id)}"`;
+  const when = x.over ? `<span class="pill over">Overdue · ${esc(fmtD(x.at))}</span>` : `<span class="pill due">${esc(fmtT(x.at))}</span>`;
+  return `<div class="item flow efu-row" role="button" tabindex="0" ${open}><div class="main-col"><span class="t">${esc(efuName(q, x.l))}</span><span class="s">${esc(sub)}</span></div><div class="r">${when}<button class="btn sm" data-act="efu-done" data-q="${esc(q.id)}" data-k="${esc(x.k)}">Done</button></div></div>`;
+}
+// the Calendar tab's and To do this week's follow-ups between two days: every one on an estimate whose follow-ups are running
+function efuItems(startT, endT) {
+  const gm = efuGoogleAt(), out = [];
+  S.quotes.forEach(q => {
+    if (efuOff(q)) return; const l = q.leadId ? leadById(q.leadId) : null;
+    q.fu.at.forEach((_, i) => {
+      const at = efuAt(q, i, gm), d = at.slice(0, 10); if (d < startT || d > endT) return;
+      out.push({ src: "fu", id: efuKey(q, i), title: "Follow up: " + efuName(q, l), start: at, end: localISO(new Date(new Date(at).getTime() + EFU_MIN * 60000)), where: `Estimate ${q.number || ""} · ${money(quoteTotals(q).total)} · ${i + 1} of ${q.fu.at.length}`, leadId: l ? l.id : "", quoteId: q.id, free: true, done: !!(q.fuDone || {})[efuKey(q, i)] });
+    });
+  });
+  return out;
+}
+// the next one still ahead and not done yet, for the lead page and the estimate
+function efuNext(q, gm) {
+  if (efuOff(q)) return null; gm = gm || efuGoogleAt(); const now = nowLocal(), l = q.leadId ? leadById(q.leadId) : null; let best = null;
+  for (let i = 0; i < q.fu.at.length; i++) { const at = efuAt(q, i, gm); if (at <= now || (q.fuDone || {})[efuKey(q, i)] || efuTalked(l, q, at)) continue; if (!best || at < best.at) best = { i, at, n: q.fu.at.length }; }
+  return best;
+}
+// each lead's estimate follow-up that's up now and the next one, worked out once for a list (until the data or the minute changes)
+let efuLM = null;
+function efuLeadMap() {
+  const key = [S.quotes, S.leads, S.jobs, S.cal.events, nowLocal()];
+  if (efuLM && efuLM.key.every((x, i) => x === key[i])) return efuLM.m;
+  const gm = efuGoogleAt(), m = new Map();
+  S.quotes.forEach(q => { if (!q.leadId || efuOff(q)) return; const r = m.get(q.leadId) || {}, d = efuDueStep(q, gm), n = efuNext(q, gm);
+    if (d && (!r.due || d.at < r.due.at)) r.due = d; if (n && (!r.next || n.at < r.next.at)) r.next = n; m.set(q.leadId, r); });
+  efuLM = { key, m }; return m;
+}
+const efuLeadNext = (l) => (efuLeadMap().get(l.id) || {}).next || null;
+const efuLeadDue = (l) => (efuLeadMap().get(l.id) || {}).due || null;
+// what the estimate says about its follow-ups
+function efuNote(q) {
+  if (!q || !q.id || isInvoice(q)) return "";
+  const live = S.quotes.find(x => x.id === q.id) || q, off = efuOff(live);
+  if (off === "none") return "";
+  if (off === "stopped") return `<div class="row efu-note"><span class="note">Follow-ups are stopped on this estimate.</span>${live.status === "sent" ? `<button class="btn sm" data-act="efu-resume">Start them again</button>` : ""}</div>`;
+  if (off === "newer" && live.status === "sent") return `<div class="row efu-note"><span class="note">Follow-ups stopped: ${esc(EFU_WHY[off])}.</span><button class="btn sm" data-act="efu-this">Follow up on this one instead</button></div>`;
+  if (off) return `<p class="note efu-note">Follow-ups stopped: ${esc(EFU_WHY[off] || off)}.</p>`;
+  const nx = efuNext(live), cal = STANDALONE && GC() ? (calBusiness() ? " They're on To do today and your Google Calendar." : " They're on To do today, and go on your Google Calendar from a device connected to it.") : " They show on To do today.";
+  return `<div class="row efu-note"><span class="note">${nx ? `Next follow-up ${esc(fmtDT(nx.at))} (${nx.i + 1} of ${nx.n}).${cal}` : `All ${live.fu.at.length} follow-ups have come up.`}</span><button class="btn sm" data-act="efu-stop">Stop follow-ups</button></div>`;
+}
+// marking an estimate Sent: its follow-ups start now (quotes.js saves the plan with the status). Sent again later, they
+// start over, and the ones still ahead from before come off the calendar (efuCalWork: their keys go with the old id).
+const efuNewPlan = () => { const now = new Date(); return { id: now.getTime().toString(36), sent: now.toISOString(), at: efuPlan(now) }; };
+// emailing an estimate from it (Email as Gmail draft, Send it, Download it and open Gmail) is sending it: a Draft one
+// is marked Sent, so its follow-ups start
+async function efuEmailed(qid) {
+  if (!qid) return;
+  if (QD && QD.id === qid && $("#modal #q-acts")) {
+    // by its status now: the editor's copy can be behind (marked Accepted on another device meanwhile)
+    const live = S.quotes.find(x => x.id === qid); if (live && live.status && live.status !== QD.status) { QD.status = live.status; syncQuoteChrome(); }
+    if (!isInvoice(QD) && (QD.status || "draft") === "draft") await quoteStatus("sent"); return; }
+  // another estimate is open now (or none): this one is marked Sent quietly, the way the editor does it
+  const q = S.quotes.find(x => x.id === qid); if (!q || isInvoice(q) || (q.status || "draft") !== "draft") return;
+  const now = new Date().toISOString(), l = leadById(q.leadId), patch = { status: "sent", updatedAt: now };
+  if (!(l && l.dnc)) Object.assign(patch, { fu: efuNewPlan(), fuOff: "" });
+  await saveDoc("quotes", q.id, patch, true);
+  if (l) { const upd = { activity: activity(l, "quote", `Estimate ${q.number} sent`), updatedAt: now };
+    if (l.nextFollowUp && !l.fuBy) upd.fuBy = fuMine(l) ? "you" : "auto"; // as quoteStatusNow does
+    if ((PRE_SALE.includes(l.stage || "new") && l.stage !== "selling") || (l.stage === "lost" && !l.dnc)) upd.stage = "selling";
+    if (isOutreach(l)) Object.assign(upd, PROMOTE());
+    await saveDoc("leads", l.id, upd, true); }
+  if (patch.fu) calSweepSoon();
+}
+function efuStartedToast(fu, base, q) {
+  const why = q && efuOff(q); if (why && why !== "none") { toast(`${base} No follow-ups for it: ${EFU_WHY[why] || why}.`, 7000); return; }
+  const first = fu.at[0], cal = STANDALONE && GC() ? (calBusiness() ? " They go on your Google Calendar too." : " They go on your Google Calendar from a device connected to it.") : "";
+  toast(`${base} First follow-up ${ymd(new Date()) === first.slice(0, 10) ? "today at " + fmtT(first) : fmtDT(first)}, then ${fu.at.length - 1} more until they say yes.${cal}`, 8000);
+}
+// what's left to do on Google Calendar for one estimate: the ones ahead to put on, the ones ahead to take off
+// when a follow-up on Google Calendar is: where it is on Google if this device has it (moved later or earlier), else its time
+const efuLater = (e, gm) => (gm && gm.get(e.id)) || String(e.at || "");
+function efuCalWork(q, now, gm, off) {
+  const ev = q.fuEv || {}, cur = q.fu && q.fu.id, out = []; if (off === undefined) off = efuOff(q);
+  if (!off) q.fu.at.forEach((at, i) => { const k = efuKey(q, i), e = ev[k]; if (at > now && (!e || !e.id)) out.push({ add: true, k, i, at, v: e ? +e.v || 0 : 0 }); });
+  Object.entries(ev).forEach(([k, e]) => { if (e && e.id && efuLater(e, gm) > now && (off || k.split("_")[0] !== cur)) out.push({ add: false, k, id: e.id, at: e.at, v: +e.v || 0 }); });
+  return out;
+}
+const efuEventId = (q, k, v) => "gicfu" + Array.from(new TextEncoder().encode(q.id + "|" + k), b => b.toString(16).padStart(2, "0")).join("") + "v" + (v || 0);
+async function efuCreate(q, w) {
+  const l = q.leadId ? leadById(q.leadId) : null, tot = money(quoteTotals(q).total), n = q.fu.at.length;
+  const desc = [`Follow-up ${w.i + 1} of ${n} on estimate ${q.number || ""} (${tot}), sent ${fmtDT(localISO(new Date(q.fu.sent)))}.`, l && l.phone ? "Phone: " + l.phone : "", l && l.email ? "Email: " + l.email : "", l ? leadAddr(l) : (q.billTo || []).slice(1).join(", "), "", "The CRM takes the rest of these off your calendar once the estimate is accepted or declined, or a job is booked."].filter((x, i) => x || i === 4).join("\n");
+  let v = w.v;
+  for (let i = 0; i < 4; i++) {
+    if (i && !calBusiness()) throw new Error("Google Calendar isn't connected to the business account");
+    try { const r = await GC().createEvent({ id: efuEventId(q, w.k, v), summary: `Follow up: ${efuName(q, l)} (estimate ${q.number || ""}, ${tot})`, location: l ? leadAddr(l) : "", description: desc, start: w.at, end: localISO(new Date(new Date(w.at).getTime() + EFU_MIN * 60000)), transparency: "transparent" }); return { id: r.id, v }; }
+    catch (e) { if (e.code !== "taken") throw e; v++; }
+  }
+  throw new Error("Google Calendar wouldn't take this follow-up");
+}
+let efuSweeping = false, efuAgain = false;
+async function efuSweep() {
+  // not before leads, estimates and jobs have all loaded: a lead not here yet would read as deleted
+  const G = window.GIC; if (!STANDALONE || !S.db || !S.dataReady || !G || !G.serverDoc || !G.patchDoc || !calBusiness() || !calOwner()) return;
+  if (efuSweeping) { efuAgain = true; return; }
+  efuSweeping = true; let added = 0, removed = 0, missed = false;
+  try {
+    const gm = efuGoogleAt();
+    for (const q0 of S.quotes) {
+      if (!efuCalWork(q0, nowLocal(), gm).length || calTriedLately("efu:" + q0.id)) continue;
+      calTried.set("efu:" + q0.id, Date.now());
+      let bad = false;
+      try {
+        // read from the server right before: another device may have just put them on or taken them off
+        const cur = await G.serverDoc("quotes", q0.id); if (!cur) { calTried.delete("efu:" + q0.id); continue; }
+        const q = Object.assign({}, cur, { id: q0.id });
+        // a stop from their lead, jobs or another estimate is checked with the database first (this device can be behind)
+        const off = await efuOffSure(q);
+        if (!off && efuOff(q)) { calTried.delete("efu:" + q0.id); continue; } // this device catches up, then it's looked at again
+        for (const w of efuCalWork(q, nowLocal(), gm, off)) {
+          if (!calBusiness()) { bad = true; break; }
+          // written only while the estimate is still there (a deleted one isn't made again); one put on just as it was
+          // deleted comes back off
+          if (w.add) { const r = await efuCreate(q, w);
+            try { await G.patchDoc("quotes", q.id, { ["fuEv." + w.k]: { id: r.id, at: w.at, v: r.v } }); added++; }
+            catch (e) { await GC().deleteEvent(r.id, "primary").catch(() => {}); if (/not.?found/i.test(String(e && (e.code || e.message)))) break; throw e; } }
+          else { await GC().deleteEvent(w.id, "primary"); removed++;
+            await G.patchDoc("quotes", q.id, { ["fuEv." + w.k]: { id: "", at: w.at, v: w.v + 1 } }).catch(e => { if (!/not.?found/i.test(String(e && (e.code || e.message)))) throw e; }); }
+        }
+      } catch (e) { bad = true; }
+      if (bad) missed = true; else calTried.delete("efu:" + q0.id);
+    }
+    // a deleted estimate's follow-ups still ahead
+    const now = nowLocal(), gone = S.efuGone || {}, ids = Object.keys(gone).filter(id => gone[id] && String(gone[id]) > now);
+    if (ids.length && !calTriedLately("efu:gone")) {
+      calTried.set("efu:gone", Date.now()); const done = {}; let bad = false;
+      for (const id of ids) { if (!calBusiness()) { bad = true; break; } try { if ((await GC().deleteEvent(id, "primary")) !== false) removed++; done[id] = ""; } catch (e) { bad = true; } }
+      if (Object.keys(done).length) await saveDoc("settings", "efu-gone", { kind: "efu-gone", ids: done }, true).catch(() => {});
+      if (bad) missed = true; else calTried.delete("efu:gone");
+    }
+  } finally { efuSweeping = false; }
+  // anything that didn't go through is tried again in 3 minutes, whatever else runs meanwhile
+  if (missed) { clearTimeout(efuSweep.later); efuSweep.later = setTimeout(calSweepSoon, 185000); }
+  if (efuAgain) { efuAgain = false; calSweepSoon(); }
+  // said quietly: not over another message that's still up
+  if ((added || removed) && !document.querySelector(".toast")) toast(added && removed ? `${plural(added, "estimate follow-up")} put on your Google Calendar, and ${removed} taken off it.` : added ? `${plural(added, "estimate follow-up")} put on your Google Calendar.` : `${plural(removed, "estimate follow-up")} taken off your Google Calendar.`, 5000);
+}
+// a deleted estimate's follow-ups still ahead on Google Calendar (by its time or the time it was moved to there) come
+// off from the business device
+async function efuForget(q) {
+  if (!q || !q.id) return;
+  // as the database has it when it can be read (this device can be behind)
+  const G = window.GIC, srv = G && G.serverDoc ? await Promise.race([G.serverDoc("quotes", q.id), new Promise(r => setTimeout(() => r(null), 3000))]).catch(() => null) : null; // (no more than 3 seconds on a weak signal)
+  const live = srv ? Object.assign({}, srv, { id: q.id }) : S.quotes.find(x => x.id === q.id) || q;
+  const ev = live.fuEv || {}, now = nowLocal(), gm = efuGoogleAt(), ids = {};
+  Object.values(ev).forEach(e => { if (e && e.id) { const at = efuLater(e, gm); if (at > now) ids[e.id] = at; } });
+  // and the ones still running that the business device may be putting on right now, not written on the estimate yet
+  // (their ids are known ahead; one that was never made is just skipped)
+  if (!isInvoice(live) && live.status === "sent" && !live.fuOff && live.fu && Array.isArray(live.fu.at)) live.fu.at.forEach((at, i) => {
+    const k = efuKey(live, i), e = ev[k], v = e ? +e.v || 0 : 0; if (at > now && !(e && e.id)) { ids[efuEventId(live, k, v)] = at; ids[efuEventId(live, k, v + 1)] = at; } });
+  if (!Object.keys(ids).length) return;
+  await saveDoc("settings", "efu-gone", { kind: "efu-gone", ids }, true).catch(() => {});
+  calSweepSoon();
+}
+// on the owner's CRM, each time it opens: an estimate out (sent in the last 3 months) with no follow-ups yet gets them
+// from the day it went out (the ones already out when this came in, one marked Sent by a CRM page still open from
+// before, or a save that didn't go through); the ones already past show as one overdue follow-up on Today. Goes by the
+// database's estimates, not this device's copy. One whose follow-ups are paused now (they're in Follow up, say) gets
+// them too, so they come back when that ends. settings/efu notes when it first ran.
+async function efuBackfill() {
+  const G = window.GIC; if (!STANDALONE || !S.db || !G || !G.serverDoc || !G.serverColl || !calOwner() || efuBackfill.ran) return;
+  efuBackfill.ran = true;
+  try {
+    const cut = new Date(Date.now() - 90 * 864e5).toISOString(); let n = 0;
+    for (const q0 of (await G.serverColl("quotes")).filter(q => !isInvoice(q) && q.status === "sent" && !q.fu)) {
+      const l = q0.leadId ? leadById(q0.leadId) : null;
+      const line = l && (l.activity || []).find(a => a.type === "quote" && new RegExp("^Estimate " + String(q0.number || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + " sent\\b").test(a.text || ""));
+      const sent = (line && line.at) || q0.updatedAt || (q0.date ? q0.date + "T12:00:00" : "");
+      const d = new Date(sent); if (!sent || isNaN(d) || d.toISOString() < cut) continue;
+      const fu = { id: d.getTime().toString(36), sent: d.toISOString(), at: efuPlan(d) };
+      await G.patchDoc("quotes", q0.id, { fu, fuOff: "" }).then(() => n++, () => {});
+    }
+    if (n) { const flag = await G.serverDoc("settings", "efu").catch(() => null); await saveDoc("settings", "efu", { kind: "efu", start: (flag && flag.start) || new Date().toISOString(), backfilled: ((flag && +flag.backfilled) || 0) + n }, true).catch(() => {}); calSweepSoon(); }
+  } catch (e) { efuBackfill.ran = false; }
+}
+EXTRA_ACTS["efu-done"] = async (t) => {
+  const q = S.quotes.find(x => x.id === t.dataset.q), k = t.dataset.k; if (!q || !k) return; t.disabled = true;
+  try { await saveDoc("quotes", q.id, { fuDone: { [k]: new Date().toISOString() } }, true); } catch (e) { t.disabled = false; return; }
+  const live = S.quotes.find(x => x.id === q.id) || q, nx = efuNext(Object.assign({}, live, { fuDone: Object.assign({}, live.fuDone, { [k]: "done" }) }));
+  toast(`Follow-up done.${nx ? ` The next one is ${fmtDT(nx.at)}.` : ""}`, 7000, { label: "Undo", fn: () => { saveDoc("quotes", q.id, { fuDone: { [k]: "" } }, true).catch(() => {}); } });
+};
+EXTRA_ACTS["efu-stop"] = async () => {
+  if (!QD || !QD.id) return;
+  await saveDoc("quotes", QD.id, { fuOff: new Date().toISOString() }, true); QD.fuOff = new Date().toISOString();
+  calSweepSoon(); syncQuoteChrome(); toast("Follow-ups stopped on this estimate. The ones ahead come off your Google Calendar.", 6000);
+};
+// an older estimate out to them is the one to follow up on after all: it starts over from now, and the newer one's stop
+EXTRA_ACTS["efu-this"] = async () => {
+  if (!QD || !QD.id) return; const fu = efuNewPlan();
+  await saveDoc("quotes", QD.id, { fu, fuOff: "" }, true); Object.assign(QD, { fu, fuOff: "" });
+  calSweepSoon(); syncQuoteChrome(); efuStartedToast(fu, "Following up on this estimate now.", Object.assign({}, S.quotes.find(x => x.id === QD.id) || QD, { fu, fuOff: "" }));
+};
+EXTRA_ACTS["efu-resume"] = async () => {
+  if (!QD || !QD.id) return;
+  await saveDoc("quotes", QD.id, { fuOff: "" }, true); QD.fuOff = "";
+  calSweepSoon(); syncQuoteChrome();
+  const why = efuOff(Object.assign({}, S.quotes.find(x => x.id === QD.id) || QD, { fuOff: "" }));
+  toast(why && why !== "none" ? `Started again, but they stay off for now: ${EFU_WHY[why] || why}.` : "Follow-ups are back on.", why ? 7000 : 4000);
+};
 
 // ---------- EMAIL + OUTREACH ----------
 // Matching an email-schedule row to a contact. Several communities share one manager's inbox, so a shared
@@ -3573,8 +3935,8 @@ function catName(c) { const k = String(c || "").toLowerCase(); if (!k) return "O
 function expSource(e) { if (e.forSource) return e.forSource; const t = [e.vendor, e.note, e.category].join(" "); return /angi/i.test(t) ? "Angi" : /meta|facebook/i.test(t) ? "Facebook / Meta ads" : /yard ?sign/i.test(t) ? "Yard sign" : ""; }
 function moneyRows() {
   const jobs = S.jobs.filter(j => j.kind === "job" && j.status === "paid").map(j => {
-    const l = leadById(j.leadId);
-    return { id: j.id, j, l, date: (j.paidDate || j.start || "").slice(0, 10), client: l ? leadName(l) : (j.title || "").replace(/^Job: /, ""), svc: j.service || (l && (l.services || []).join(", ")) || "", tags: jobTags(j, l), crew: j.crew || "Not recorded", src: j.source || (l && l.source) || "Other", price: +j.amount || 0, cost: +j.cost || 0, nocost: j.cost == null || j.cost === "", bankPct: j.bankPct == null || j.bankPct === "" ? null : +j.bankPct };
+    const l = jobLead(j); // a job saved with no customer: nolead.js
+    return { id: j.id, j, l, date: (j.paidDate || j.start || "").slice(0, 10), client: jobClient(j, l), svc: j.service || (l && (l.services || []).join(", ")) || "", tags: jobTags(j, l), crew: j.crew || "Not recorded", src: j.source || (l && l.source) || "Other", price: +j.amount || 0, cost: +j.cost || 0, nocost: j.cost == null || j.cost === "", bankPct: j.bankPct == null || j.bankPct === "" ? null : +j.bankPct };
   });
   // monthly bills count once for each month billed (overhead.js)
   const exps = S.expenses.filter(e => !isBill(e)).map(expRow).concat(billRows());
@@ -3674,9 +4036,9 @@ VIEWS.money = () => {
       <p class="pad note">A bundle is any job where two or more services were sold together.</p></section>
   </div>
   <section class="panel flush"><div class="panel-h"><h2>Every job</h2><span class="count only-wide">Tap a heading to sort</span><span class="count only-narrow">${plural(rows.length, "job")}</span></div>
-    <div class="list only-narrow">${rows.map(j => `<button class="item" ${j.l ? `data-open-lead="${esc(j.l.id)}"` : ""}><div class="main-col"><span class="t">${esc(j.client)}</span><span class="s">${esc([dfmt(j.date), j.svc, j.crew, j.src].filter(Boolean).join(" · "))}</span></div><div class="r"><b class="num">${M(j.price)}</b><span class="note">${j.nocost ? "no job cost entered" : M(j.net) + " after costs"}</span></div></button>`).join("") || `<div class="pad note">No paid jobs ${m === "all" ? "yet" : "this month"}.</div>`}${rows.length ? `<div class="item static total-row"><div class="main-col"><span class="t">Total</span></div><div class="r"><b class="num">${M(c.rev)}</b><span class="note">${M(c.rev - c.jc)} after job costs</span></div></div>` : ""}</div>
+    <div class="list only-narrow">${rows.map(j => `<button class="item" ${j.l ? `data-open-lead="${esc(j.l.id)}"` : jobCustAttr(j.id)}><div class="main-col"><span class="t">${esc(j.client)}</span><span class="s">${esc([dfmt(j.date), j.svc, j.crew, j.src].filter(Boolean).join(" · "))}</span></div><div class="r"><b class="num">${M(j.price)}</b><span class="note">${j.nocost ? "no job cost entered" : M(j.net) + " after costs"}</span></div></button>`).join("") || `<div class="pad note">No paid jobs ${m === "all" ? "yet" : "this month"}.</div>`}${rows.length ? `<div class="item static total-row"><div class="main-col"><span class="t">Total</span></div><div class="r"><b class="num">${M(c.rev)}</b><span class="note">${M(c.rev - c.jc)} after job costs</span></div></div>` : ""}</div>
     <div class="tablewrap only-wide"><table class="t"><thead><tr>${cols.map(k => `<th data-sort="${k[0]}" class="${k[2] ? "n" : ""}" tabindex="0">${k[1]}${sk === k[0] ? (sd > 0 ? " ↑" : " ↓") : ""}</th>`).join("")}</tr></thead><tbody>
-    ${rows.map(j => `<tr ${j.l ? `data-open-lead="${esc(j.l.id)}"` : ""}><td class="num" style="white-space:nowrap">${esc(dfmt(j.date))}</td><td>${esc(j.client)}</td><td>${esc(j.svc)}</td><td>${esc(j.crew)}</td><td>${esc(j.src)}</td><td class="n">${M(j.price)}</td><td class="n">${j.nocost ? `<span class="flag">no cost entered</span>` : M(j.cost)}</td><td class="n"><b>${M(j.net)}</b></td></tr>`).join("") || `<tr><td colspan="8" class="muted">No paid jobs ${m === "all" ? "yet" : "this month"}.</td></tr>`}
+    ${rows.map(j => `<tr ${j.l ? `data-open-lead="${esc(j.l.id)}"` : jobCustAttr(j.id)}><td class="num" style="white-space:nowrap">${esc(dfmt(j.date))}</td><td>${esc(j.client)}</td><td>${esc(j.svc)}</td><td>${esc(j.crew)}</td><td>${esc(j.src)}</td><td class="n">${M(j.price)}</td><td class="n">${j.nocost ? `<span class="flag">no cost entered</span>` : M(j.cost)}</td><td class="n"><b>${M(j.net)}</b></td></tr>`).join("") || `<tr><td colspan="8" class="muted">No paid jobs ${m === "all" ? "yet" : "this month"}.</td></tr>`}
     ${rows.length ? `<tr><td colspan="5"><b>Total</b></td><td class="n"><b>${M(c.rev)}</b></td><td class="n"><b>${M(c.jc)}</b></td><td class="n"><b>${M(c.rev - c.jc)}</b></td></tr>` : ""}</tbody></table></div></section>
   <section class="panel flush"><div class="panel-h"><h2>Business expenses</h2><button class="btn sm" data-act="mf-open" data-f="expense">+ Add expense</button></div>
     <div class="list only-narrow">${c.exps.slice().sort((a, b) => a.date < b.date ? 1 : -1).map(e => `<div class="item static"><div class="main-col"><span class="t">${esc(e.vendor || e.cat)}</span><span class="s">${esc([e.date ? dfmt(e.date) : "", e.cat, e.what, e.paid].filter(Boolean).join(" · "))}</span></div><div class="r"><b class="num">${M(e.amt)}</b>${e.bill ? `<span class="chip">Monthly</span><button class="btn sm ghost" data-act="bill-skip" data-bill="${esc(e.bill.id)}" data-m="${esc(e.month)}" aria-label="Skip this month of the bill">Skip month</button>` : `<button class="btn sm ghost" data-del-exp="${esc(e.id)}" aria-label="Delete this expense">Delete</button>`}</div></div>`).join("") || `<div class="pad note">No business expenses ${m === "all" ? "yet" : "this month"}.</div>`}${c.exps.length ? `<div class="item static total-row"><div class="main-col"><span class="t">Total</span></div><div class="r"><b class="num">${M(c.be)}</b></div></div>` : ""}</div>
@@ -3754,10 +4116,10 @@ async function saveMoneyJob(btn) {
         else if (l.stage === "selling" && open.length) kept = `${leadName(l)} stays in Selling because an estimate is still open.`;
         // dropped on Paid with no accepted estimate picked: the estimate they were sent is the one being paid, when it's
         // clear which one (the only one sent, or the only one for this price); the others are left as they are
-        if (fromDrop && !v("mj-quote") && !noEst) { const q = sentFor(open.filter(x => x.status === "sent"), price); if (q) { await saveDoc("quotes", q.id, { status: "accepted", updatedAt: now }, true); dropQuote = q.id; } }
+        if (fromDrop && !v("mj-quote") && !noEst) { const q = sentFor(open.filter(x => x.status === "sent"), price); if (q) { await saveDoc("quotes", q.id, { status: "accepted", updatedAt: now }, true); dropQuote = q.id; upd.activity = activity({ activity: upd.activity }, "quote", `Estimate ${q.number} accepted`); } }
         if (!l.value) upd.value = price;
         if (!l.address && !l.city && v("mj-addr")) upd.address = v("mj-addr");
-        if (isOutreach(l)) Object.assign(upd, PROMOTE());
+        if (isOutreach(l)) { const ss = upd.stageSince; Object.assign(upd, PROMOTE()); if (ss) upd.stageSince = ss; } // (the job's date stays)
         await saveDoc("leads", l.id, upd, true); }
     }
     const job = { kind: "job", leadId, title: "Job: " + name, service: svc, start: date, end: date, address: v("mj-addr"), amount: price, cost: Number(v("mj-cost")) || 0, crew, source: v("mj-src"), status, paidDate: status === "paid" ? date : "", method: status === "paid" ? v("mj-method") : "", createdAt: now };
@@ -3800,15 +4162,19 @@ function bankBox(j, idSfx) { // idSfx: a second box for the same job on one page
 }
 function jobRow(j, where) {
   if (j.est) { const q = j.est;
-    return `<div class="item static flow"><div class="main-col"><span class="t">${esc(j.title)}</span><span class="s">${esc(["Estimate " + q.number + " accepted", j.service.length <= 40 ? j.service : "", "not booked yet"].filter(Boolean).join(" · "))}</span></div>
+    // the name opens them, or the estimate when it has no customer (it's added there)
+    const el = leadById(q.leadId), who = el ? `<button class="who" data-open-lead="${esc(el.id)}">${esc(leadName(el))}</button>` : `<button class="who" data-open-quote="${esc(q.id)}">${esc(quoteCust(q) || NO_CUST)}</button>`;
+    return `<div class="item static flow"><div class="main-col"><span class="t">Job: ${who}</span><span class="s">${esc(["Estimate " + q.number + " accepted", j.service.length <= 40 ? j.service : "", "not booked yet"].filter(Boolean).join(" · "))}</span></div>
     <div class="r"><span class="row"><span class="num" style="font-weight:700">${money(j.amount, j.amount % 1 !== 0)}</span><span class="pill s-scheduled">Accepted</span></span>
     <div class="row">${bankBox(j)}<button class="btn sm" data-act="m-book" data-id="${esc(q.id)}">Book job</button><button class="btn sm primary" data-pay="${esc(j.id)}">Paid</button></div></div></div>`; }
   const money1 = where === "money";
-  const l = leadById(j.leadId);
+  const l = money1 ? jobLead(j) : leadById(j.leadId);
   const st = { scheduled: "Scheduled", completed: "Done, unpaid", paid: "Paid", canceled: "Canceled" }[j.status] || j.status;
   const cls = { scheduled: "s-visit", completed: "s-quoted", paid: "s-paid", canceled: "s-lost" }[j.status] || "";
   const sub = [fmtDT(j.start), j.service, j.crew ? "Crew " + j.crew : "", j.paidDate ? "paid " + fmtD(j.paidDate) + (j.method ? " by " + j.method : "") : ""].filter(Boolean).join(" · ");
-  return `<div class="item static${money1 ? " flow" : ""}"><div class="main-col"><span class="t">${esc(j.kind === "visit" ? "Estimate" : "Job")}: ${esc((l && leadName(l)) || (j.title || "").replace(/^(Job|Estimate): /, ""))}</span><span class="s">${esc(sub)}</span></div>
+  // on Money the name opens them (or asks who it was for, when it has no customer)
+  const nm = esc(jobClient(j, l)), who = !money1 ? nm : l ? `<button class="who" data-open-lead="${esc(l.id)}">${nm}</button>` : `<button class="who" ${jobCustAttr(j.id)}>${nm}</button>`;
+  return `<div class="item static${money1 ? " flow" : ""}"><div class="main-col"><span class="t">${esc(j.kind === "visit" ? "Estimate" : "Job")}: ${who}</span><span class="s">${esc(sub)}</span></div>
     <div class="r"><span class="row">${j.kind === "job" ? `<span class="num" style="font-weight:700">${money(j.amount, (+j.amount || 0) % 1 !== 0)}</span>` : ""}<span class="pill ${cls}">${esc(st)}</span></span>
     <div class="row">${money1 && j.kind === "job" ? bankBox(j) : ""}${j.status === "scheduled" ? `<button class="btn sm" data-job="${esc(j.id)}" data-js="completed">${j.kind === "visit" ? "Done" : "Job done"}</button><button class="btn sm ghost danger" data-job="${esc(j.id)}" data-js="canceled">Cancel ${j.kind === "visit" ? "estimate" : "job"}</button>` : ""}${j.kind === "job" && (j.status === "completed" || j.status === "scheduled") ? `<button class="btn sm primary" data-pay="${esc(j.id)}">Paid</button>` : ""}</div></div></div>`;
 }
@@ -3983,7 +4349,7 @@ function soldClients(jm) {
   const pay = (c, amount, day) => { c.pays.push({ amount: +amount || 0, day }); c.total += +amount || 0; if (day > c.last) c.last = day; };
   // a deleted lead's paid jobs stay together on one card
   jobs.forEach(j => {
-    const l = leadById(j.leadId), c = add(l ? l.id : j.leadId ? "gone:" + j.leadId : "job:" + j.id, l, String(j.title || "").replace(/^Job: /, "") || "Customer");
+    const l = jobLead(j), c = add(l ? l.id : j.leadId ? "gone:" + j.leadId : "job:" + j.id, l, String(j.title || "").replace(/^Job: /, "") || NO_CUST);
     c.jobs.push(j); pay(c, j.amount, jobPaidDay(j));
   });
   // invoices that belong to a paid job (tied to it, or its estimate's) show with the job
@@ -4029,7 +4395,7 @@ VIEWS.sold = () => {
   };
   const card = (c) => {
     const l = c.l, sub = l ? [l.company && l.name ? l.name : "", [l.address, l.city].filter(Boolean).join(", "), l.phone].filter(Boolean).join(" · ") : "Not linked to a lead";
-    return `<section class="panel flush sold-card"><div class="panel-h"><div class="main-col">${l ? `<button class="who" data-open-lead="${esc(l.id)}">${esc(c.name)}</button>` : `<b>${esc(c.name)}</b>`}<span class="s note">${esc(sub)}</span></div><div class="r"><span class="val num">${money(c.total, cents)}</span><span class="note">${c.jobs.length ? plural(c.jobs.length, "job") : "Paid"}</span></div></div>
+    return `<section class="panel flush sold-card"><div class="panel-h"><div class="main-col">${l ? `<button class="who" data-open-lead="${esc(l.id)}">${esc(c.name)}</button>` : c.jobs.length ? `<button class="who" ${jobCustAttr(c.jobs.map(x => x.id))}>${esc(c.name)}</button>` : `<b>${esc(c.name)}</b>`}<span class="s note">${esc(sub)}</span></div><div class="r"><span class="val num">${money(c.total, cents)}</span><span class="note">${c.jobs.length ? plural(c.jobs.length, "job") : "Paid"}</span></div></div>
       ${c.jobs.length ? `<div class="list">${c.jobs.map(jobRowS).join("")}</div>` : ""}
       ${c.invs.length ? `<div class="pad row">${c.invs.map(x => `<button class="btn sm" data-open-quote="${esc(x.id)}">Invoice ${esc(x.number)} · ${esc(QSTAT[x.status] || "Draft")}</button>`).join("")}</div>` : ""}
       ${!c.jobs.length && !c.invs.length ? `<div class="pad note">Marked Paid, but no paid job or invoice is recorded. Record the job on Money to keep its invoice here.</div>` : ""}</section>`;
@@ -4109,6 +4475,124 @@ Object.assign(EXTRA_ACTS, {
     toast(`${plural(made, "invoice")} made${bad ? `. ${bad} couldn't be saved; try again in a moment.` : "."}`, 5000);
   }
 });
+// ---------- JOBS WITH NO CUSTOMER (elias, 2026-10-25) ----------
+// "in the money tab, under every job, if I submit a job without a name on it, I can't click on it to open the lead".
+// A job paid straight from an estimate that was saved without a customer (Money > Jobs to finish or collect > Paid) has
+// no lead, so its row had nothing to open. Tapping one now asks who it was for: pick a customer or type a new one, and
+// the job, its estimate and its invoice go on them, then their page opens (to edit them, see the invoice and so on).
+// A job whose estimate was put on a customer later counts as theirs (jobLead).
+const jobEst = (j) => j && j.quoteId ? S.quotes.find(q => q.id === j.quoteId) || null : null;
+function jobLead(j) { if (!j) return null; const e = jobEst(j); return leadById(j.leadId) || (e && leadById(e.leadId)) || null; }
+const NO_CUST = "No customer yet";
+// a job row's name: theirs, else what's on the job, else "No customer yet"
+const jobClient = (j, l) => (l && leadName(l)) || String(j.title || "").replace(/^(Job|Estimate): /, "").trim() || NO_CUST;
+// what a row with no customer opens with: data-job-cust (one job, or several on one Sold clients card)
+const jobCustAttr = (ids) => `data-job-cust="${esc([].concat(ids).join(","))}"`;
+// the day someone got to Paid or Done by their jobs (their latest paid day, or the latest done job's day), so the
+// stage's drips (6-month check-in, yearly re-clean) count from the job, not from the day it was put on them
+const jobStageSince = (stage, js) => { if (stage !== "paid" && stage !== "completed") return today();
+  const d = js.filter(j => j.status === stage).map(j => stage === "paid" ? jobPaidDay(j) : String(j.start || "").slice(0, 10)).filter(Boolean).sort().pop() || today(); return d > today() ? today() : d; };
+// a typed name that's a customer: a lead with that name or company, else the one email outreach contact for that community
+const jobCustMatch = (name) => { const norm = (x) => String(x || "").trim().toLowerCase().replace(/\s+/g, " ");
+  const same = leadsOnly().filter(l => [l.name, l.company].some(x => x && norm(x) === norm(name))); if (same.length) return same;
+  const o = outreachOnly().filter(l => l.company && norm(l.company) === norm(name)); return o.length === 1 ? o : []; };
+let JC = null; // the jobs the sheet is for, and the lead it just added (until the leads list catches up)
+function openJobCust(ids) {
+  // not before the leads have loaded: a job that has a customer would look like it has none
+  if (!S.dataReady) { toast("Still loading your customers. Try again in a moment."); return; }
+  const js = String(ids || "").split(",").map(id => S.jobs.find(j => j.id === id)).filter(Boolean); if (!js.length) return;
+  // put on a customer meanwhile (another device, or the estimate): open them
+  const has = js.map(jobLead); if (has.every(Boolean)) { healJobLeads(); openLead(has[0].id, "work"); return; }
+  JC = { ids: js.map(j => j.id) };
+  const j = js[0], q = jobEst(j), bt = (q && q.billTo) || [], norm = (x) => String(x || "").trim().toLowerCase();
+  const name0 = (/^(Job|Estimate): ./.test(j.title || "") ? String(j.title).replace(/^(Job|Estimate): /, "") : bt[0] || "").trim();
+  const email0 = bt.find(x => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x)) || "", phone0 = bt.find(x => /^[\d\s().+-]{7,}$/.test(x) && digits(x).length >= 7) || "";
+  const byName = (a, b) => leadName(a).localeCompare(leadName(b)), opts = leadsOnly().slice().sort(byName), outs = outreachOnly().slice().sort(byName);
+  const opt = (l) => `<option value="${esc(l.id)}">${esc([l.company, l.name].filter(Boolean).join(" · ") || leadName(l))}</option>`;
+  const row = (x) => { const inv = jobInvoice(x), e = jobEst(x), d = (x.paidDate || x.start || "").slice(0, 10);
+    return `<div class="item static flow"><div class="main-col"><span class="t">${esc(x.service || "Job")}${d ? `<span class="note"> · ${esc(fmtD(d, { month: "short", day: "numeric", year: "numeric" }))}</span>` : ""}</span><span class="s">${esc([x.status === "paid" ? "Paid" + (x.method ? " by " + x.method : "") : ({ scheduled: "Scheduled", completed: "Done, unpaid", canceled: "Canceled" })[x.status] || "", x.crew ? "Crew " + x.crew : "", x.address, e ? "Estimate " + e.number : ""].filter(Boolean).join(" · "))}</span></div>
+      <div class="r"><b class="num">${money(x.amount, (+x.amount || 0) % 1 !== 0)}</b>${inv ? `<button class="btn sm" data-open-quote="${esc(inv.id)}">Invoice ${esc(inv.number)}</button>` : ""}</div></div>`; };
+  showModal(`<div class="sh"><h2 id="jc-h" tabindex="-1">Who was this job for?</h2><button class="x" data-close="1" aria-label="Close">×</button></div>
+  <div class="sb"><section class="panel stack">
+    <div class="list">${js.map(row).join("")}</div>
+    <p class="note">${js.length > 1 ? "These jobs aren't" : "This job isn't"} on a customer yet, so there's no page to open. Pick who it was for, or add them, and ${js.length > 1 ? "they go" : "it goes"} on their page with ${js.length > 1 ? "their" : "its"} estimate and invoice.</p>
+    <div class="form">
+      <label class="f full">Customer<select id="jc-lead"><option value="">New customer</option>${opts.map(opt).join("")}${outs.length ? `<optgroup label="Email outreach contacts">${outs.map(opt).join("")}</optgroup>` : ""}</select></label>
+    </div>
+    <div class="form" id="jc-new">
+      <label class="f">Name<input type="text" id="jc-name" autocomplete="off" value="${esc(name0)}" placeholder="Their name or business"></label>
+      <label class="f">Phone<input type="tel" id="jc-phone" value="${esc(phone0)}"></label>
+      <label class="f">Email<input type="email" id="jc-email" value="${esc(email0.toLowerCase())}"></label>
+      <label class="f">Address<input type="text" id="jc-addr" value="${esc(j.address || "")}"></label>
+    </div>
+    <div class="row"><button class="btn primary" data-act="jc-save">Save and open them</button><button class="btn" data-close="1">Cancel</button></div>
+  </section></div>`);
+  const h = $("#jc-h"); if (h) h.focus();
+  // a name already in the CRM picks them
+  if (name0) { const m = jobCustMatch(name0); if (m.length === 1) { const s = $("#jc-lead"); s.value = m[0].id; $("#jc-new").style.display = "none"; } }
+}
+document.addEventListener("change", (e) => { if (e.target && e.target.id === "jc-lead") { const w = $("#jc-new"); if (w) w.style.display = e.target.value ? "none" : ""; } }); // (.form sets display, so hidden alone does nothing)
+EXTRA_ACTS["jc-save"] = async (t) => {
+  if (!JC || !S.dataReady) return; const js = JC.ids.map(id => S.jobs.find(j => j.id === id)).filter(Boolean); if (!js.length) { closeModal(); return; }
+  const v = (id) => String(($("#" + id) || {}).value || "").trim(), norm = (x) => String(x || "").trim().toLowerCase().replace(/\s+/g, " ");
+  let l = leadById(v("jc-lead")), made = false;
+  const now = new Date().toISOString(), paid = js.some(j => j.status === "paid"), total = sum(js, j => j.amount);
+  const what = js.map(j => `${j.service || "job"} ${money(j.amount, (+j.amount || 0) % 1 !== 0)}`).join(", ");
+  if (!l) {
+    const name = v("jc-name"); if (!name) { toast("Type their name, or pick them under Customer"); const b = $("#jc-name"); if (b) b.focus(); return; }
+    // the same name already in the CRM is that customer, as on + Add job
+    const same = jobCustMatch(name);
+    if (same.length > 1) { toast(`${same.length} customers are named ${name}. Pick the right one under Customer.`, 6000); const s = $("#jc-lead"); if (s) s.focus(); return; }
+    if (same.length === 1) l = same[0];
+    else {
+      const id = uid("lead"), email = v("jc-email").toLowerCase(), phone = v("jc-phone");
+      // someone already in the CRM with this email or phone: say so first, and a second tap adds them anyway (as estimates do)
+      const dupe = S.leads.find(x => (email && String(x.email || "").toLowerCase() === email) || (digits(phone).length >= 10 && digits(x.phone).slice(-10) === digits(phone).slice(-10)));
+      const dk = dupe ? [dupe.id, name, email, digits(phone)].join("|") : "";
+      if (dupe && JC.confirmed !== dk) { JC.confirmed = dk; toast(`${leadName(dupe)} already has this ${email && String(dupe.email || "").toLowerCase() === email ? "email" : "phone"}. Pick them under Customer, or tap Save again to add ${name} as a new customer.`, 7000); return; }
+      const stage = paid ? "paid" : js.some(j => j.status === "completed") ? "completed" : "scheduled";
+      const doc = { name, company: "", phone, email, address: v("jc-addr"), city: "", type: "Residential", source: js[0].source || "Other", stage, stageSince: jobStageSince(stage, js), services: [], value: total, nextFollowUp: "", dnc: false, list: "leads", notes: "", createdAt: now, updatedAt: now, activity: [{ at: now, type: "created", text: `Added from the Money tab for ${js.length > 1 ? "jobs" : "a job"} with no customer: ${what}` }] };
+      if (blockedEmail(email)) doc.noAutoEmail = true;
+      t.disabled = true;
+      try { await saveDoc("leads", id, doc); } catch (e) { t.disabled = false; return; }
+      l = Object.assign({ id }, doc); made = true;
+    }
+  }
+  t.disabled = true;
+  try {
+    for (const j of js) {
+      // its title follows them unless it was typed in by hand
+      const jf = { leadId: l.id, updatedAt: now }; if (!j.title || /^(Job|Estimate): /.test(j.title)) jf.title = (j.kind === "visit" ? "Estimate: " : "Job: ") + leadName(l);
+      await saveDoc("jobs", j.id, jf, true);
+      // its estimate and invoice go on them too (a blank Bill To gets their details)
+      for (const d of [jobEst(j), jobInvoice(j)]) if (d && !leadById(d.leadId)) await saveDoc("quotes", d.id, Object.assign({ leadId: l.id, updatedAt: now }, (d.billTo || []).some(x => String(x).trim()) ? {} : { billTo: billToFor(l) }), true);
+    }
+    if (!made) {
+      // someone already in the CRM: the job goes in their history, and a paid one makes them Paid (as + Add job does)
+      const cur = leadById(l.id) || l, upd = { activity: activity(cur, "job", `Job put on them from the Money tab: ${what}${paid ? ", paid" : ""}`), updatedAt: now };
+      if (cur.stage !== "paid" && !cur.dnc) { if (paid) upd.stage = "paid"; else if (PRE_SALE.includes(cur.stage || "new")) upd.stage = js.some(j => j.status === "completed") ? "completed" : "scheduled"; if (upd.stage) { upd.stageSince = jobStageSince(upd.stage, js); const fu = endFollowUp(cur, upd); if (fu) upd.activity[0].text += " · " + fu; } }
+      if (!cur.value) upd.value = total;
+      if (isOutreach(cur)) { const ss = upd.stageSince; Object.assign(upd, PROMOTE()); if (ss) upd.stageSince = ss; } // (a Paid date from the job stays)
+      await saveDoc("leads", l.id, upd, true);
+    }
+  } catch (e) { t.disabled = false; return; }
+  JC = null; closeModal();
+  // a customer just added shows as soon as the leads list has them
+  for (let i = 0; i < 20 && !leadById(l.id); i++) await new Promise(r => setTimeout(r, 100));
+  if (leadById(l.id)) openLead(l.id, "work");
+  toast(made ? `${leadName(l)} is added, with ${js.length > 1 ? "these jobs" : "this job"}.` : `${js.length > 1 ? "The jobs are" : "The job is"} on ${leadName(l)} now.`, 5000);
+};
+// a job paid from an estimate that was put on a customer before that carried over to its job (quotes.js does it now):
+// put it on them too, once a load, so it's in their history (the owner's device does it)
+function healJobLeads() {
+  if (healJobLeads.ran || !S.dataReady || !calOwner()) return; healJobLeads.ran = true;
+  const now = new Date().toISOString();
+  for (const j of S.jobs.filter(x => x.kind === "job" && !x.leadId)) {
+    const e = jobEst(j), l = e && leadById(e.leadId); if (!l) continue;
+    saveDoc("jobs", j.id, { leadId: l.id, title: "Job: " + leadName(l), updatedAt: now }, true).catch(() => {});
+    const inv = jobInvoice(j); if (inv && !leadById(inv.leadId)) saveDoc("quotes", inv.id, Object.assign({ leadId: l.id, updatedAt: now }, (inv.billTo || []).some(x => String(x).trim()) ? {} : { billTo: billToFor(l) }), true).catch(() => {});
+  }
+}
 
 // ---------- CREW BONUS (elias, 2026-10-21) ----------
 // Who did each paid job, what it put in the business bank (its price times its % to bank, the same as Money's "Paid into
@@ -4170,8 +4654,8 @@ VIEWS.bonus = () => {
     ${c.people.length ? `<tr><td></td><td><b>Total</b></td><td class="n"><b>${c.jobs.length}</b></td><td class="n"><b>${M(c.rev)}</b></td><td class="num"><b>${M(c.bank)}</b></td><td></td><td class="n"><b>${pool == null ? "–" : M(pool)}</b></td></tr>` : ""}</tbody></table></div>
     ${c.people.some(p => p.name === "Not recorded") ? `<p class="pad note">"Not recorded" is jobs with no crew on them. Add the crew on Money to count them for someone.</p>` : ""}</section>
   <section class="panel flush"><div class="panel-h"><h2>Every paid job</h2><span class="count">${plural(jobs.length, "job")}${noPct ? ` · ${noPct} with no % to bank` : ""}</span></div>
-    <div class="list only-narrow">${jobs.map(j => `<div class="item static flow"><div class="main-col"><span class="t">${j.l ? `<button class="who" data-open-lead="${esc(j.l.id)}">${esc(j.client)}</button>` : esc(j.client)}</span><span class="s">${esc([dl(j.date), j.svc, crewL(j), j.src].filter(Boolean).join(" · "))}</span></div><div class="r"><b class="num">${M(j.price)}</b>${bankBox(j.j)}</div></div>`).join("") || `<div class="pad note">No paid jobs ${y === "all" ? "yet" : "in " + y}.</div>`}</div>
-    <div class="tablewrap only-wide"><table class="t"><thead><tr><th>Date</th><th>Customer</th><th>Service</th><th>Crew</th><th>Lead source</th><th class="n">Price</th><th>% to bank</th><th class="n">To bank</th></tr></thead><tbody>${jobs.map(j => `<tr><td class="num" style="white-space:nowrap">${esc(dl(j.date))}</td><td>${j.l ? `<button class="who" data-open-lead="${esc(j.l.id)}">${esc(j.client)}</button>` : esc(j.client)}</td><td>${esc(j.svc)}</td><td>${esc(crewL(j))}</td><td>${esc(j.src)}</td><td class="n">${M(j.price)}</td><td>${bankBox(j.j, "-w")}${j.bankPct == null ? `<span class="flag">not set</span>` : ""}</td><td class="n"><b>${M(j.bank)}</b></td></tr>`).join("") || `<tr><td colspan="8" class="muted">No paid jobs ${y === "all" ? "yet" : "in " + y}.</td></tr>`}
+    <div class="list only-narrow">${jobs.map(j => `<div class="item static flow"><div class="main-col"><span class="t">${j.l ? `<button class="who" data-open-lead="${esc(j.l.id)}">${esc(j.client)}</button>` : `<button class="who" ${jobCustAttr(j.id)}>${esc(j.client)}</button>`}</span><span class="s">${esc([dl(j.date), j.svc, crewL(j), j.src].filter(Boolean).join(" · "))}</span></div><div class="r"><b class="num">${M(j.price)}</b>${bankBox(j.j)}</div></div>`).join("") || `<div class="pad note">No paid jobs ${y === "all" ? "yet" : "in " + y}.</div>`}</div>
+    <div class="tablewrap only-wide"><table class="t"><thead><tr><th>Date</th><th>Customer</th><th>Service</th><th>Crew</th><th>Lead source</th><th class="n">Price</th><th>% to bank</th><th class="n">To bank</th></tr></thead><tbody>${jobs.map(j => `<tr><td class="num" style="white-space:nowrap">${esc(dl(j.date))}</td><td>${j.l ? `<button class="who" data-open-lead="${esc(j.l.id)}">${esc(j.client)}</button>` : `<button class="who" ${jobCustAttr(j.id)}>${esc(j.client)}</button>`}</td><td>${esc(j.svc)}</td><td>${esc(crewL(j))}</td><td>${esc(j.src)}</td><td class="n">${M(j.price)}</td><td>${bankBox(j.j, "-w")}${j.bankPct == null ? `<span class="flag">not set</span>` : ""}</td><td class="n"><b>${M(j.bank)}</b></td></tr>`).join("") || `<tr><td colspan="8" class="muted">No paid jobs ${y === "all" ? "yet" : "in " + y}.</td></tr>`}
     ${jobs.length ? `<tr><td colspan="5"><b>Total</b></td><td class="n"><b>${M(c.rev)}</b></td><td>${c.rev ? pct(c.bank / c.rev) + " overall" : ""}</td><td class="n"><b>${M(c.bank)}</b></td></tr>` : ""}</tbody></table></div>
     <p class="pad note">The % to bank is the share of the job's price that went into the business bank. Change it in the box and it saves when you leave the box.</p></section>`;
 };
@@ -4747,6 +5231,7 @@ function blastListen(db) {
     const ib = docs.find(d => d.id === "inbox"); S.inboxDone = (ib && ib.done) || {}; // Email > Inbox: the conversations dealt with
     const bo = docs.find(d => d.id === "bonus"); S.bonusPct = bo && bo.pct != null && bo.pct !== "" && Number(bo.pct) >= 0 ? Number(bo.pct) : null; S.bonusOut = bo && Array.isArray(bo.out) ? bo.out : null; // Crew bonus % and who's left out (bonus.js)
     const vac = docs.find(d => d.id === "blast-pause" && d.kind === "pause"); S.vacation = vac || null;
+    const eg = docs.find(d => d.id === "efu-gone"); S.efuGone = (eg && eg.ids) || {}; if (Object.values(S.efuGone).some(Boolean) && typeof calSweepSoon === "function") calSweepSoon(); // deleted estimates' follow-ups still to come off Google Calendar (estfu.js)
     if (typeof txOnSettings === "function") txOnSettings(docs); // text blasts and the texting sender (texts.js)
     vacEnforce();
     // an address you allowed again is off this list at once, before the sender catches up
@@ -7897,7 +8382,7 @@ function toCSV(rows) { return rows.map(r => r.map(v => { const s = String(v ?? "
 // expenses deleted in the last few seconds, so one Undo brings all of them back
 const delExps = []; let delExpTimer = null;
 document.addEventListener("click", async (e) => {
-  const t = e.target.closest("button, a, [data-open-lead], [data-scrim], tr[data-open-lead], th[data-sort]"); if (!t) return;
+  const t = e.target.closest("button, a, [data-open-lead], [data-open-quote], [data-job-cust], [data-scrim], tr[data-open-lead], th[data-sort]"); if (!t) return;
   if (t.dataset.scrim && e.target === t) { if (modalUnsaved()) { toast("You have unsaved changes. Save them, or tap × to close without saving."); return; } closeModal(); return; }
   if (t.dataset.close) { closeModal(); return; }
   if (t.dataset.nav) {
@@ -7919,6 +8404,7 @@ document.addEventListener("click", async (e) => {
   if (t.dataset.stageTo) { const sl = leadById(openLeadId); if (sl && (sl.stage || "new") !== t.dataset.stageTo) moveStage(sl, t.dataset.stageTo).catch(() => {}); return; }
   if (t.dataset.openLead && !e.target.closest(".msgrow .row")) { openLead(t.dataset.openLead); return; }
   if (t.dataset.openQuote) { const q = S.quotes.find(x => x.id === t.dataset.openQuote); if (q) openQuoteEditor(q); return; }
+  if (t.dataset.jobCust) { openJobCust(t.dataset.jobCust); return; } // a job with no customer (nolead.js)
   if (t.hasAttribute("data-copy")) { copy(t.dataset.copy, t.dataset.copyLabel); return; }
   if (t.dataset.mode) { S.leadFilter.mode = t.dataset.mode; try { localStorage.setItem("gic-lead-mode", t.dataset.mode); } catch (_) {} render(); return; }
   if (t.dataset.ogrp) { const g = t.dataset.ogrp; S.outOpen.has(g) ? S.outOpen.delete(g) : S.outOpen.add(g); render(); return; }
@@ -8094,7 +8580,7 @@ document.addEventListener("click", async (e) => {
         t.disabled = true; $("#q-status-line").textContent = "Saving and making the PDF…";
         // saving first adds or links a customer typed under Customer, so the checks below go by them
         if (!(await saveQuote(true))) { t.disabled = false; $("#q-status-line").textContent = ""; break; }
-        const ql = quoteLead(); const to = (ql && ql.email) || (QD.billTo.find(x => /@/.test(x)) || "");
+        const ql = quoteLead(), qid0 = QD.id, qn0 = QD.number; const to = (ql && ql.email) || (QD.billTo.find(x => /@/.test(x)) || "");
         if (ql && ql.dnc) { toast("This lead is marked do not contact"); t.disabled = false; $("#q-status-line").textContent = ""; break; }
         if (!to) { toast("Add an email to Bill To or pick a lead with an email"); t.disabled = false; $("#q-status-line").textContent = ""; break; }
         let blob; try { blob = await quotePDFBlob(); } catch (er) { toast(er.message || "Couldn't make the PDF"); t.disabled = false; $("#q-status-line").textContent = ""; break; }
@@ -8104,7 +8590,7 @@ document.addEventListener("click", async (e) => {
           const nm0 = (ql && firstName(ql)) || String(QD.billTo[0] || "").split(/\s+/)[0] || "there"; const kind0 = QD.docType === "INVOICE" ? "invoice" : "estimate";
           const file = new File([blob], fname, { type: "application/pdf" });
           let share = false; try { share = matchMedia("(pointer: coarse)").matches && !!navigator.canShare && navigator.canShare({ files: [file] }); } catch (_) {}
-          S.qSend = { leadId: ql ? ql.id : "", to, file, kind: kind0, number: QD.number, subject: `Your ${kind0} from Get It Clean Tampa Bay (#${QD.number})`,
+          S.qSend = { qid: qid0, leadId: ql ? ql.id : "", to, file, kind: kind0, number: QD.number, subject: `Your ${kind0} from Get It Clean Tampa Bay (#${QD.number})`,
             body: `Hi ${nm0},\n\nThank you for the opportunity${ql && ql.company ? " to work on " + ql.company : ""}. Your ${kind0} from Get It Clean Tampa Bay is attached (${kind0} #${QD.number}, total ${money(quoteTotals(QD).total, true)}).\n\n${kind0 === "invoice" ? "Payment by check or Zelle is welcome. " : "If everything looks good, just reply to this email and I'll get you on the schedule. "}Feel free to call or text me with any questions.\n\nThank you,\nElias\nGet It Clean Tampa Bay\n727-254-1391\ngetitclean.tb@gmail.com` };
           t.disabled = false;
           $("#q-status-line").innerHTML = share ? `PDF ready. <button class="btn sm primary" data-act="q-share">Send it</button>` : `PDF ready. <button class="btn sm primary" data-act="q-mail-pc">Download it and open Gmail</button>`;
@@ -8119,8 +8605,10 @@ document.addEventListener("click", async (e) => {
         const body = `Hi ${nm},\n\nThank you for the opportunity${ql && ql.company ? " to work on " + ql.company : ""}. Your ${kind} from Get It Clean Tampa Bay is attached (${kind} #${QD.number}, total ${money(quoteTotals(QD).total, true)}).\n\n${kind === "invoice" ? "Payment by check or Zelle is welcome. " : "If everything looks good, just reply to this email and I'll get you on the schedule. "}Feel free to call or text me with any questions.\n\nThank you,\nElias\nGet It Clean Tampa Bay\n727-254-1391\ngetitclean.tb@gmail.com`;
         const p = await makeDraft(Object.assign({}, ql || {}, { email: to }), `Your ${kind} from Get It Clean Tampa Bay (#${QD.number})`, body, att);
         t.disabled = false;
-        if (p) { $("#q-status-line").innerHTML = `Draft to ${esc(to)} with the PDF is in your Gmail. ${p.viewUrl ? `<a href="${esc(p.viewUrl)}" target="_blank" rel="noopener">Open it to send</a>` : ""}`; if (ql) await saveDoc("leads", ql.id, { activity: activity(ql, "email", `${kind} ${QD.number} drafted in Gmail`), updatedAt: new Date().toISOString() }, true); }
-        else $("#q-status-line").textContent = "";
+        // the estimate may have been closed (or another opened) while the draft was made: it still counts as sent
+        const sl = QD && QD.id === qid0 ? $("#q-status-line") : null;
+        if (p) { if (sl) sl.innerHTML = `Draft to ${esc(to)} with the PDF is in your Gmail. ${p.viewUrl ? `<a href="${esc(p.viewUrl)}" target="_blank" rel="noopener">Open it to send</a>` : ""}`; if (ql) { const cl = leadById(ql.id) || ql; await saveDoc("leads", cl.id, { activity: activity(cl, "email", `${kind} ${qn0} drafted in Gmail`), updatedAt: new Date().toISOString() }, true); } await efuEmailed(qid0); }
+        else if (sl) sl.textContent = "";
         break; }
       case "q-share": case "q-mail-pc": {
         const qs = S.qSend; if (!qs) break; const ql2 = leadById(qs.leadId);
@@ -8128,8 +8616,10 @@ document.addEventListener("click", async (e) => {
           try { await navigator.share({ files: [qs.file], title: qs.subject, text: qs.body }); }
           catch (er) { if (er && er.name === "AbortError") break; toast("Couldn't open the share sheet. Use Download PDF instead."); break; }
         } else { openCompose(qs.to, qs.subject, qs.body + "\n\n(The PDF is attached.)"); await saveFile(qs.file.name, qs.file); }
-        $("#q-status-line").textContent = act === "q-share" ? "Opened in your email app. Send it from there." : "Gmail opened in a new tab and the PDF downloaded. Attach the PDF there and send.";
-        if (ql2) await saveDoc("leads", ql2.id, { activity: activity(ql2, "email", `${qs.kind} ${qs.number} opened in your email app to send`), updatedAt: new Date().toISOString() }, true);
+        { const sl2 = QD && QD.id === qs.qid ? $("#q-status-line") : null; if (sl2) sl2.textContent = act === "q-share" ? "Opened in your email app. Send it from there." : "Gmail opened in a new tab and the PDF downloaded. Attach the PDF there and send."; }
+        // their history as it is now (the share sheet can stay up a while)
+        if (ql2) { const cl = leadById(ql2.id) || ql2; await saveDoc("leads", cl.id, { activity: activity(cl, "email", `${qs.kind} ${qs.number} opened in your email app to send`), updatedAt: new Date().toISOString() }, true); }
+        await efuEmailed(qs.qid);
         break; }
       case "q-status": await quoteStatus(t.dataset.s); break;
       case "bk-open": if (await saveQuote(true)) startBooking(); break;
@@ -8139,7 +8629,9 @@ document.addEventListener("click", async (e) => {
       case "q-to-invoice": { if (!(await saveQuote(true))) break; const src = QD; const inv = Object.assign(JSON.parse(JSON.stringify(src)), { id: "", docType: "INVOICE", date: today(), status: "draft", fromQuote: src.id }); inv.number = nextNumber(inv.date); QD = inv; $("#modal .sheet").innerHTML = quoteEditorHTML(); renderItems(); updatePreview(); toast("Invoice started from the estimate. Save it when ready."); break; }
       case "q-delete": $("#q-status-line").innerHTML = `<span class="row">Delete this quote? <button class="btn sm danger" data-act="q-delete-yes">Delete</button><button class="btn sm" data-act="q-delete-no">Keep</button></span>`; break;
       case "q-delete-no": $("#q-status-line").innerHTML = ""; break;
-      case "q-delete-yes": await delDoc("quotes", QD.id); closeModal(); toast("Quote deleted"); break;
+      case "q-delete-yes": { // the quote this was tapped on, even if another one is opened while it's deleting
+        const dq = QD; if (!dq || !dq.id) break; t.disabled = true;
+        await efuForget(dq); await delDoc("quotes", dq.id); if (QD === dq) closeModal(); toast("Quote deleted"); break; }
       // The trip to Google leaves the page; what's typed in a lead or a Money form goes along and comes back (calConnectTap)
       case "cal-connect": await calConnectTap(); break;
       case "cal-disconnect": if (GC()) { GC().disconnect(); Object.keys(mailHist).forEach(k => delete mailHist[k]); toast("Google disconnected (Calendar and Gmail)"); } break;
@@ -8188,8 +8680,13 @@ document.addEventListener("click", async (e) => {
         invoiceAfterPay(paidId, paidJob || upd); // its invoice, for Sold clients
         S.payOpen = null; dropDraft(/^pay-/);
         if (dropQ) await saveDoc("quotes", dropQ.id, { status: "accepted", updatedAt: new Date().toISOString() }, true);
-        const jl = leadById(j.leadId); if (jl) { const lu = { stage: "paid" }; const fu = endFollowUp(jl, lu); Object.assign(lu, { activity: activity(jl, "paid", `Paid ${money(amt, true)} by ${upd.method}${fu ? " · " + fu : ""}`), updatedAt: new Date().toISOString() }); if (!jl.value) lu.value = amt; await saveDoc("leads", jl.id, lu, true); }
+        const jl = leadById(j.leadId); if (jl) { const lu = { stage: "paid" }; const fu = endFollowUp(jl, lu);
+          // the estimate this marked accepted goes in their history the usual way (it stops their other estimates' follow-ups)
+          const ja = dropQ ? Object.assign({}, jl, { activity: activity(jl, "quote", `Estimate ${dropQ.number} accepted`) }) : jl;
+          Object.assign(lu, { activity: activity(ja, "paid", `Paid ${money(amt, true)} by ${upd.method}${fu ? " · " + fu : ""}`), updatedAt: new Date().toISOString() }); if (!jl.value) lu.value = amt; await saveDoc("leads", jl.id, lu, true); }
         toast("Payment recorded"); schedule(); refreshLeadModal();
+        // paid from an estimate saved without a customer: ask who it was for right away (nolead.js)
+        if (isEst && !jobLead(paidJob)) (async () => { for (let i = 0; i < 30 && !S.jobs.some(x => x.id === paidId); i++) await new Promise(r => setTimeout(r, 100)); openJobCust(paidId); })();
         } finally { S.paying.delete(j.id); }
         break; }
       case "m-book": { const q = S.quotes.find(x => x.id === t.dataset.id); if (!q) break; openQuoteEditor(q); if (QD && QD.id === q.id && $("#modal #q-acts")) startBooking(); break; }
@@ -8326,6 +8823,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && e.target.id === "note-in") { e.preventDefault(); $('[data-act="add-note"]').click(); }
   if (e.key === "Enter" && e.target.matches && e.target.matches("th[data-sort]")) e.target.click();
   if ((e.key === "Enter" || e.key === " ") && e.target.matches && e.target.matches('div[role="button"][data-open-lead]')) { e.preventDefault(); openLead(e.target.dataset.openLead); }
+  else if ((e.key === "Enter" || e.key === " ") && e.target.matches && e.target.matches('div[role="button"][data-open-quote]')) { e.preventDefault(); const q = S.quotes.find(x => x.id === e.target.dataset.openQuote); if (q) openQuoteEditor(q); }
 });
 
 // ---------- boot ----------
@@ -8342,8 +8840,8 @@ async function init() {
     const loaded = {};
     const sub = (coll, key) => db.collection(coll).onSnapshot(snap => {
       S[key] = snap.docs.map(d => Object.assign({ id: d.id }, d.data())); loaded[key] = true;
-      const all = loaded.leads && loaded.quotes && loaded.jobs; if (all) { applyCarried(); sweepEstimates(); }
-      schedule(); if (key === "leads" || key === "quotes" || key === "jobs") refreshLeadModal(); if (key === "jobs") { refreshBook(); calSweepSoon(); }
+      const all = loaded.leads && loaded.quotes && loaded.jobs; if (all) { S.dataReady = true; applyCarried(); sweepEstimates(); efuBackfill(); healJobLeads(); }
+      schedule(); if (key === "leads" || key === "quotes" || key === "jobs") refreshLeadModal(); if (key === "jobs") refreshBook(); if (key === "jobs" || key === "quotes" || key === "leads") calSweepSoon(); // bookings, and estimate follow-ups (estfu.js)
       if (key === "leads") { autoPromote(); if (S.sweepAngi) S.sweepAngi(); if (S.blastPromote) S.blastPromote(); if (S.txBlockSync && (!snap.fromCache || S.leads.length)) S.txBlockSync(); }
       if (all && S.pendingOpen && leadById(S.pendingOpen) && !$("#modal").innerHTML) {
         const pid = S.pendingOpen, pt = S.pendingOpenTab; S.pendingOpen = null; S.pendingOpenTab = null; openLead(pid, pt || undefined);
