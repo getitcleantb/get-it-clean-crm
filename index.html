@@ -1819,11 +1819,13 @@ function kpiData() {
   const ytdRev = sum(paid.filter(j => pdate(j).startsWith(y)), j => j.amount);
   // the same estimates the Quotes tab counts as Accepted: said yes, job not paid yet
   const acc = acceptedWaiting(), accV = sum(acc, q => q.total);
-  const openQ = S.quotes.filter(q => q.status === "sent" || q.status === "draft");
+  // estimates only: an invoice is for a job already won, not a quote (as on the Quotes tab)
+  const openQ = S.quotes.filter(q => !isInvoice(q) && (q.status === "sent" || q.status === "draft"));
   const openQv = sum(openQ, q => q.total);
-  const newLeads = leadsOnly().filter(l => l.stage === "new" && !l.dnc).length;
-  const cts = [monthRev, ytdRev, openQv].some(v => Math.round(v * 100) % 100 !== 0); // cents only when something has cents, as on Money
-  return { monthRev, ytdRev, acc, accV, openQ, openQv, newLeads, cts };
+  // jobs marked done and not paid yet (elias, 2026-10-25: in place of New leads waiting on first contact)
+  const owed = S.jobs.filter(j => j.kind === "job" && j.status === "completed"), owedV = sum(owed, j => j.amount);
+  const cts = [monthRev, ytdRev, openQv, owedV].some(v => Math.round(v * 100) % 100 !== 0); // cents only when something has cents, as on Money
+  return { monthRev, ytdRev, acc, accV, openQ, openQv, owed, owedV, cts };
 }
 // a follow-up day you picked (the date on the lead, a Follow up result or stage, a new lead's date) and not one the CRM
 // set by itself (No answer, a quote sent, Budget next year, a new Angi lead). Set before fuBy was kept: the history says
@@ -1861,7 +1863,7 @@ VIEWS.today = () => {
   ${pageHead(`${greeting()}, Elias`, new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }), `<button class="btn hide-mob" data-act="new-lead">+ New lead</button><button class="btn primary" data-act="new-quote">+ New quote</button>`)}
   ${noDbBanner()}
   ${vacIsOn() ? `<div class="banner warn spread"><span>Vacation mode is on: no email blasts, text blasts or drip messages are going out. (The HOA follow-up emails Claude sends still go unless you ask Claude to pause them.)</span><button class="btn sm" data-nav="email">Turn it off</button></div>` : ""}
-  ${kpiStrip([["Paid this month", money(k.monthRev, k.cts), `${money(k.ytdRev, k.cts)} this year`], ["Jobs accepted", money(k.accV), `${plural(k.acc.length, "job")} waiting for completion`], ["Open quotes", money(k.openQv, k.cts), `${plural(k.openQ.length, "quote")} out`], ["New leads", k.newLeads, "Waiting on first contact"]])}
+  ${kpiStrip([["Paid this month", money(k.monthRev, k.cts), `${money(k.ytdRev, k.cts)} this year`], ["Jobs accepted", money(k.accV), `${plural(k.acc.length, "job")} waiting for completion`], ["Open quotes", money(k.openQv, k.cts), `${plural(k.openQ.length, "quote")} out`], ["Jobs completed", money(k.owedV, k.cts), `${plural(k.owed.length, "job")} waiting on payment`]])}
   <div class="today-grid">
     <div class="col-stack">
     <section class="panel flush" id="todo-today"><div class="panel-h"><h2>To do today</h2><span class="count">${todo ? plural(todo, "thing") : ""}</span></div>
@@ -2622,7 +2624,9 @@ const QSTAT_CLS = { draft: "", sent: "s-quoted", accepted: "s-scheduled", declin
 const PRE_SALE = ["new", "contacted", "working", "estimate", "selling", "followup"];
 // the customer's name for lists, file names and emails (Bill To's second line can be a phone or an email)
 function quoteCust(q) { const l = leadById(q.leadId); return (l && (l.company || l.name)) || (q.billTo || [])[0] || ""; }
-const qPill = (q) => q.id ? `<span class="pill ${QSTAT_CLS[q.status] || ""}">${esc(QSTAT[q.status] || "Draft")}</span>` : "";
+// what it is, once it's sent (elias, 2026-10-25): "Sent invoice" or "Sent estimate"
+const qLabel = (q) => q.status === "sent" ? (isInvoice(q) ? "Sent invoice" : "Sent estimate") : QSTAT[q.status] || "Draft";
+const qPill = (q) => q.id ? `<span class="pill ${QSTAT_CLS[q.status] || ""}">${esc(qLabel(q))}</span>` : "";
 function quoteRow(q, jobPaid) {
   const l = leadById(q.leadId);
   return `<button class="item" data-open-quote="${esc(q.id)}"><div class="main-col"><span class="t">${isInvoice(q) ? "Invoice" : "Estimate"} ${esc(q.number)} · ${esc(quoteCust(q))}</span><span class="s">${esc(fmtD(q.date, { month: "short", day: "numeric", year: "numeric" }))}${l && l.name && l.company ? " · " + esc(l.name) : ""}</span></div><div class="r"><span class="num" style="font-weight:700">${money(q.total, true)}</span>${jobPaid instanceof Set && jobPaid.has(q.id) ? `<span class="pill s-paid">Job paid</span>` : qPill(q)}</div></button>`;
