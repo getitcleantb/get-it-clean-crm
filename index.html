@@ -4116,15 +4116,23 @@ Object.assign(EXTRA_ACTS, {
 // more people counts the same for each of them. Opened from the Crew bonus section on Money.
 S.bonus = { year: "" };
 S.bonusPct = null; // settings/bonus: the bonus %, of what each person's jobs put in the bank
-const crewNames = (c) => [...new Set(String(c || "").split(/\s*(?:\+|&|,|\/|\band\b)\s*/i).map(x => x.trim()).filter(Boolean).map(x => x.length <= 3 ? x.toUpperCase() : x))];
+S.bonusOut = null; // settings/bonus: who's left out of the bonus
+const crewName = (x) => x.length <= 3 ? x.toUpperCase() : x;
+const crewNames = (c) => [...new Set(String(c || "").split(/\s*(?:\+|&|,|\/|\band\b)\s*/i).map(x => x.trim()).filter(Boolean).map(crewName))];
+// left out until the owner changes it: elias, 2026-10-25, "Take Adam off the bonus" (Adam is AL)
+const BONUS_OUT = ["AL"];
+const bonusOut = () => (Array.isArray(S.bonusOut) ? S.bonusOut : BONUS_OUT).map(x => crewName(String(x).trim()));
+const inBonus = (p) => p.name !== "Not recorded" && !bonusOut().includes(p.name);
 function bonusYears(R) { const y = today().slice(0, 4), ys = [...new Set(R.jobs.map(j => j.date.slice(0, 4)).filter(x => /^\d{4}$/.test(x)).concat(y))]; return ys.sort().reverse(); }
 function bonusCalc(R, y) {
   const jobs = R.jobs.filter(j => y === "all" || j.date.startsWith(y)).map(j => Object.assign({}, j, { bank: j.price * (j.bankPct || 0), who: crewNames(j.j.crew) }));
   const P = {};
   jobs.forEach(j => { const w = j.who.length ? j.who : ["Not recorded"]; w.forEach(p => { const x = P[p] = P[p] || { name: p, jobs: 0, sales: 0, bank: 0 }; x.jobs++; x.sales += j.price / w.length; x.bank += j.bank / w.length; }); });
-  const people = Object.values(P).sort((a, b) => (a.name === "Not recorded") - (b.name === "Not recorded") || b.bank - a.bank || b.sales - a.sales || a.name.localeCompare(b.name));
-  const ppl = people.filter(p => p.name !== "Not recorded"), lead = ppl[0] && ppl[0].bank > 0 ? ppl[0] : null;
-  return { jobs, people, lead, tied: !!lead && !!ppl[1] && Math.abs(ppl[1].bank - lead.bank) < 0.005, bank: sum(jobs, j => j.bank), rev: sum(jobs, j => j.price) };
+  // the people on the bonus first, by what they put in the bank, then "Not recorded", then anyone left out of the bonus
+  const grp = (p) => inBonus(p) ? 0 : p.name === "Not recorded" ? 1 : 2;
+  const people = Object.values(P).sort((a, b) => grp(a) - grp(b) || b.bank - a.bank || b.sales - a.sales || a.name.localeCompare(b.name));
+  const ppl = people.filter(inBonus), lead = ppl[0] && ppl[0].bank > 0 ? ppl[0] : null;
+  return { jobs, people, lead, tied: !!lead && !!ppl[1] && Math.abs(ppl[1].bank - lead.bank) < 0.005, bank: sum(jobs, j => j.bank), rev: sum(jobs, j => j.price), inBank: sum(ppl, p => p.bank) };
 }
 const bonusYear = (R) => { const ys = bonusYears(R), y = S.bonus.year; return y === "all" || ys.includes(y) ? y : today().slice(0, 4); };
 const bonusOwner = () => { const G = window.GIC; return !G || !G.me || !!(G.me() || {}).isOwner; };
@@ -4141,21 +4149,25 @@ VIEWS.bonus = () => {
   const cts = c.jobs.some(j => hasC(j.price) || hasC(j.bank)) || c.people.some(p => hasC(p.bank) || hasC(p.sales) || (pc != null && hasC(p.bank * pc / 100))), M = v => money(v, cts);
   const yl = y === "all" ? "all time" : y, mx = Math.max(0.01, ...c.people.map(p => p.bank));
   const dl = (d) => d ? fmtD(d, { month: "short", day: "numeric", year: y === "all" ? "numeric" : undefined }) : "";
-  const share = (p) => c.bank ? pct(p.bank / c.bank) : "–", bon = (p) => pc == null ? "–" : M(p.bank * pc / 100);
-  const tag = (p) => c.lead && !c.tied && p === c.lead ? ` <span class="pill s-paid">In the lead</span>` : c.tied && c.lead && Math.abs(p.bank - c.lead.bank) < 0.005 && p.name !== "Not recorded" ? ` <span class="pill s-scheduled">Tied</span>` : "";
+  const share = (p) => c.bank ? pct(p.bank / c.bank) : "–", bon = (p) => pc == null || !inBonus(p) ? "–" : M(p.bank * pc / 100), pool = pc == null ? null : c.inBank * pc / 100;
+  const tag = (p) => !inBonus(p) ? (p.name === "Not recorded" ? "" : ` <span class="pill s-lost">Not in the bonus</span>`) : c.lead && !c.tied && p === c.lead ? ` <span class="pill s-paid">In the lead</span>` : c.tied && c.lead && Math.abs(p.bank - c.lead.bank) < 0.005 ? ` <span class="pill s-scheduled">Tied</span>` : "";
+  const rank = (p, i) => inBonus(p) ? i + 1 : "";
+  // everyone who has worked a job, for "Who gets a bonus"
+  const crew = [...new Set(CREW.concat(R.jobs.flatMap(j => crewNames(j.j.crew))))], out = bonusOut();
   const jobs = c.jobs.slice().sort((a, b) => b.date.localeCompare(a.date) || a.client.localeCompare(b.client)), noPct = jobs.filter(j => j.bankPct == null).length;
   const crewL = (j) => j.who.length ? j.who.join(" + ") + (j.who.length > 1 ? " (shared)" : "") : "Not recorded";
   return `${pageHead("Crew bonus", `Who did each paid job, what it put in the business bank, and who's in the lead. ${esc(yl === "all time" ? "All time" : yl)}.`, `<button class="btn" data-nav="money">Back to Money</button>`)}
   ${noDbBanner()}
   <div class="chips" role="group" aria-label="Pick a year">${ys.map(x => [x, x]).concat([["all", "All time"]]).map(([k, t]) => `<button data-act="bonus-year" data-y="${k}" aria-pressed="${k === y}">${t}</button>`).join("")}</div>
-  ${kpiStrip([["Paid into bank", M(c.bank), c.rev ? `${pct(c.bank / c.rev)} of ${M(c.rev)} in sales` : "No paid jobs yet"], ["Paid jobs", c.jobs.length, `${M(c.rev)} in sales`], ["In the lead", c.lead ? (c.tied ? "Tied" : esc(c.lead.name)) : "–", c.lead ? `${M(c.lead.bank)} put in the bank` : "Nothing in the bank yet"], ["Bonus pool", pc == null ? "–" : M(c.bank * pc / 100), pc == null ? "Set the bonus % below" : `${pc}% of what went in the bank`]])}
+  ${kpiStrip([["Paid into bank", M(c.bank), c.rev ? `${pct(c.bank / c.rev)} of ${M(c.rev)} in sales` : "No paid jobs yet"], ["Paid jobs", c.jobs.length, `${M(c.rev)} in sales`], ["In the lead", c.lead ? (c.tied ? "Tied" : esc(c.lead.name)) : "–", c.lead ? `${M(c.lead.bank)} put in the bank` : "Nothing in the bank yet"], ["Bonus pool", pool == null ? "–" : M(pool), pc == null ? "Set the bonus % below" : `${pc}% of what the people on the bonus put in the bank`]])}
   <section class="panel"><div class="panel-h"><h2>Bonus</h2></div>
     <div class="form"><label class="f">Bonus to pay out (%)<input type="number" id="bonus-pct" min="0" max="100" step="any" inputmode="decimal" value="${pc == null ? "" : pc}" placeholder="10" data-hold${own ? "" : " disabled"}></label></div>
-    <p class="note">Each person's bonus is this % of what their jobs put in the bank, and the pool is the same % of the total.${own ? "" : " Only the owner can change it."} A job two or more people worked counts the same for each of them.</p></section>
+    <div class="f"><span>Who gets a bonus</span><div class="chips" role="group" aria-label="Who gets a bonus">${crew.map(n => `<button data-act="bonus-who" data-n="${esc(n)}" aria-pressed="${!out.includes(n)}"${own ? "" : " disabled"}>${esc(n)}</button>`).join("")}</div></div>
+    <p class="note">Each person's bonus is this % of what their jobs put in the bank, and the pool is that for everyone on the bonus added up. Tap a name to take them off the bonus or put them back.${own ? "" : " Only the owner can change these."} A job two or more people worked is split evenly between them.</p></section>
   <section class="panel flush"><div class="panel-h"><h2>Who's in the lead</h2><span class="count">${esc(yl)}</span></div>
-    <div class="list only-narrow">${c.people.map((p, i) => `<div class="item static"><div class="main-col"><span class="t">${p.name === "Not recorded" ? "" : i + 1 + ". "}${esc(p.name)}${tag(p)}</span><span class="s">${plural(p.jobs, "job")} · ${M(p.sales)} in sales · ${share(p)} of the bank</span></div><div class="r"><b class="num">${M(p.bank)}</b><span class="note">${pc == null ? "to the bank" : bon(p) + " bonus"}</span></div></div>`).join("") || `<div class="pad note">No paid jobs ${y === "all" ? "yet" : "in " + y}.</div>`}</div>
-    <div class="tablewrap only-wide"><table class="t"><thead><tr><th>#</th><th>Who</th><th class="n">Jobs</th><th class="n">Sales</th><th style="min-width:150px">Put in the bank</th><th class="n">Share</th><th class="n">Bonus</th></tr></thead><tbody>${c.people.map((p, i) => `<tr><td class="num">${p.name === "Not recorded" ? "" : i + 1}</td><td><b>${esc(p.name)}</b>${tag(p)}</td><td class="n">${p.jobs}</td><td class="n">${M(p.sales)}</td><td class="num">${M(p.bank)}<div class="mini-bar" style="width:${p.bank / mx * 100}%"></div></td><td class="n">${share(p)}</td><td class="n">${bon(p)}</td></tr>`).join("") || `<tr><td colspan="7" class="muted">No paid jobs ${y === "all" ? "yet" : "in " + y}.</td></tr>`}
-    ${c.people.length ? `<tr><td></td><td><b>Total</b></td><td class="n"><b>${c.jobs.length}</b></td><td class="n"><b>${M(c.rev)}</b></td><td class="num"><b>${M(c.bank)}</b></td><td></td><td class="n"><b>${pc == null ? "–" : M(c.bank * pc / 100)}</b></td></tr>` : ""}</tbody></table></div>
+    <div class="list only-narrow">${c.people.map((p, i) => `<div class="item static"><div class="main-col"><span class="t">${rank(p, i) ? rank(p, i) + ". " : ""}${esc(p.name)}${tag(p)}</span><span class="s">${plural(p.jobs, "job")} · ${M(p.sales)} in sales · ${share(p)} of the bank</span></div><div class="r"><b class="num">${M(p.bank)}</b><span class="note">${pc == null || !inBonus(p) ? "to the bank" : bon(p) + " bonus"}</span></div></div>`).join("") || `<div class="pad note">No paid jobs ${y === "all" ? "yet" : "in " + y}.</div>`}</div>
+    <div class="tablewrap only-wide"><table class="t"><thead><tr><th>#</th><th>Who</th><th class="n">Jobs</th><th class="n">Sales</th><th style="min-width:150px">Put in the bank</th><th class="n">Share</th><th class="n">Bonus</th></tr></thead><tbody>${c.people.map((p, i) => `<tr><td class="num">${rank(p, i)}</td><td><b>${esc(p.name)}</b>${tag(p)}</td><td class="n">${p.jobs}</td><td class="n">${M(p.sales)}</td><td class="num">${M(p.bank)}<div class="mini-bar" style="width:${p.bank / mx * 100}%"></div></td><td class="n">${share(p)}</td><td class="n">${bon(p)}</td></tr>`).join("") || `<tr><td colspan="7" class="muted">No paid jobs ${y === "all" ? "yet" : "in " + y}.</td></tr>`}
+    ${c.people.length ? `<tr><td></td><td><b>Total</b></td><td class="n"><b>${c.jobs.length}</b></td><td class="n"><b>${M(c.rev)}</b></td><td class="num"><b>${M(c.bank)}</b></td><td></td><td class="n"><b>${pool == null ? "–" : M(pool)}</b></td></tr>` : ""}</tbody></table></div>
     ${c.people.some(p => p.name === "Not recorded") ? `<p class="pad note">"Not recorded" is jobs with no crew on them. Add the crew on Money to count them for someone.</p>` : ""}</section>
   <section class="panel flush"><div class="panel-h"><h2>Every paid job</h2><span class="count">${plural(jobs.length, "job")}${noPct ? ` · ${noPct} with no % to bank` : ""}</span></div>
     <div class="list only-narrow">${jobs.map(j => `<div class="item static flow"><div class="main-col"><span class="t">${j.l ? `<button class="who" data-open-lead="${esc(j.l.id)}">${esc(j.client)}</button>` : esc(j.client)}</span><span class="s">${esc([dl(j.date), j.svc, crewL(j), j.src].filter(Boolean).join(" · "))}</span></div><div class="r"><b class="num">${M(j.price)}</b>${bankBox(j.j)}</div></div>`).join("") || `<div class="pad note">No paid jobs ${y === "all" ? "yet" : "in " + y}.</div>`}</div>
@@ -4172,7 +4184,16 @@ after.bonus = () => {
     try { await saveDoc("settings", "bonus", { kind: "bonus", pct: v, updatedAt: new Date().toISOString() }, true); toast(v == null ? "Bonus % cleared" : `Bonus set to ${v}%`); } catch (e) {}
   });
 };
-Object.assign(EXTRA_ACTS, { "bonus-year": (t) => { S.bonus.year = t.dataset.y; render(); } });
+Object.assign(EXTRA_ACTS, {
+  "bonus-year": (t) => { S.bonus.year = t.dataset.y; render(); },
+  // take someone off the bonus, or put them back (owner only)
+  "bonus-who": async (t) => {
+    if (!bonusOwner()) return;
+    const n = t.dataset.n, cur = bonusOut(), out = cur.includes(n) ? cur.filter(x => x !== n) : cur.concat(n);
+    S.bonusOut = out; render();
+    try { await saveDoc("settings", "bonus", { kind: "bonus", out, updatedAt: new Date().toISOString() }, true); toast(out.includes(n) ? `${n} is off the bonus` : `${n} is back on the bonus`); } catch (e) {}
+  }
+});
 
 // ---------- MONTHLY BILLS AND OVERHEAD (elias, 2026-10-21) ----------
 // An expense saved with Repeats: Every month (insurance, a lead vendor's subscription, anything billed monthly) is one
@@ -4724,7 +4745,7 @@ function blastListen(db) {
     const t = docs.find(d => d.id === "blast-templates"); S.blastTpl = t && Array.isArray(t.list) ? t.list : null;
     const al = docs.find(d => d.id === "blast-allow"); S.blastAllow = (al && al.allow) || {};
     const ib = docs.find(d => d.id === "inbox"); S.inboxDone = (ib && ib.done) || {}; // Email > Inbox: the conversations dealt with
-    const bo = docs.find(d => d.id === "bonus"); S.bonusPct = bo && bo.pct != null && bo.pct !== "" && Number(bo.pct) >= 0 ? Number(bo.pct) : null; // Crew bonus % (bonus.js)
+    const bo = docs.find(d => d.id === "bonus"); S.bonusPct = bo && bo.pct != null && bo.pct !== "" && Number(bo.pct) >= 0 ? Number(bo.pct) : null; S.bonusOut = bo && Array.isArray(bo.out) ? bo.out : null; // Crew bonus % and who's left out (bonus.js)
     const vac = docs.find(d => d.id === "blast-pause" && d.kind === "pause"); S.vacation = vac || null;
     if (typeof txOnSettings === "function") txOnSettings(docs); // text blasts and the texting sender (texts.js)
     vacEnforce();
