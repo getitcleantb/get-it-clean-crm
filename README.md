@@ -4,7 +4,7 @@ The customer CRM for Get It Clean Tampa Bay. It's a website: open it in a browse
 
 ## Where things live
 
-- **This repository** holds only the website: the page (`index.html`), the Firebase code (`fb.js`), the settings for the Firebase project (`config.js`), the home-screen icons and the offline helper (`sw.js`). No customer data is ever stored here.
+- **This repository** holds only the website: the page (`index.html`), the Firebase code (`fb.js`), the settings for the Firebase project (`config.js`), the home-screen icons, the offline helper (`sw.js`) and the page customers see when they're texted an invoice (`i.html`). No customer data is ever stored here.
 - **Firebase** (in the business Google account) holds the sign-ins and all the CRM data: leads, quotes, jobs, expenses and settings.
 - **GitHub Pages** serves this repository as the website.
 
@@ -37,6 +37,8 @@ Booked estimates and jobs go straight onto the business calendar (getitclean.tb@
 ## Texting (Quo)
 
 Email & Texts has a text inbox and text blasts. Texts go out from the Quo business number through a small Google Apps Script in the business Google account, so the Quo API key never reaches a crew login and texting keeps working when the CRM is closed. The owner sets it up once, on a computer, under Settings > Texting: save the Quo API key, publish the security rules, paste the script and its settings at script.google.com, and run `textSetup`. Quo must also finish its US carrier registration (10DLC) before texts can go out.
+
+Text invoice on an invoice writes a text to the number on the customer's lead with their first name, the total and a private link, and Send text sends it (or, before texting is set up, Open in Messages puts the same text in the phone's Messages app). Quo sends words only, so the link opens a view-only picture of the invoice (`i.html`) that the customer can save or print. The picture is kept in Firestore under `shared`, where the rules let anyone with its long random link open that one picture and nothing else; nobody can list them. Texting the invoice again uses the same link, a saved change to the invoice updates what it shows, putting the invoice on a different customer stops the old link, and deleting the invoice deletes the picture. Links only work once the rules from Settings > Texting are published.
 
 Numbers that text STOP (or ask in other words) are never texted again unless they text START. Every text blast ends with "Reply STOP to opt out.", sends only 8 AM to 8 PM Eastern, and sends one text per number. Start asks the owner to confirm that everyone on it agreed to get texts. Vacation mode on the Email & Texts tab pauses email blasts, text blasts and drips.
 

@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>Your invoice · Get It Clean Tampa Bay</title>
+<!-- The view-only invoice a customer gets a link to by text (v2/txinv.js). It reads one shared/{key} document, which
+     the database rules let anyone with the key open; nothing else in the CRM can be reached from here. -->
+<style>
+  :root { --bg: #f4f6fb; --card: #fff; --ink: #14213d; --muted: #5b6475; --line: #dde2ec; --accent: #1d43d8; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #0f1420; --card: #171e2e; --ink: #e8ecf4; --muted: #a3acbd; --line: #2a3346; --accent: #7d98ff; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  main { max-width: 1000px; margin: 0 auto; padding: 20px 16px 32px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 16px; }
+  .sheet { background: #fff; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .sheet img { display: block; width: 100%; height: auto; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; margin: 16px 0; }
+  .btn { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 18px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--ink); font: inherit; font-weight: 600; text-decoration: none; cursor: pointer; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .note { color: var(--muted); }
+  footer { color: var(--muted); font-size: 15px; border-top: 1px solid var(--line); padding-top: 14px; margin-top: 8px; }
+  footer a { color: var(--accent); }
+  @media print { body { background: #fff; } main { padding: 0; } h1, .sub, .row, footer { display: none; } .sheet { border: 0; box-shadow: none; border-radius: 0; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Get It Clean Tampa Bay</h1>
+  <p class="sub" id="sub">Your invoice</p>
+  <div id="box"><p class="note">Loading your invoice…</p></div>
+  <footer>Questions? Call or text Elias at <a href="tel:+17272541391">727-254-1391</a>, or email <a href="mailto:getitclean.tb@gmail.com">getitclean.tb@gmail.com</a>.</footer>
+</main>
+<script src="config.js"></script>
+<script>
+(function () {
+  window.addEventListener("hashchange", function () { location.reload(); }); // another invoice's link opened here
+  var box = document.getElementById("box"), sub = document.getElementById("sub");
+  function say(t) { box.innerHTML = ""; var p = document.createElement("p"); p.className = "note"; p.textContent = t; box.appendChild(p); }
+  var m = /(?:^#|&)k=([A-Za-z0-9_-]{24,64})(?:&|$)/.exec(location.hash || ""), key = m && m[1];
+  if (!key) { say("This link isn't complete. Ask us to text it again."); return; }
+  var c = window.GIC_CONFIG || {}, f = c.firebase || {}, emu = c.emulator;
+  if (!f.projectId) { say("Couldn't load your invoice. Try again later."); return; }
+  var url = (emu ? "http://" + emu.host + ":" + emu.port : "https://firestore.googleapis.com") + "/v1/projects/" + encodeURIComponent(f.projectId) + "/databases/(default)/documents/shared/" + key + (!emu && f.apiKey ? "?key=" + encodeURIComponent(f.apiKey) : "");
+  fetch(url, { cache: "no-store" }).then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); }).then(function (d) {
+    var x = (d && d.fields) || {}, val = function (k) { return (x[k] && x[k].stringValue) || ""; }, img = val("img");
+    if (val("kind") !== "invoice" || !/^data:image\/jpeg;base64,[A-Za-z0-9+\/=]+$/.test(img)) throw 404;
+    var num = val("number"), tot = val("total"), name = "Get_It_Clean_Invoice" + (num ? "_" + num.replace(/[^A-Za-z0-9-]+/g, "") : "") + ".jpg";
+    sub.textContent = "Invoice" + (num ? " " + num : "") + (tot ? " · " + tot : "");
+    document.title = "Invoice" + (num ? " " + num : "") + " · Get It Clean Tampa Bay";
+    box.innerHTML = "";
+    var sheet = document.createElement("div"); sheet.className = "sheet";
+    var im = document.createElement("img"); im.alt = "Invoice" + (num ? " " + num : "") + (tot ? ", total " + tot : ""); im.src = img; sheet.appendChild(im); box.appendChild(sheet);
+    var row = document.createElement("div"); row.className = "row";
+    var dl = document.createElement("a"); dl.className = "btn primary"; dl.href = img; dl.download = name; dl.textContent = "Save a copy"; row.appendChild(dl);
+    var pr = document.createElement("button"); pr.className = "btn"; pr.type = "button"; pr.textContent = "Print"; pr.onclick = function () { window.print(); }; row.appendChild(pr);
+    box.appendChild(row);
+  }).catch(function (s) {
+    say(s === 404 || s === 403 ? "This invoice link isn't available anymore. Ask us to text it again." : "Couldn't load your invoice. Check your connection and try again.");
+  });
+})();
+</script>
+</body>
+</html>

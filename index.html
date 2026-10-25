@@ -1281,8 +1281,8 @@ html.gated, html.gated body { overflow: hidden; }
   const denied = (e) => { if (e && e.code === "permission-denied" && me && !me.isOwner && gateState !== "notmember") showGate("notmember", "Your access to this CRM was turned off. Ask Elias if that's a mistake."); };
   const docSnap = (s) => ({ id: s.id, exists: s.exists(), data: () => (s.exists() ? toPlain(s.data()) : undefined) });
   // rulesv is only read, to check the database rules are up to date; texts and private (the texting key) aren't backed
-  // up either (a restored queued text would go out again)
-  const checkPath = (path) => { const segs = String(path).split("/").filter(Boolean); if (!COLLS.includes(segs[0]) && !["rulesv", "texts", "private"].includes(segs[0])) throw Object.assign(new Error("Unknown collection " + segs[0]), { code: "invalid_argument" }); return segs; };
+  // up either (a restored queued text would go out again), nor shared (the view-only copies texted invoices link to)
+  const checkPath = (path) => { const segs = String(path).split("/").filter(Boolean); if (!COLLS.includes(segs[0]) && !["rulesv", "texts", "private", "shared"].includes(segs[0])) throw Object.assign(new Error("Unknown collection " + segs[0]), { code: "invalid_argument" }); return segs; };
   function docApi(segs) {
     const ref = F.doc(fs, ...segs);
     return {
@@ -1362,6 +1362,8 @@ html.gated, html.gated body { overflow: hidden; }
     serverDoc: async (coll, id) => { const d = await F.getDocFromServer(F.doc(fs, coll, id)); return d.exists() ? toPlain(d.data()) : null; },
     // fields of a document that must still be there ("a.b" sets b inside map a): fails, and changes nothing, once it's deleted
     patchDoc: (coll, id, fields) => F.updateDoc(F.doc(fs, coll, id), toStore(fields)),
+    // a whole document, resolved once the database has it (not when it's queued, as saveDoc is)
+    setDocAck: (coll, id, data) => F.setDoc(F.doc(fs, coll, id), toStore(data)),
     // the newest n texts, kept up to date (an error here never shows the "access turned off" screen: it's what crew
     // see until the owner publishes the rules that allow texts)
     textsListen: (n, cb, err) => F.onSnapshot(F.query(F.collection(fs, "texts"), F.orderBy("at", "desc"), F.limit(n)), snap => cb(snap.docs.map(d => Object.assign({ id: d.id }, toPlain(d.data())))), e => { if (err) err(mapErr(e)); }),
@@ -2661,6 +2663,8 @@ function openQuoteEditor(q, lead) {
   showModal(quoteEditorHTML(), true);
   renderItems(); updatePreview();
   window.addEventListener("resize", fitPreview);
+  // a texted invoice changed since its link was last made (marked paid with an extra line, say): the link catches up
+  if (q && isInvoice(QD) && QD.shareId && QD.shareSig !== tiHash(tiSig(QD))) { const ed = QD; setTimeout(() => tiResync(ed), 0); }
 }
 const sqNum = (v) => parseFloat(String(v ?? "").replace(/[^0-9.]/g, "")) || 0; // "1,234 sq ft" reads as 1234
 const bookItem = (name) => settings().priceBook.find(x => x.name === name);
@@ -2707,6 +2711,7 @@ function quoteEditorHTML() {
       <label class="f">Note under thank-you (optional)<input type="text" id="q-notes" value="${esc(QD.notes || "")}"></label>
       <div id="q-fit"></div>
       <div id="q-acts" class="stack">${quoteActsHTML()}</div>
+      <div id="q-text"></div>
       <div id="q-status-line" class="note"></div>
       <div class="qfoot"><div class="qtotal"><span>Total</span><span class="num" id="q-total"></span></div><button class="btn primary big" data-act="q-save">Save</button></div>
     </div>
@@ -2715,7 +2720,7 @@ function quoteEditorHTML() {
 }
 function quoteActsHTML() {
   const l = leadById(QD.leadId); const inv = isInvoice(QD);
-  const send = `<div class="qsec"><span class="lab">Send it</span><div class="actions"><button class="btn" data-act="q-pdf">Download PDF</button><button class="btn" data-act="q-png">Picture (to text)</button><button class="btn" data-act="q-email" ${l && l.dnc ? "disabled" : ""}>Email as Gmail draft</button></div>${l && l.dnc ? `<p class="note">${esc(leadName(l))} is marked do not contact, so emailing is off.</p>` : ""}</div>`;
+  const send = `<div class="qsec"><span class="lab">Send it</span><div class="actions"><button class="btn" data-act="q-pdf">Download PDF</button><button class="btn" data-act="q-png">Picture (to text)</button><button class="btn" data-act="q-email" ${l && l.dnc ? "disabled" : ""}>Email as Gmail draft</button>${inv && STANDALONE ? `<button class="btn" data-act="ti-open" ${l && l.dnc ? "disabled" : ""}>Text invoice</button>` : ""}</div>${l && l.dnc ? `<p class="note">${esc(leadName(l))} is marked do not contact, so emailing${inv ? " and texting are" : " is"} off.</p>` : ""}</div>`;
   if (!QD.id) return send;
   const opts = inv ? [["draft", "Draft"], ["sent", "Sent"], ["paid", "Paid"]] : [["draft", "Draft"], ["sent", "Sent"], ["accepted", "Accepted"], ["declined", "Declined"]];
   const cur = QD.status || "draft";
@@ -2775,13 +2780,16 @@ function estimateHTML(q, tier) {
   <div class="totals"><div class="grand"><span>TOTAL</span><span>${money(t.total, true)}</span></div></div></div>
   <div class="footer">LICENSED &amp; INSURED &nbsp;•&nbsp; QUALITY SERVICE YOU CAN TRUST</div></div>`;
 }
-async function renderCanvas() {
+// one picture at a time (they share #offscreen), of the quote given (the one open in the editor unless another is)
+let renderQ = Promise.resolve();
+function renderCanvas(scale, q) { const qq = q || QD, run = renderQ.then(() => renderCanvasNow(scale, qq)); renderQ = run.catch(() => {}); return run; }
+async function renderCanvasNow(scale, q) {
   const off = $("#offscreen");
   try { await document.fonts.ready; } catch (e) {}
-  if (!renderEst(off, QD)) { off.innerHTML = ""; throw new Error("Too many lines to fit on one page. Combine a few lines, then try again."); }
+  if (!renderEst(off, q)) { off.innerHTML = ""; throw new Error("Too many lines to fit on one page. Combine a few lines, then try again."); }
   if (!window.html2canvas) { off.innerHTML = ""; throw new Error("The PDF maker didn't load. Reload the page and try again."); }
   const el = off.firstElementChild;
-  const canvas = await window.html2canvas(el, { scale: 2, backgroundColor: "#ffffff", useCORS: true, logging: false, width: 1056, height: 816, windowWidth: 1200 });
+  const canvas = await window.html2canvas(el, { scale: scale || 2, backgroundColor: "#ffffff", useCORS: true, logging: false, width: 1056, height: 816, windowWidth: 1200 });
   off.innerHTML = ""; return canvas;
 }
 async function quotePDFBlob() {
@@ -2799,7 +2807,7 @@ async function saveFile(name, blob) {
 function blobToB64(blob) { return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(",")[1]); r.onerror = rej; r.readAsDataURL(blob); }); }
 // the name typed under Customer when nobody is picked: an existing customer with that name, or a new lead
 async function quoteNewCustomer() {
-  const box = $("#q-newname"); const name = box ? box.value.trim() : ""; if (QD.leadId || !name) return { ok: true };
+  const q = QD, box = $("#q-newname"); const name = box ? box.value.trim() : ""; if (QD.leadId || !name) return { ok: true };
   const norm = (x) => String(x || "").trim().toLowerCase().replace(/\s+/g, " ");
   const label = (l) => [l.company, l.name].filter(Boolean).join(" · ") || leadName(l);
   // a lead is matched on the name the CRM shows for it: the company when it has one, otherwise the person
@@ -2827,11 +2835,11 @@ async function quoteNewCustomer() {
   const doc = { name, company: "", phone, email, address, city: "", type: "Residential", source: "Other", stage, stageSince: today(), services: [], value: inv || st === "accepted" ? total : 0, nextFollowUp: "", dnc: false, list: "leads", notes: "", createdAt: now, updatedAt: now, activity: [{ at: now, type: "created", text: `Added from ${inv ? "invoice" : "estimate"} ${QD.number}` }] };
   if (blockedEmail(email)) doc.noAutoEmail = true;
   await saveDoc("leads", id, doc);
-  pickQuoteCust(id, name); return { ok: true, made: Object.assign({ id }, doc) };
+  pickQuoteCust(id, name, q); return { ok: true, made: Object.assign({ id }, doc) };
 }
 // shows the customer picked under Customer (adding them to the list if they're missing) and takes the name box away
-function pickQuoteCust(id, name) {
-  QD.leadId = id; delete QD.newName;
+function pickQuoteCust(id, name, q) {
+  q = q || QD; q.leadId = id; delete q.newName; if (q !== QD) return;
   const sel = $("#q-lead"), nb = $("#q-newname"), w = $("#q-newname-wrap");
   if (sel && name && !sel.querySelector(`option[value="${id}"]`)) (sel.querySelector("optgroup") || sel).appendChild(new Option(name, id));
   if (sel) { sel.value = id; sel.dataset.was = id; } if (nb) nb.value = ""; if (w) w.hidden = true;
@@ -2839,36 +2847,48 @@ function pickQuoteCust(id, name) {
 // a lead this editor just added, until the leads list catches up
 let quoteMadeLead = null;
 const quoteLead = () => leadById(QD.leadId) || (quoteMadeLead && quoteMadeLead.id === QD.leadId ? quoteMadeLead : null);
-// one save at a time: a second tap while it's saving waits for the first instead of saving a copy
-let quoteSaving = null;
+// one save at a time: a second tap while it's saving waits for the first instead of saving a copy (and another quote,
+// opened while one saves, is saved after it)
+let quoteSaving = null; // { q, p }
 async function saveQuote(silent) {
-  if (quoteSaving) return quoteSaving;
-  quoteSaving = saveQuoteNow(silent);
-  try { return await quoteSaving; } finally { quoteSaving = null; }
+  const q = QD;
+  while (quoteSaving && quoteSaving.q !== q) await quoteSaving.p.catch(() => {});
+  if (q !== QD) return false;
+  if (quoteSaving) return quoteSaving.p;
+  // something typed while it saves isn't in what's saved, so it stays unsaved
+  const was = S.dirty; S.dirty = false;
+  const p = saveQuoteNow(silent); quoteSaving = { q, p };
+  try { const ok = await p; if (!ok && QD === q) S.dirty = S.dirty || was; return ok; }
+  catch (e) { if (QD === q) S.dirty = S.dirty || was; throw e; }
+  finally { if (quoteSaving && quoteSaving.p === p) quoteSaving = null; }
 }
 async function saveQuoteNow(silent) {
+  // the quote being saved: another one can be opened while it saves, and that one isn't touched
+  const q = QD, lead0 = QD_LEAD;
   readQuoteHeader();
   if (!QD.number) { toast("Give it a number"); return false; }
   let nc; try { nc = await quoteNewCustomer(); } catch (e) { return false; }
   if (!nc.ok) return false;
-  const t = quoteTotals(QD); QD.total = t.total;
-  const isNew = !QD.id; const id = QD.id || uid("quote");
+  const t = quoteTotals(q); q.total = t.total;
+  const isNew = !q.id; const id = q.id || uid("quote");
   // blank lines stay on screen (so typing into one still works) but aren't saved
-  const { id: _, taxRate: _t, newName: _n, ...doc } = QD; doc.items = QD.items.filter(isLine); doc.updatedAt = new Date().toISOString(); if (isNew) doc.createdAt = doc.updatedAt;
+  const { id: _, taxRate: _t, newName: _n, ...doc } = q; doc.items = q.items.filter(isLine); doc.updatedAt = new Date().toISOString(); if (isNew) doc.createdAt = doc.updatedAt;
   // the % to bank is set on the Money tab, so the latest one stays even if it changed while this estimate was open
   const was = S.quotes.find(x => x.id === id); if (was && was.bankPct !== undefined) doc.bankPct = was.bankPct;
   // its follow-ups (estfu.js) aren't the editor's: an estimate already saved keeps them as the database has them (the
   // editor's copy can be behind), and a copy made from one has none
   EFU_FIELDS.forEach(f => { delete doc[f]; });
+  // and its texted link (txinv.js) is saved only when it's made: a copy never shares it
+  delete doc.shareId; delete doc.shareAt; delete doc.shareLead; delete doc.shareSig;
   // so is its status, once it's saved: Sent, Accepted and so on are saved by quoteStatusNow, and an editor opened before
   // another device marked it Accepted doesn't put it back to Sent
   if (!isNew) delete doc.status;
-  await saveDoc("quotes", id, doc, !isNew); QD.id = id;
-  const l = leadById(QD.leadId) || nc.made; const linked = (QD.leadId || "") !== QD_LEAD; QD_LEAD = QD.leadId || "";
+  await saveDoc("quotes", id, doc, !isNew); q.id = id;
+  const l = leadById(q.leadId) || nc.made; const linked = (q.leadId || "") !== lead0; if (QD === q) QD_LEAD = q.leadId || "";
   // an estimate put on a customer: a job paid from it while it had none (and that job's invoice) goes on them too; an
   // invoice put on one takes its job and the job's estimate along (nolead.js)
   const moved = [];
-  if (l && linked) for (const j of S.jobs.filter(x => x.kind === "job" && (isInvoice(QD) ? x.id === QD.jobId && !jobLead(x) : x.quoteId === id && !leadById(x.leadId)))) {
+  if (l && linked) for (const j of S.jobs.filter(x => x.kind === "job" && (isInvoice(q) ? x.id === q.jobId && !jobLead(x) : x.quoteId === id && !leadById(x.leadId)))) {
     const jf = { leadId: l.id, updatedAt: doc.updatedAt }; if (!j.title || /^(Job|Estimate): /.test(j.title)) jf.title = "Job: " + leadName(l); // (a title typed in by hand stays)
     await saveDoc("jobs", j.id, jf, true).catch(() => {}); moved.push(j);
     for (const d of [jobEst(j), jobInvoice(j)]) if (d && d.id !== id && !leadById(d.leadId)) await saveDoc("quotes", d.id, Object.assign({ leadId: l.id, updatedAt: doc.updatedAt }, (d.billTo || []).some(x => String(x).trim()) ? {} : { billTo: billToFor(l) }), true).catch(() => {});
@@ -2876,10 +2896,10 @@ async function saveQuoteNow(silent) {
   if (l && (isNew || linked || isOutreach(l))) {
     const upd = { updatedAt: doc.updatedAt };
     if (isNew || linked) {
-      const acc = !isInvoice(QD) && QD.status === "accepted";
-      upd.activity = activity(l, "quote", `${isInvoice(QD) ? "Invoice" : "Estimate"} ${QD.number} ${isNew ? "created" : "linked"}, ${money(t.total, true)}${acc ? ", accepted" : ""}`);
+      const acc = !isInvoice(q) && q.status === "accepted";
+      upd.activity = activity(l, "quote", `${isInvoice(q) ? "Invoice" : "Estimate"} ${q.number} ${isNew ? "created" : "linked"}, ${money(t.total, true)}${acc ? ", accepted" : ""}`);
       // only an open lead takes the estimate's total as its value; a past customer keeps their stage and value
-      if (!isInvoice(QD) && PRE_SALE.includes(l.stage || "new")) { upd.value = t.total; if (acc) upd.stage = "scheduled"; else if (l.stage !== "selling" && QD.status !== "declined") upd.stage = "selling"; }
+      if (!isInvoice(q) && PRE_SALE.includes(l.stage || "new")) { upd.value = t.total; if (acc) upd.stage = "scheduled"; else if (l.stage !== "selling" && q.status !== "declined") upd.stage = "selling"; }
       else if (acc && l.stage === "lost" && !l.dnc) { upd.value = t.total; upd.stage = "scheduled"; }
       // a job it carried along that's done or paid says where they are (as "Who was this job for?" does)
       const ms = moved.some(j => j.status === "paid") ? "paid" : moved.some(j => j.status === "completed") ? "completed" : "";
@@ -2892,9 +2912,8 @@ async function saveQuoteNow(silent) {
     await saveDoc("leads", l.id, upd, true);
     if (nc.made) quoteMadeLead = Object.assign({}, nc.made, upd);
   }
-  S.dirty = false;
   if (!silent) toast(nc.made ? `Saved, and ${nc.made.name} is added to your leads` : nc.matched ? `Saved on your existing customer ${nc.matched}` : "Saved");
-  syncQuoteChrome();
+  if (QD === q) syncQuoteChrome();
   return true;
 }
 // one status change at a time: a second tap while the first is saving is ignored
@@ -2907,18 +2926,18 @@ async function quoteStatus(s) {
 async function quoteStatusNow(s) {
   const q0 = QD;
   if (!(await saveQuote(true))) return;
-  const now = new Date().toISOString(); const inv = isInvoice(QD);
+  const now = new Date().toISOString(); const inv = isInvoice(q0);
   // an invoice marked Paid keeps the day it was paid (Sold clients matches it to the job by that day)
-  const patch = { status: s, updatedAt: now }; if (inv && s === "paid" && !QD.paidDate) patch.paidDate = today();
+  const patch = { status: s, updatedAt: now }; if (inv && s === "paid" && !q0.paidDate) patch.paidDate = today();
   // sent: the follow-ups start (not for someone marked do not contact), saved with the status in one write
-  const l = leadById(QD.leadId), fu = s === "sent" && !inv && !(l && l.dnc) ? efuNewPlan() : null;
+  const l = leadById(q0.leadId), fu = s === "sent" && !inv && !(l && l.dnc) ? efuNewPlan() : null;
   if (fu) Object.assign(patch, { fu, fuOff: "" });
-  await saveDoc("quotes", QD.id, patch, true); Object.assign(QD, patch);
+  await saveDoc("quotes", q0.id, patch, true); Object.assign(q0, patch);
   if (l && s !== "draft") {
     // a follow-up day saved before the CRM noted who set it keeps its owner (fuMine reads the newest line, and this one
     // used to set the day)
     const fb = s === "sent" && !inv && l.nextFollowUp && !l.fuBy ? (fuMine(l) ? "you" : "auto") : "";
-    const upd = { activity: activity(l, "quote", `${inv ? "Invoice" : "Estimate"} ${QD.number} ${s === "paid" ? "marked paid" : s}`), updatedAt: now };
+    const upd = { activity: activity(l, "quote", `${inv ? "Invoice" : "Estimate"} ${q0.number} ${s === "paid" ? "marked paid" : s}`), updatedAt: now };
     if (fb) upd.fuBy = fb;
     // estimates move open leads only; a customer who already had work done stays Done or Paid
     const open = PRE_SALE.includes(l.stage || "new");
@@ -2933,9 +2952,9 @@ async function quoteStatusNow(s) {
     await saveDoc("leads", l.id, upd, true);
   }
   if (fu) calSweepSoon();
-  syncQuoteChrome();
+  if (QD === q0) syncQuoteChrome();
   if (s === "paid" && l) toast("Marked paid. Record the payment on the job too, so Money counts it.", 9000, { label: "Open jobs", fn: () => { closeModal(); openLead(l.id, "work"); } });
-  else if (fu) efuStartedToast(fu, "Marked sent.", S.quotes.find(x => x.id === QD.id) || QD);
+  else if (fu) efuStartedToast(fu, "Marked sent.", S.quotes.find(x => x.id === q0.id) || q0);
   else toast(`Marked ${QSTAT[s].toLowerCase()}`);
   // the calendar opens only if this estimate is still the one on screen
   if (s === "accepted" && !inv && QD === q0 && $("#modal #q-acts")) startBooking();
@@ -7185,7 +7204,7 @@ async function txKeyLoad() {
 let txRulesAt = 0;
 function txRulesCheck(db) {
   db = db || S.db; txRulesAt = Date.now(); if (!db) return Promise.resolve();
-  return db.collection("rulesv").doc("texts1").get().then(() => { S.textRulesOk = true; }, (e) => { S.textRulesOk = e && e.code === "revoked" ? false : null; })
+  return db.collection("rulesv").doc("texts2").get().then(() => { S.textRulesOk = true; }, (e) => { S.textRulesOk = e && e.code === "revoked" ? false : null; })
     .then(() => { if (S.view === "settings" && S.setTab === "texting") schedule(); });
 }
 // how the script is doing: none (never checked in), old (needs the new code), stale (stopped checking in), error
@@ -7560,7 +7579,7 @@ if (TX_ON()) {
       ${st !== "none" ? `<p class="note">${s.number ? `Texting from <b>${esc(fmtPhone(s.number))}</b>. ` : ""}Last check ${esc(fmtWhen(new Date(s.lastRun)))}.${s.sentToday ? ` ${plural(s.sentToday, "text")} sent today.` : ""}${s.lastError ? ` <span class="pill due">Problem</span> ${esc(s.lastError)}` : ""}</p>${txBackfilling() ? `<p class="note">${esc(txBackfillNote())}</p>` : ""}` : ""}
       ${step(1, `Get your Quo API key${done(k ? k.has : null)}`, `<p class="note">In Quo on a computer, open Settings, then <b>API</b>, then <b>Generate API key</b> (only the Quo account owner or an admin sees it). Name it CRM, copy it, and paste it here. Quo also has to finish your US carrier registration (10DLC) before texts can go out this way. That's under Settings in Quo too.</p>
         <div class="row"><input type="password" id="tx-key" placeholder="${k && k.has ? `Saved key ending in ${esc(k.last4)}` : "Paste the API key"}" autocomplete="off" spellcheck="false" style="flex:1 1 240px" aria-label="Quo API key"><button class="btn primary" data-act="tx-key-save">Save key</button>${k && k.has ? `<button class="btn ghost" data-act="tx-key-del">Remove</button>` : ""}</div>`)}
-      ${step(2, `Update your database rules${done(S.textRulesOk)}`, `<p class="note">${S.textRulesOk ? "Your rules are up to date: only you can read the key or start text blasts." : `Open the <a href="https://console.firebase.google.com/project/${esc(pid)}/firestore/rules" target="_blank" rel="noopener">Firebase rules page</a>, select everything there, paste the new rules over it, and tap Publish. The key can't be saved until this is done. (The same rules cover email blasts.)`}</p>${S.textRulesOk ? "" : `<div class="row"><button class="btn" data-act="tx-copy-rules">Copy the rules</button></div>`}`)}
+      ${step(2, `Update your database rules${done(S.textRulesOk)}`, `<p class="note">${S.textRulesOk ? "Your rules are up to date: only you can read the key or start text blasts." : `Open the <a href="https://console.firebase.google.com/project/${esc(pid)}/firestore/rules" target="_blank" rel="noopener">Firebase rules page</a>, select everything there, paste the new rules over it, and tap Publish. The key can't be saved until this is done. (The same rules cover email blasts and the links in invoice texts.)`}</p>${S.textRulesOk ? "" : `<div class="row"><button class="btn" data-act="tx-copy-rules">Copy the rules</button></div>`}`)}
       ${step(3, "Open a new Google Apps Script project", `<p class="note">Open <a href="https://script.google.com/home/projects/create" target="_blank" rel="noopener">script.google.com</a> signed in as <b>${esc(BUSINESS.email)}</b> (the account that owns your Firebase project). Name the project “CRM texting”. It's separate from the email blast script.</p>`)}
       ${step(4, "Paste the code and the settings", `<p class="note">Select everything in the editor, delete it, and paste the code. Then tap the gear (Project Settings), tick <b>Show "appsscript.json" manifest file in editor</b>, open <b>appsscript.json</b> in the editor, and replace it with the settings.</p><div class="row"><button class="btn" data-act="tx-copy-code">Copy the code</button><button class="btn" data-act="tx-copy-manifest">Copy the settings</button></div>`)}
       ${step(5, `Run setup once${done(st === "ok" ? true : st === "none" ? null : false)}`, `<p class="note">Tap the save icon, pick <b>textSetup</b> next to Debug, and tap <b>Run</b>. Google asks for access: pick your account, tap Advanced, then Go to the project (unsafe), tick <b>Select all</b>, then Continue. It's your own script, so the warning is expected. When the log says “All set”, this page shows On. If you paste new code later, run textSetup again.</p>`)}
@@ -8374,6 +8393,209 @@ ${fsKit.toString()}
 `;
 const TEXT_MANIFEST = JSON.stringify({ timeZone: "America/New_York", runtimeVersion: "V8", exceptionLogging: "STACKDRIVER",
   oauthScopes: ["https://www.googleapis.com/auth/datastore", "https://www.googleapis.com/auth/script.external_request", "https://www.googleapis.com/auth/script.scriptapp", "https://www.googleapis.com/auth/userinfo.email"] }, null, 2);
+// ---------- TEXT AN INVOICE (elias, 2026-10-25) ----------
+// "as soon as I click invoice on one of the leads or in the quote tab ... I could have the option to send it out to them
+// ... It just uses the number on the lead and the name and sends the invoice out." Quo's API sends words only (no
+// pictures or PDFs), so the text carries a link to a view-only copy: shared/{key} holds a picture of the invoice, the
+// key is long and random, and the rules let anyone with the key open that one document but nobody list them (i.html
+// shows it). Text invoice on an invoice gets the link ready and shows the message to the number on their lead; Send
+// text queues it like any text typed in the CRM (the texting script sends it). Until texting is connected, Open in
+// Messages puts the same message in the phone's Messages app instead. Nothing goes out by itself.
+//   shared/{key}   kind "invoice", img (JPEG data URL, under 1 MB), number, total, quoteId, createdAt, updatedAt
+//   quotes/{id}    shareId: the key of its view-only copy (the same link each time it's texted), shareAt, shareSig
+//                  (a fingerprint of what the copy shows, so one changed elsewhere catches up when it's opened), and
+//                  shareLead: who it was made for, the lead or "~" and the Bill To name (put on someone else, the old
+//                  link stops and they get a new one)
+const TI_MAX = 900000; // a Firestore document holds 1 MB
+let TI = null; // the text box: { q (the editor copy it's for), qid, key, ready, err, body, sig }
+// a key per invoice until it's saved on it, links being made (true, then the box for it), deleted invoices, and saves
+// made while a link was being made
+const tiKeys = {}, tiBusy = {}, tiGone = new Set(), tiAgain = new Set();
+["ti-body", "ti-phone"].forEach(id => LIVE_IDS.add(id)); // (typing a text isn't an unsaved change to the invoice)
+// (never ending in "-": a phone's link finder can leave that off, and the link wouldn't open)
+const tiKey = () => { let k; do { const b = crypto.getRandomValues(new Uint8Array(24)); k = btoa(String.fromCharCode(...b)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); } while (k.endsWith("-")); return k; };
+// the view-only page, next to the CRM's own (https://getitcleantb.github.io/get-it-clean-crm/i.html#k=...)
+const tiLink = (k) => new URL("i.html#k=" + k, location.href.split("#")[0].split("?")[0].replace(/[^/]*$/, "")).href;
+// who it goes to: the number on their lead (not one marked wrong), else one typed in Bill To
+const tiPhone = (q, l) => (l && !l.phoneBad && leadPhone(l)) || phonesOf((q.billTo || []).join(" ")).find(p => !(l && l.phoneBad && p === leadPhone(l))) || "";
+const tiSmsNum = (p) => digits(p).replace(/^1(?=\d{10}$)/, ""); // as a Messages link: ten digits, as on a lead
+// what the copy shows: if any of it changes after the box opens, the box asks to start again
+// (the same for the editor's copy and the saved one, whatever order the database gives their fields in)
+const tiSig = (q) => JSON.stringify([q.leadId || "", q.docType || "", q.number || "", q.date || "", (q.billTo || []).map(String), (q.items || []).filter(isLine).map(i => [String(i.service || ""), String(i.description || ""), String(i.sqft || ""), String(i.price ?? ""), String(i.qty ?? "")]), q.notes || ""]);
+const tiLive = (q) => S.quotes.find(x => x.id === q.id) || null;
+const tiSnap = (q) => JSON.parse(JSON.stringify(q));
+function tiHash(s) { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); }
+// who a link is for: the customer, or with none picked, the name in Bill To (retyped for someone else, it's a new link)
+const tiNorm = (s) => String(s || "").trim().toLowerCase().replace(/\s+/g, " ");
+const tiFor = (q) => q.leadId || "~" + tiNorm((q.billTo || [])[0]);
+function tiSame(was, q) {
+  if (was === tiFor(q)) return true;
+  // made out by name, then put on a customer: the link carries over when it's that same person, by the customer's name
+  // or by Bill To still naming them (put on someone from Money or Sold clients, with Bill To left as it was; picking
+  // someone else under Customer puts their name in Bill To)
+  if (!was || was[0] !== "~" || !q.leadId) return false;
+  if ("~" + tiNorm((q.billTo || [])[0]) === was) return true;
+  const l = leadById(q.leadId);
+  return !!l && [l.name, l.company].some(n => n && "~" + tiNorm(n) === was);
+}
+const tiRulesMsg = () => txOwner() ? "Your database rules need an update before invoice links work: open Settings > Texting, step 2, copy the rules and publish them. Then try again."
+  : "Elias needs to update the database rules (Settings > Texting, step 2) before invoice links work.";
+const TI_CHANGED = "The invoice changed. Tap Text invoice again to text the new one.";
+function tiBody(q, l, link) {
+  const first = (l && String(l.name || "").trim().split(/\s+/)[0]) || "there", tot = money(quoteTotals(q).total, true);
+  return `Hi ${first}, this is ${BUSINESS.owner} with ${BUSINESS.name}. Here's your ${q.status === "paid" ? "paid invoice" : "invoice"} for ${tot}: ${link}\n\nThank you for your business!`;
+}
+// a picture of the invoice small enough to keep (the same one Picture (to text) makes, a little lighter)
+async function tiPicture(q) {
+  for (const [sc, ql] of [[1.5, 0.82], [1.5, 0.6], [1, 0.6]]) { const c = await renderCanvas(sc, q), img = c.toDataURL("image/jpeg", ql); if (img.length < TI_MAX) return img; }
+  throw new Error("The invoice picture came out too big to share. Combine a few lines, then try again.");
+}
+const tiWithin = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(Object.assign(new Error("late"), { code: "late" })), ms))]);
+// puts (or refreshes) the view-only copy of snap (the invoice as it was saved), and waits for the database to have it
+// (a link isn't shown or texted before then); the key is saved on the invoice the first time
+async function tiPublish(snap, key) {
+  const G = window.GIC, id = snap.id, now = new Date().toISOString(), img = await tiPicture(snap);
+  const drop = async () => { await delDoc("shared", key).catch(() => {}); throw new Error("gone"); };
+  // the invoice was deleted meanwhile: never written (a write after the delete would bring the copy back)
+  if (tiGone.has(id)) await drop();
+  try { await tiWithin(G.setDocAck("shared", key, { kind: "invoice", img, number: String(snap.number || ""), total: money(quoteTotals(snap).total, true), quoteId: id, createdAt: snap.shareAt || now, updatedAt: now }), 30000); }
+  catch (e) { throw new Error(/permission|revoked/.test(String(e && e.code)) ? "rules" : "save"); }
+  if (tiGone.has(id)) await drop();
+  // (a write that fails once the invoice is deleted, so it isn't made again with just these)
+  try { await tiWithin(G.patchDoc("quotes", id, { shareId: key, shareAt: snap.shareAt || now, shareLead: tiFor(snap), shareSig: tiHash(tiSig(snap)) }), 20000); }
+  catch (e) { if (/not.?found/i.test(String(e && (e.code || e.message)))) await drop(); throw new Error("save"); }
+  delete tiKeys[id];
+}
+// the link it has now: none once it was made for someone else (that one stops working, so they don't see this one)
+async function tiCurrentKey(snap) {
+  const live = tiLive(snap), key = live ? live.shareId : snap.shareId;
+  if (key && live && !tiSame(live.shareLead || "", snap)) {
+    // (cleared here at once, and in the database when there's signal, so a weak one doesn't hold this up)
+    await delDoc("shared", key).catch(() => {}); await tiWithin(window.GIC.patchDoc("quotes", snap.id, { shareId: "", shareAt: "", shareLead: "", shareSig: "" }), 2500).catch(() => {});
+    if (tiKeys[snap.id] === key) delete tiKeys[snap.id]; snap.shareAt = ""; return "";
+  }
+  snap.shareAt = (live && live.shareAt) || ""; return key || "";
+}
+// the box is out of date: something on the invoice changed since it opened (saved or not)
+function tiStale() { readQuoteHeader(); return S.dirty || tiSig(QD) !== TI.sig; }
+function tiDrop(msg) { TI = null; tiRefresh(); if (msg) toast(msg, 6000); }
+function tiGoHTML(phone) {
+  const to = e164(phone), bl = to ? txBlocked(to) : "";
+  if (!to) return `<p class="note">Type their cell number to text it.</p>`;
+  if (bl) return `<p class="note">${esc(bl)} Don't text them from your phone either.</p>`;
+  return txCanSend() ? `<button class="btn primary" data-act="ti-send">Send text</button>`
+    : `<a class="btn primary" id="ti-sms" href="${esc(`sms:${tiSmsNum(to)}?&body=${encodeURIComponent(TI ? TI.body : "")}`)}">Open in Messages</a>`;
+}
+function tiBoxHTML() {
+  if (!TI || !QD || TI.q !== QD) return "";
+  const l = leadById(QD.leadId), ph = tiPhone(QD, l);
+  const head = `<div class="row spread"><b>Text the invoice</b><button class="btn sm ghost" data-act="ti-close">Cancel</button></div>`;
+  if (TI.err) return `<div class="panel stack ti-box">${head}<p class="note">${esc(TI.err)}</p></div>`;
+  if (!TI.ready) return `<div class="panel stack ti-box">${head}<p class="note">Getting the invoice link ready…</p></div>`;
+  const where = ph ? (l && !l.phoneBad && leadPhone(l) === ph ? `The number on ${esc(leadName(l))}'s lead.` : "The number in Bill To.") + (l && l.phoneBad ? ` The one on ${esc(leadName(l))}'s lead is marked wrong.` : "")
+    : l && l.phoneBad ? `The number on ${esc(leadName(l))}'s lead is marked wrong. Type the right one.` : `No cell number on ${l ? esc(leadName(l)) + "'s lead" : "this invoice"}. Type theirs.`;
+  return `<div class="panel stack ti-box">${head}
+    <label class="f">To<input type="tel" id="ti-phone" value="${esc(ph ? fmtPhone(ph) : "")}" placeholder="Their cell number"></label>
+    <p class="note">${where}</p>
+    <label class="f">Message<textarea id="ti-body" rows="5">${esc(TI.body)}</textarea></label>
+    <p class="note" id="ti-parts">${esc(partsNote(TI.body))}. The link opens a view-only copy of this invoice.</p>
+    <div class="row" id="ti-go">${tiGoHTML(ph)}</div>
+    ${txCanSend() ? "" : `<p class="note">${esc(txWhyNot() || "Texting isn't set up yet.")} Open in Messages puts this text in your phone's Messages app to send from your own number.</p>`}
+  </div>`;
+}
+function tiRefresh() { const b = $("#q-text"); if (b) b.innerHTML = tiBoxHTML(); }
+// the editor's status can be behind (paid on another device meanwhile)
+function tiSyncStatus() { const live = QD && tiLive(QD); if (live && live.status && live.status !== QD.status) { QD.status = live.status; syncQuoteChrome(); } }
+// a tap while its link is being made: the box for it comes back (after Cancel), and fills in when the link is ready
+function tiBusyTap(qid) {
+  const b = tiBusy[qid]; if (!b) return false;
+  if (b !== true && b.q === QD && TI !== b) { TI = b; tiRefresh(); } else toast("Still getting the invoice link ready.");
+  return true;
+}
+EXTRA_ACTS["ti-open"] = async (t) => {
+  readQuoteHeader();
+  const l0 = leadById(QD.leadId); if (l0 && l0.dnc) { toast(`${leadName(l0)} is marked do not contact`); return; }
+  if (QD.id && tiBusyTap(QD.id)) return;
+  t.disabled = true;
+  try {
+    // saved first: a customer typed under Customer is added (or matched), and the copy is of what's saved
+    const q = QD;
+    if (!(await saveQuote(true)) || q !== QD || !q.id || !isInvoice(q)) return;
+    if (S.dirty) { toast("The invoice changed while it was saving. Tap Text invoice again."); return; }
+    const qid = q.id, l = leadById(q.leadId);
+    if (l && l.dnc) { toast(`${leadName(l)} is marked do not contact`); return; }
+    if (tiBusyTap(qid)) return;
+    tiBusy[qid] = true;
+    try {
+      tiSyncStatus();
+      const snap = tiSnap(q), key = (await tiCurrentKey(snap)) || tiKeys[qid] || (tiKeys[qid] = tiKey());
+      if (q !== QD) return; // (the editor was closed meanwhile)
+      const mine = TI = tiBusy[qid] = { q, qid, key, ready: false, err: "", body: tiBody(snap, l, tiLink(key)), sig: tiSig(snap) }; tiRefresh();
+      // the rules that let the link open (Settings > Texting, step 2), checked first so nothing is uploaded for nothing
+      if (S.textRulesOk !== true) await txRulesCheck();
+      try { if (S.textRulesOk === false) throw new Error("rules"); await tiPublish(snap, key); mine.ready = true; }
+      catch (e) { mine.err = e.message === "rules" ? tiRulesMsg() : e.message === "save" ? "Couldn't get the link ready. Check your signal and try again." : e.message === "gone" ? "This invoice was deleted." : e.message; }
+      if (TI === mine) { tiRefresh(); const f = $("#ti-body"); if (f && mine.ready) f.focus(); }
+    } finally {
+      delete tiBusy[qid];
+      // saved again while the link was being made: the copy catches up (and the box, made for the old one, closes)
+      if (tiAgain.delete(qid) && !tiGone.has(qid)) await tiResync(QD && QD.id === qid ? QD : q);
+    }
+  } finally { t.disabled = false; }
+};
+EXTRA_ACTS["ti-close"] = () => tiDrop();
+EXTRA_ACTS["ti-send"] = async (t) => {
+  if (!TI || !TI.ready || !QD || TI.q !== QD) return;
+  // the invoice changed after the link was made (a price, the customer...): start again so the link shows what's saved
+  if (tiStale()) { tiDrop(TI_CHANGED); return; }
+  const ph = e164(($("#ti-phone") || {}).value), body = String(($("#ti-body") || {}).value || "").trim(), l = leadById(QD.leadId);
+  if (!ph) { toast("Type their cell number"); const b = $("#ti-phone"); if (b) b.focus(); return; }
+  const q = QD, qid = q.id; if (txSending.has(qid)) return; txSending.add(qid); t.disabled = true;
+  try {
+    const id = await txQueue(ph, body, { lead: l && leadPhone(l) === ph ? l : null }); if (!id) return;
+    if (TI && TI.q === q) tiDrop();
+    // a texted invoice is Sent (unless it's further along already): from the editor if it's still open on it
+    if (QD === q && $("#modal #q-lead")) { tiSyncStatus(); if ((QD.status || "draft") === "draft") await quoteStatus("sent"); } else await tiMarkSent(qid);
+    const sl = QD === q ? $("#modal #q-status-line") : null; if (sl) sl.textContent = `Text to ${fmtPhone(ph)} is on its way. It shows under Email & Texts > Texts.`;
+    toast("Invoice text queued");
+  } finally { txSending.delete(qid); t.disabled = false; }
+};
+// the editor was closed while the text was saving: marked Sent from what's saved, as the Sent button does
+async function tiMarkSent(qid) {
+  const q = S.quotes.find(x => x.id === qid); if (!q || (q.status || "draft") !== "draft") return;
+  const now = new Date().toISOString(); await saveDoc("quotes", qid, { status: "sent", updatedAt: now }, true);
+  const l = leadById(q.leadId); if (!l) return;
+  const upd = { activity: activity(l, "quote", `Invoice ${q.number} sent`), updatedAt: now }; if (isOutreach(l)) Object.assign(upd, PROMOTE());
+  await saveDoc("leads", l.id, upd, true);
+}
+// Open in Messages: the same check as Send text, before the phone opens Messages (so it runs first, and at once)
+document.addEventListener("click", (e) => {
+  const a = e.target && e.target.closest && e.target.closest("#ti-sms"); if (!a) return;
+  if (!TI || !TI.ready || !QD || TI.q !== QD) { e.preventDefault(); return; }
+  if (tiStale()) { e.preventDefault(); tiDrop(TI_CHANGED); }
+}, true);
+// what's typed: the Messages link, the button and the character count follow
+document.addEventListener("input", (e) => {
+  if (!TI || !e.target || !["ti-body", "ti-phone"].includes(e.target.id)) return;
+  if (e.target.id === "ti-body") { TI.body = e.target.value; const p = $("#ti-parts"); if (p) p.textContent = partsNote(TI.body) + ". The link opens a view-only copy of this invoice."; const a = $("#ti-sms"); if (a) a.href = `sms:${tiSmsNum(($("#ti-phone") || {}).value)}?&body=${encodeURIComponent(TI.body)}`; }
+  else { const g = $("#ti-go"); if (g) g.innerHTML = tiGoHTML(e.target.value); }
+});
+// a different customer or type: the box is for what was there, so it closes
+document.addEventListener("change", (e) => { if (TI && e.target && ["q-lead", "q-type"].includes(e.target.id)) tiDrop(); });
+// an invoice already texted, after a save: its view-only copy follows what's saved (so a fixed price shows on the same
+// link), put on someone else the old link stops, and a box opened before the change closes
+async function tiResync(q) {
+  if (!q || !q.id || q !== QD || !isInvoice(q) || !STANDALONE || S.dirty) return;
+  if (tiBusy[q.id]) { tiAgain.add(q.id); return; } // (done once the link being made is ready)
+  if (TI && TI.q === q && tiSig(q) !== TI.sig) tiDrop(TI_CHANGED);
+  try { const snap = tiSnap(q), key = await tiCurrentKey(snap); if (key) await tiPublish(snap, key); } catch (e) {}
+}
+// a deleted invoice: its link stops working (one being made right now, or saved from another device, included)
+async function tiDropLinks(q, sk) {
+  if (!q || !q.id) return; tiGone.add(q.id);
+  const keys = new Set([sk, (tiLive(q) || q).shareId, q.shareId, tiKeys[q.id]].filter(Boolean));
+  for (const k of keys) await delDoc("shared", k).catch(() => {});
+}
 
 // ---------- CSV export ----------
 function toCSV(rows) { return rows.map(r => r.map(v => { const s = String(v ?? ""); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }).join(",")).join("\n"); }
@@ -8571,7 +8793,7 @@ document.addEventListener("click", async (e) => {
       case "new-quote": openQuoteEditor(null, null); break;
       case "q-add-item": QD.items.push({ service: "", description: "", sqft: "", price: 0, qty: 1 }); S.dirty = true; renderItems(); updatePreview(); { const last = $("#q-items .qitem:last-child [data-k=service]"); if (last) last.focus(); } break;
       case "q-del-item": QD.items.splice(+t.dataset.i, 1); S.dirty = true; renderItems(); updatePreview(); break;
-      case "q-save": await saveQuote(); break;
+      case "q-save": if (await saveQuote()) await tiResync(QD); break; // (a texted invoice's link shows what's saved)
       case "q-pdf": { readQuoteHeader(); t.disabled = true; $("#q-status-line").textContent = "Making the PDF…"; try { const b = await quotePDFBlob(); await saveFile(quoteFileBase() + ".pdf", b); } catch (er) { toast(er.message || "Couldn't make the PDF"); } t.disabled = false; $("#q-status-line").textContent = ""; break; }
       case "q-png": { readQuoteHeader(); t.disabled = true; $("#q-status-line").textContent = "Making the picture…"; try { const c = await renderCanvas(); const b = await new Promise(r => c.toBlob(r, "image/png")); await saveFile(quoteFileBase() + ".png", b); } catch (er) { toast(er.message || "Couldn't make the picture"); } t.disabled = false; $("#q-status-line").textContent = ""; break; }
       case "q-email": {
@@ -8580,6 +8802,7 @@ document.addEventListener("click", async (e) => {
         t.disabled = true; $("#q-status-line").textContent = "Saving and making the PDF…";
         // saving first adds or links a customer typed under Customer, so the checks below go by them
         if (!(await saveQuote(true))) { t.disabled = false; $("#q-status-line").textContent = ""; break; }
+        tiResync(QD); // (a texted invoice's link shows what's saved; the PDF waits its turn for the picture maker)
         const ql = quoteLead(), qid0 = QD.id, qn0 = QD.number; const to = (ql && ql.email) || (QD.billTo.find(x => /@/.test(x)) || "");
         if (ql && ql.dnc) { toast("This lead is marked do not contact"); t.disabled = false; $("#q-status-line").textContent = ""; break; }
         if (!to) { toast("Add an email to Bill To or pick a lead with an email"); t.disabled = false; $("#q-status-line").textContent = ""; break; }
@@ -8621,17 +8844,18 @@ document.addEventListener("click", async (e) => {
         if (ql2) { const cl = leadById(ql2.id) || ql2; await saveDoc("leads", cl.id, { activity: activity(cl, "email", `${qs.kind} ${qs.number} opened in your email app to send`), updatedAt: new Date().toISOString() }, true); }
         await efuEmailed(qs.qid);
         break; }
-      case "q-status": await quoteStatus(t.dataset.s); break;
+      case "q-status": await quoteStatus(t.dataset.s); if (QD && isInvoice(QD)) await tiResync(QD); break;
       case "bk-open": if (await saveQuote(true)) startBooking(); break;
       case "bk-save": await bookSave(t); break;
       case "q-tie": await tieJobHere(t.dataset.id); break;
       case "bk-back": S.book = null; $("#modal .sheet").innerHTML = quoteEditorHTML(); renderItems(); updatePreview(); S.dirty = false; break;
-      case "q-to-invoice": { if (!(await saveQuote(true))) break; const src = QD; const inv = Object.assign(JSON.parse(JSON.stringify(src)), { id: "", docType: "INVOICE", date: today(), status: "draft", fromQuote: src.id }); inv.number = nextNumber(inv.date); QD = inv; $("#modal .sheet").innerHTML = quoteEditorHTML(); renderItems(); updatePreview(); toast("Invoice started from the estimate. Save it when ready."); break; }
+      case "q-to-invoice": { if (!(await saveQuote(true))) break; const src = QD; const inv = Object.assign(JSON.parse(JSON.stringify(src)), { id: "", docType: "INVOICE", date: today(), status: "draft", fromQuote: src.id }); delete inv.shareId; delete inv.shareAt; delete inv.shareLead; delete inv.shareSig; inv.number = nextNumber(inv.date); QD = inv; $("#modal .sheet").innerHTML = quoteEditorHTML(); renderItems(); updatePreview(); toast("Invoice started from the estimate. Save it when ready."); break; }
       case "q-delete": $("#q-status-line").innerHTML = `<span class="row">Delete this quote? <button class="btn sm danger" data-act="q-delete-yes">Delete</button><button class="btn sm" data-act="q-delete-no">Keep</button></span>`; break;
       case "q-delete-no": $("#q-status-line").innerHTML = ""; break;
       case "q-delete-yes": { // the quote this was tapped on, even if another one is opened while it's deleting
         const dq = QD; if (!dq || !dq.id) break; t.disabled = true;
-        await efuForget(dq); await delDoc("quotes", dq.id); if (QD === dq) closeModal(); toast("Quote deleted"); break; }
+        // its texted link stops working too (read before it's deleted: a link made on another device is on the saved copy)
+        await efuForget(dq); const sk = (tiLive(dq) || dq).shareId; await delDoc("quotes", dq.id); await tiDropLinks(dq, sk); if (QD === dq) closeModal(); toast("Quote deleted"); break; }
       // The trip to Google leaves the page; what's typed in a lead or a Money form goes along and comes back (calConnectTap)
       case "cal-connect": await calConnectTap(); break;
       case "cal-disconnect": if (GC()) { GC().disconnect(); Object.keys(mailHist).forEach(k => delete mailHist[k]); toast("Google disconnected (Calendar and Gmail)"); } break;

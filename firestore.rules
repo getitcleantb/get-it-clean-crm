@@ -55,9 +55,18 @@ service cloud.firestore {
     match /private/{docId} {
       allow read, write: if isOwner();
     }
+    // the view-only copy of an invoice texted to a customer (i.html): anyone with its long random key can open that one,
+    // nobody can list them, and only the team can make, change or remove one
+    match /shared/{key} {
+      allow get: if key.size() >= 24;
+      allow list: if false;
+      allow create, update: if isTeam() && request.resource.data.keys().hasOnly(['kind', 'img', 'number', 'total', 'quoteId', 'createdAt', 'updatedAt'])
+        && request.resource.data.kind == 'invoice' && request.resource.data.img is string && request.resource.data.img.size() < 1000000;
+      allow delete: if isTeam();
+    }
     // lets the CRM check these rules are published
     match /rulesv/{v} {
-      allow read: if isTeam() && v in ['blasts1', 'texts1'];
+      allow read: if isTeam() && v in ['blasts1', 'texts1', 'texts2'];
     }
   }
 }
