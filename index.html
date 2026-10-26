@@ -225,6 +225,19 @@ label.check { display: flex; align-items: center; gap: 9px; font-size: 14px; fon
 .card .t { font-weight: 600; font-size: 14px; }
 .card .pill { white-space: normal; align-self: flex-start; max-width: 100%; border-radius: 8px; }
 .card .s { font-size: 12.5px; color: var(--muted); }
+/* its columns: --n of them, plus the shared Paid / Lost drop spot when those are empty */
+.board { grid-template-columns: repeat(var(--n, 1), minmax(96px, 1fr)); }
+.board.has-drops { grid-template-columns: repeat(var(--n, 1), minmax(96px, 1fr)) minmax(88px, .6fr); }
+/* on a computer (elias, 2026-10-25: "too tight together ... make it fit the size of the website"; phones stay as they
+   were): the pipeline takes the whole width of the page, so its columns widen on a big screen and still all fit on a
+   laptop, and names and follow-up tags wrap between words ("Follow up" over "Oct 22", not "Follow up Oct" over "22") */
+@media (min-width: 861px) {
+  .wrap.wide-board { max-width: none; }
+  .board { gap: 12px; grid-template-columns: repeat(var(--n, 1), minmax(88px, 1fr)); }
+  .board.has-drops { grid-template-columns: repeat(var(--n, 1), minmax(88px, 1fr)) minmax(88px, .6fr); }
+  .card { overflow-wrap: break-word; }
+  .card .pill { text-wrap: balance; }
+}
 
 /* modal */
 .scrim { position: fixed; inset: 0; background: rgba(5,12,35,.55); z-index: 60; display: flex; align-items: flex-start; justify-content: center; overflow-y: auto; padding: max(28px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) 28px max(16px, env(safe-area-inset-left, 0px)); }
@@ -1773,6 +1786,7 @@ function render() {
   renderNav();
   const fn = VIEWS[S.view] || VIEWS.today;
   $("#view").innerHTML = fn(); drawnView = S.view;
+  $("#view").classList.toggle("wide-board", !!$("#view .board")); // (the pipeline uses the whole width on a computer)
   const typed = keptTyped[S.view] || {};
   Object.keys(typed).forEach(id => { const el = document.getElementById(id); if (el && $("#view").contains(el) && el.closest("[data-keep]")) setVal(el, typed[id]); });
   after[S.view] && after[S.view]();
@@ -1822,10 +1836,17 @@ function kpiData() {
   // estimates only: an invoice is for a job already won, not a quote (as on the Quotes tab)
   const openQ = S.quotes.filter(q => !isInvoice(q) && (q.status === "sent" || q.status === "draft"));
   const openQv = sum(openQ, q => q.total);
-  // jobs marked done and not paid yet (elias, 2026-10-25: in place of New leads waiting on first contact)
-  const owed = S.jobs.filter(j => j.kind === "job" && j.status === "completed"), owedV = sum(owed, j => j.amount);
+  // waiting on payment (elias, 2026-10-25, in place of New leads waiting on first contact): invoices sent and not marked
+  // paid, by their totals ("I sent an invoice to Ken and John ... I would like that invoice, the total to pop up"), and
+  // jobs marked done with no invoice out for them. A job whose invoice is out counts once, by the invoice; a job whose
+  // invoice is marked paid, or an invoice for a job paid on Money, isn't waiting.
+  const jm = jobEstimates(), invOf = (j) => jobInvoice(j) || jobOwnInvoice(j, jm);
+  const paidInv = new Set(paid.map(invOf).filter(Boolean).map(q => q.id));
+  const owedInv = S.quotes.filter(q => isInvoice(q) && q.status === "sent" && !paidInv.has(q.id));
+  const owedJobs = S.jobs.filter(j => j.kind === "job" && j.status === "completed" && !(q => q && ["sent", "paid"].includes(q.status))(invOf(j)));
+  const owedV = sum(owedInv, q => quoteTotals(q).total) + sum(owedJobs, j => j.amount);
   const cts = [monthRev, ytdRev, openQv, owedV].some(v => Math.round(v * 100) % 100 !== 0); // cents only when something has cents, as on Money
-  return { monthRev, ytdRev, acc, accV, openQ, openQv, owed, owedV, cts };
+  return { monthRev, ytdRev, acc, accV, openQ, openQv, owedInv, owedJobs, owedV, cts };
 }
 // a follow-up day you picked (the date on the lead, a Follow up result or stage, a new lead's date) and not one the CRM
 // set by itself (No answer, a quote sent, Budget next year, a new Angi lead). Set before fuBy was kept: the history says
@@ -1863,7 +1884,7 @@ VIEWS.today = () => {
   ${pageHead(`${greeting()}, Elias`, new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }), `<button class="btn hide-mob" data-act="new-lead">+ New lead</button><button class="btn primary" data-act="new-quote">+ New quote</button>`)}
   ${noDbBanner()}
   ${vacIsOn() ? `<div class="banner warn spread"><span>Vacation mode is on: no email blasts, text blasts or drip messages are going out. (The HOA follow-up emails Claude sends still go unless you ask Claude to pause them.)</span><button class="btn sm" data-nav="email">Turn it off</button></div>` : ""}
-  ${kpiStrip([["Paid this month", money(k.monthRev, k.cts), `${money(k.ytdRev, k.cts)} this year`], ["Jobs accepted", money(k.accV), `${plural(k.acc.length, "job")} waiting for completion`], ["Open quotes", money(k.openQv, k.cts), `${plural(k.openQ.length, "quote")} out`], ["Jobs completed", money(k.owedV, k.cts), `${plural(k.owed.length, "job")} waiting on payment`]])}
+  ${kpiStrip([["Paid this month", money(k.monthRev, k.cts), `${money(k.ytdRev, k.cts)} this year`], ["Jobs accepted", money(k.accV), `${plural(k.acc.length, "job")} waiting for completion`], ["Open quotes", money(k.openQv, k.cts), `${plural(k.openQ.length, "quote")} out`], ["Jobs completed", money(k.owedV, k.cts), `${[k.owedInv.length ? plural(k.owedInv.length, "invoice") : "", k.owedJobs.length || !k.owedInv.length ? plural(k.owedJobs.length, "job") : ""].filter(Boolean).join(", ")} waiting on payment`]])}
   <div class="today-grid">
     <div class="col-stack">
     <section class="panel flush" id="todo-today"><div class="panel-h"><h2>To do today</h2><span class="count">${todo ? plural(todo, "thing") : ""}</span></div>
@@ -1980,7 +2001,7 @@ function boardHTML(list) {
     cols.push(`<div class="bcol" data-drop="${k}"><h3>${t} <small class="num">${items.length}${val ? " · " + money(val) : ""}</small></h3><div class="cards">${items.slice(0, 150).map(l => `<button class="card" draggable="true" data-drag="${esc(l.id)}" data-open-lead="${esc(l.id)}"><span class="t">${esc(leadName(l))}</span><span class="s">${esc([l.company ? l.name : "", l.city].filter(Boolean).join(" · "))}</span>${l.value ? `<span class="s num">${money(l.value)}</span>` : ""}${dueState(l) ? `<span class="pill ${dueState(l)}">Follow up ${fmtD(l.nextFollowUp)}</span>` : ""}</button>`).join("")}${items.length > 150 ? `<div class="note">+${items.length - 150} more, use the list</div>` : ""}</div></div>`);
   });
   if (drops.length) cols.push(`<div class="bdrops">${drops.join("")}<p class="note">See past customers with “Paid (past customers)” or “Lost” in the list above.</p></div>`);
-  return `<div class="board-wrap"><div class="board" style="grid-template-columns:repeat(${cols.length - (drops.length ? 1 : 0)}, minmax(96px, 1fr))${drops.length ? " minmax(88px, .6fr)" : ""}">${cols.join("")}</div></div>`;
+  return `<div class="board-wrap"><div class="board${drops.length ? " has-drops" : ""}" style="--n:${cols.length - (drops.length ? 1 : 0)}">${cols.join("")}</div></div>`;
 }
 after.leads = () => {
   const bind = (id, key, ev) => { const el = document.getElementById(id); if (el) el.addEventListener(ev || "change", () => { S.leadFilter[key] = el.value; if (key === "show") { try { localStorage.setItem("gic-lead-show", el.value); } catch (_) {} } schedule(); }); };
