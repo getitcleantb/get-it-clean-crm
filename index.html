@@ -961,6 +961,7 @@ html.gated, html.gated body { overflow: hidden; }
     if (!has("calRead")) { status = "error"; msg = "You didn't allow calendar access. Tap Reconnect and tick the calendar boxes to show it here."; fire(); return; }
     loading = (async () => {
       const t0 = token && token.t; // a load that another tab's account switch lands in the middle of is done again
+      const t1 = Date.now(); // (when it began: what it has is from no earlier)
       if (!(status === "ready" && cache.events.length)) status = "loading"; // a refresh keeps what's shown; only the first load says loading
       fire();
       try {
@@ -972,7 +973,7 @@ html.gated, html.gated body { overflow: hidden; }
         const main = (cl.items || []).find(c => c.primary); if (main && /@/.test(main.id) && token && token.t === t0 && ours() && L.get(K.acct) !== main.id) L.set(K.acct, main.id);
         const lists = await Promise.all(cals.map(c => listEvents(c, rg)));
         const events = [].concat(...lists).sort((a, b) => String(a.start.dateTime || a.start.date).localeCompare(String(b.start.dateTime || b.start.date)));
-        cache = { at: Date.now(), cals, events, from: rg.from, to: rg.to }; L.set(K.ev, cache);
+        cache = { at: Date.now(), t: t1, cals, events, from: rg.from, to: rg.to }; L.set(K.ev, cache);
         status = "ready"; msg = has("calWrite") ? "" : "Google lets the CRM see your calendar but not add to it. Tap Reconnect and tick the box to add events, so booked estimates and jobs go on it.";
       } catch (e) {
         if (e.code === "expired") { status = "expired"; msg = "Google Calendar needs a quick reconnect."; }
@@ -992,7 +993,7 @@ html.gated, html.gated body { overflow: hidden; }
   window.GICCAL = Object.freeze({
     available: !!CLIENT,
     status: () => status, message: () => msg,
-    events: () => cache.events, calendars: () => cache.cals, loadedAt: () => cache.at,
+    events: () => cache.events, calendars: () => cache.cals, loadedAt: () => cache.at, readFrom: () => +cache.t || 0, // (when the read began)
     connected: () => tokenOk() && has("calWrite") && (status === "ready" || status === "loading"), // can write to the calendar right now
     busy: () => !!loading,
     missing: () => !L.get(K.on) ? "" : !granted("calRead") ? "read" : !granted("calWrite") ? "write" : "", // a calendar box left unticked on Google's screen (still known after the token runs out)
@@ -1037,13 +1038,14 @@ html.gated, html.gated body { overflow: hidden; }
       // existed: it was there already, as it was (not changed to what's given here); start, end: where it is
       return { id: r.id || "", htmlLink: r.htmlLink || "", existed: !!r.existed, start: (r.start && r.start.dateTime) || "", end: (r.end && r.end.dateTime) || "" };
     },
-    // changes an event the CRM made (a follow-up moved to another day, its color): only what's given. Error code "gone"
-    // when it isn't there; a deleted one comes back with status "cancelled"
+    // changes an event the CRM made (a follow-up moved to another day, its color): only what's given (untimed: it's an
+    // all-day one now, made timed again by the start and end given). Error code "gone" when it isn't there; a deleted one
+    // comes back with status "cancelled"
     patchEvent: async (id, f, calendarId) => {
-      const body = {};
+      const body = {}, t = (x) => Object.assign(f.untimed ? { date: null } : {}, { dateTime: x, timeZone: tz() });
       ["summary", "location", "description", "transparency", "colorId"].forEach(k => { if (f[k] !== undefined) body[k] = f[k]; });
-      if (f.start) body.start = { dateTime: f.start, timeZone: tz() };
-      if (f.end) body.end = { dateTime: f.end, timeZone: tz() };
+      if (f.start) body.start = t(f.start);
+      if (f.end) body.end = t(f.end);
       const r = await call(`/calendars/${encodeURIComponent(calendarId || "primary")}/events/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) });
       reload();
       return { id: r.id || id, htmlLink: r.htmlLink || "", status: r.status || "" };
@@ -2977,7 +2979,7 @@ async function quoteStatusNow(s) {
   // an invoice marked Paid keeps the day it was paid (Sold clients matches it to the job by that day)
   const patch = { status: s, updatedAt: now }; if (inv && s === "paid" && !q0.paidDate) patch.paidDate = today();
   // sent: the follow-ups start (not for someone marked do not contact), saved with the status in one write
-  const l = leadById(q0.leadId), fu = s === "sent" && !inv && !(l && l.dnc) ? efuNewPlan() : null;
+  const l = leadById(q0.leadId), fu = s === "sent" && !inv && !(l && l.dnc) ? efuNewPlan(q0.id) : null;
   if (fu) Object.assign(patch, { fu, fuOff: "" });
   await saveDoc("quotes", q0.id, patch, true); Object.assign(q0, patch);
   if (l && s !== "draft") {
@@ -3036,7 +3038,7 @@ function syncGcal() {
   const gc = GC(); if (!gc) return;
   const st = gc.status(), ev = gc.events();
   const was = S.cal || {};
-  S.cal = { status: st === "idle" ? "ask" : st === "off" ? "off" : st, events: st === "idle" ? [] : ev, msg: gc.message(), at: gc.loadedAt(), cals: gc.calendars(), range: gc.range() };
+  S.cal = { status: st === "idle" ? "ask" : st === "off" ? "off" : st, events: st === "idle" ? [] : ev, msg: gc.message(), at: gc.loadedAt(), rd: gc.readFrom(), cals: gc.calendars(), range: gc.range() };
   schedule(); if (was.status !== S.cal.status || (S.leadTab === "messages" && was.at !== S.cal.at)) refreshLeadModal();
   if (S.cal.status === "ready" && (was.status !== "ready" || was.at !== S.cal.at)) calSweepSoon();
   if (was.at !== S.cal.at || was.status !== S.cal.status) refreshBook();
@@ -3517,18 +3519,81 @@ async function bookSave(btn) {
 // Today, or a call, email or text to them is logged that day or later. Only a device connected to the business Google
 // account puts them on the calendar and takes them off (efuSweep), the way it does bookings.
 //   fu: { id, sent (when it went out), at: ["YYYY-MM-DDTHH:MM:00", ...] }, written once when it's sent
-//   fuEv: { "<id>_<n>": { id: Google event id ("" once taken off), at, v } }, fuDone: { "<id>_<n>": when },
+//   fuEv: { "<id>_<n>": { id: Google event id ("" once taken off), at, v, atT: when the one-time spacing out moved it
+//   (fuRespace, leadfu.js) } }, fuDone: { "<id>_<n>": when },
 //   fuOff: when Stop follow-ups was tapped ("" when started again)
 // settings/efu-gone: the Google events of deleted estimates still to come off ({ ids: { eventId: at } }).
 const EFU_DAYS = [1, 3, 7, 14, 21, 30, 45, 60, 90];
 // follow-ups on Google Calendar are Grape (purple), so they aren't mixed up with jobs and estimates (elias, 2026-10-25)
 const FU_COLOR = "3";
-const EFU_AT = "10:00", EFU_MIN = 15;
+// (30 minutes: elias, 2026-10-26, "I want you to make follow-ups 30 minutes")
+const EFU_AT = "10:00", EFU_MIN = 30;
 const EFU_FIELDS = ["fu", "fuEv", "fuDone", "fuOff"];
 const efuKey = (q, i) => q.fu.id + "_" + i;
 const efuISO = (d, hm) => `${ymd(d)}T${hm || pad(d.getHours()) + ":" + pad(d.getMinutes())}:00`;
-// the follow-up times for an estimate sent at `sent` (a Date)
-function efuPlan(sent) {
+// ---------- follow-ups never on top of each other (elias, 2026-10-26) ----------
+// "if there's already one follow-up booked at a certain time, I don't want you to overlap another one": a follow-up the
+// CRM puts on a day (an estimate's, or a lead's Next follow-up, leadfu.js) goes at its time when no other follow-up is
+// there then, else at the next quarter hour that's clear, until 8 PM (then the latest clear one before it, from 8 AM).
+// The others are the follow-ups of every estimate whose follow-ups are running, every lead's that's on Google Calendar
+// (or being put on), where they are now, the CRM's follow-ups on this device's copy of the calendar, and the ones this
+// device just put somewhere (fuJust, until the database and the calendar copy have them back: { day, s, e (minutes into
+// the day), who: "q:<estimate id>|<key>" or "l:<lead id>", id: its event's, t }; where those copies still have one
+// somewhere else, that doesn't count). Where this device's copy was read before the CRM last put one somewhere (atT),
+// where the database says it is counts as well: the copy can be from before a move made from another device (or one
+// made here, should reading it again not have worked). One the CRM put on for 15 minutes counts as 30 (it's made 30,
+// fuRespace).
+const fuJust = [];
+const fuMin = (iso) => +iso.slice(11, 13) * 60 + +iso.slice(14, 16);
+const fuLen = (e) => { const m = Math.round((new Date((e.end && e.end.dateTime) || e.start.dateTime) - new Date(e.start.dateTime)) / 60000); return m >= 5 && m <= 720 && m !== 15 ? m : EFU_MIN; };
+// not: { q: an estimate's id, l: a lead's id, id: an event's id } whose own follow-ups don't count. An estimate's own
+// are its own and the ones its lead's other estimates have on (one sent, or started over, stops the others: efuOff
+// "newer", and theirs come off), and the ids its own not on yet may be on Google under already (a put-on whose answer
+// was lost: its next try finds it there)
+function fuTaken(day, not) {
+  const out = [], gm = efuGoogleAt(), t = Date.now(), add = (s, m) => out.push([fuMin(s), fuMin(s) + m]), own = new Set([not.id]), rd = +S.cal.rd || 0;
+  const just = fuJust.filter(x => t - x.t < 120000), justWho = new Set(just.map(x => x.who)), justId = new Set(just.map(x => x.id).filter(Boolean));
+  const me = not.q && S.quotes.find(x => x.id === not.q), mineQ = new Set(not.q ? [not.q] : []);
+  if (me && me.leadId) S.quotes.forEach(x => { if (x.leadId === me.leadId && !isInvoice(x)) mineQ.add(x.id); });
+  mineQ.forEach(id => { const q = S.quotes.find(x => x.id === id), ev = (q && q.fuEv) || {}; Object.values(ev).forEach(e => { if (e && e.id) own.add(e.id); });
+    if (id === not.q && q && q.fu && Array.isArray(q.fu.at)) q.fu.at.forEach((_, i) => { const k = efuKey(q, i), e = ev[k], v = e ? +e.v || 0 : 0; if (!(e && e.id)) { own.add(efuEventId(q, k, v)); own.add(efuEventId(q, k, v + 1)); } }); });
+  if (not.l) { const l = leadById(not.l), c = (l && l.fuCal) || {}; if (c.id) own.add(c.id); if (l) own.add(lfuEventId(l, c.v)); }
+  S.quotes.forEach(q => { if (mineQ.has(q.id) || efuOff(q)) return; q.fu.at.forEach((_, i) => { const e = (q.fuEv || {})[efuKey(q, i)], a = e && e.id && e.at && +e.atT > rd ? String(e.at) : efuAt(q, i, gm); if (a.slice(0, 10) === day && !justWho.has("q:" + q.id + "|" + efuKey(q, i))) add(a, EFU_MIN); }); });
+  S.leads.forEach(l => { const c = l.fuCal || {}; if (l.id === not.l || justWho.has("l:" + l.id)) return;
+    if (!c.id) { if (c.try && /T\d\d:\d\d/.test(c.tryAt || "") && c.tryAt.slice(0, 10) === day) add(c.tryAt, LFU_MIN); return; }
+    const g = lfuGoogle(c.id), gp = g ? localISO(new Date(g.start.dateTime)) : "", a = String(c.at || ""), s = g && rd > (+c.atT || 0) ? gp : a;
+    if (s.slice(0, 10) === day) add(s, g ? fuLen(g) : LFU_MIN);
+    // (and while a move hasn't finished, where it's going, where the lead last said it was, and where the copy has it: it
+    // may be at any)
+    const mv = String(c.mvAt || "");
+    if (/T\d\d:\d\d/.test(mv) && mv !== a) [mv, a, gp].forEach(x => { if (x && x.slice(0, 10) === day && x !== s) add(x, g ? fuLen(g) : LFU_MIN); }); });
+  S.cal.events.forEach(e => { if (/^gic(fu|lf)/.test(e.id || "") && !own.has(e.id) && !justId.has(e.id) && e.status !== "cancelled" && e.start && e.start.dateTime) { const s = localISO(new Date(e.start.dateTime)); if (s.slice(0, 10) === day) add(s, fuLen(e)); } });
+  just.forEach(x => { if (x.day === day && !own.has(x.id) && !(not.q && x.who.startsWith("q:" + not.q + "|")) && x.who !== "l:" + not.l) out.push([x.s, x.e]); });
+  return out;
+}
+// the time ("HH:MM") a follow-up goes at on a day, at `hm` or the nearest clear one (not one gone by, today)
+const fuFree = (day, hm, not, len) => fuFreeOf(fuTaken(day, not || {}), day, hm, len);
+// the same, clear of `taken` ([start, end] in minutes into the day): later, starting by 8 PM (as the plan and today's
+// next quarter hour may), else earlier, from 8 AM; else later that evening, rather than on top of one
+function fuFreeOf(taken, day, hm, len) {
+  const m0 = +hm.slice(0, 2) * 60 + +hm.slice(3, 5), n = len || EFU_MIN;
+  const lo = day === today() ? Math.max(8 * 60, fuMin(nowLocal()) + 1) : 8 * 60;
+  const clear = (m) => taken.every(([a, b]) => m + n <= a || m >= b), hhmm = (m) => pad(Math.floor(m / 60)) + ":" + pad(m % 60);
+  if (clear(m0)) return hm;
+  for (let m = m0 + 15 - (m0 % 15); m <= 20 * 60; m += 15) if (clear(m)) return hhmm(m);
+  for (let m = m0 - (m0 % 15 || 15); m >= lo; m -= 15) if (clear(m)) return hhmm(m);
+  for (let m = Math.max(m0, 20 * 60) + 15 - (Math.max(m0, 20 * 60) % 15); m + n <= 24 * 60; m += 15) if (clear(m)) return hhmm(m);
+  return hm;
+}
+// where Google has an event start, in local time: its start, or the start of its day for one made all-day ("" for none)
+const fuStartOf = (g) => !g || g.status === "cancelled" || !g.start ? "" : g.start.dateTime ? localISO(new Date(g.start.dateTime)) : /^\d{4}-\d\d-\d\d$/.test(g.start.date || "") ? g.start.date + "T00:00:00" : "";
+// a time ("YYYY-MM-DDTHH:MM:00") moved to the nearest clear one on its day, when it's still ahead
+const fuClear = (at, not, len) => at > nowLocal() ? at.slice(0, 11) + fuFree(at.slice(0, 10), at.slice(11, 16), not, len) + ":00" : at;
+// one just put somewhere, noted as taken right away (the database has it back in a moment)
+const fuNote = (start, len, who, id) => { const t = Date.now(); for (let i = fuJust.length - 1; i >= 0; i--) if (t - fuJust[i].t > 120000 || fuJust[i].who === who) fuJust.splice(i, 1); fuJust.push({ day: start.slice(0, 10), s: fuMin(start), e: fuMin(start) + len, who, id: id || "", t }); };
+// the follow-up times for an estimate sent at `sent` (a Date); qid: the estimate's (its own follow-ups from before
+// don't count as taken)
+function efuPlan(sent, qid) {
   const monday = (d) => { if (d.getDay() === 0) d.setDate(d.getDate() + 1); return d; };
   // the first: 2 hours after, at the next quarter hour, if that's 8 AM to 8 PM; later at night, 9 AM the next
   // morning (Monday for a Sunday); before 8 in the morning, 9 AM
@@ -3544,7 +3609,8 @@ function efuPlan(sent) {
     while (ymd(d) <= last) { d.setDate(d.getDate() + 1); monday(d); }
     last = ymd(d); out.push(efuISO(d, EFU_AT));
   }
-  return out;
+  // each at a time no other follow-up has
+  return out.map(at => fuClear(at, { q: qid }));
 }
 // a newer estimate sent to them (one sent and then put back to Draft, by mistake, doesn't count)
 const EFU_OUT = ["sent", "accepted", "declined"];
@@ -3595,7 +3661,8 @@ async function efuOffSure(q) {
 }
 // a follow-up moved to another time in Google Calendar keeps its Google time
 function efuGoogleAt() { const m = new Map(); S.cal.events.forEach(e => { if (/^gicfu/.test(e.id || "") && e.start && e.start.dateTime) m.set(e.id, localISO(new Date(e.start.dateTime))); }); return m; }
-function efuAt(q, i, gm) { const e = (q.fuEv || {})[efuKey(q, i)]; return (e && e.id && gm && gm.get(e.id)) || q.fu.at[i]; }
+// (where Google has it, else where the CRM put it, which is a clear time and can differ from the plan, else the plan)
+function efuAt(q, i, gm) { const e = (q.fuEv || {})[efuKey(q, i)]; return (e && e.id && ((gm && gm.get(e.id)) || e.at)) || q.fu.at[i]; }
 // a call, email or text to them logged since the follow-up's day began: by you, so not the estimate's own email being
 // drafted, email or text blasts, bounces, or their replies and asks to be taken off
 const EFU_NOT_TALK = /^(estimate|invoice) \S+ (drafted|opened)\b|^(Email|Text) blast\b|^Email to \S+ bounced|^Asked (for no more|to be taken off)|^Replied to your email blast/i;
@@ -3669,7 +3736,7 @@ function efuNote(q) {
 }
 // marking an estimate Sent: its follow-ups start now (quotes.js saves the plan with the status). Sent again later, they
 // start over, and the ones still ahead from before come off the calendar (efuCalWork: their keys go with the old id).
-const efuNewPlan = () => { const now = new Date(); return { id: now.getTime().toString(36), sent: now.toISOString(), at: efuPlan(now) }; };
+const efuNewPlan = (qid) => { const now = new Date(); return { id: now.getTime().toString(36), sent: now.toISOString(), at: efuPlan(now, qid) }; };
 // emailing an estimate from it (Email as Gmail draft, Send it, Download it and open Gmail) is sending it: a Draft one
 // is marked Sent, so its follow-ups start
 async function efuEmailed(qid) {
@@ -3681,7 +3748,7 @@ async function efuEmailed(qid) {
   // another estimate is open now (or none): this one is marked Sent quietly, the way the editor does it
   const q = S.quotes.find(x => x.id === qid); if (!q || isInvoice(q) || (q.status || "draft") !== "draft") return;
   const now = new Date().toISOString(), l = leadById(q.leadId), patch = { status: "sent", updatedAt: now };
-  if (!(l && l.dnc)) Object.assign(patch, { fu: efuNewPlan(), fuOff: "" });
+  if (!(l && l.dnc)) Object.assign(patch, { fu: efuNewPlan(q.id), fuOff: "" });
   await saveDoc("quotes", q.id, patch, true);
   if (l) { const upd = { activity: activity(l, "quote", `Estimate ${q.number} sent`), updatedAt: now };
     if (l.nextFollowUp && !l.fuBy) upd.fuBy = fuMine(l) ? "you" : "auto"; // as quoteStatusNow does
@@ -3711,7 +3778,9 @@ async function efuCreate(q, w) {
   let v = w.v;
   for (let i = 0; i < 4; i++) {
     if (i && !calBusiness()) throw new Error("Google Calendar isn't connected to the business account");
-    try { const r = await GC().createEvent({ id: efuEventId(q, w.k, v), summary: `Follow up: ${efuName(q, l)} (estimate ${q.number || ""}, ${tot})`, location: l ? leadAddr(l) : "", description: desc, start: w.at, end: localISO(new Date(new Date(w.at).getTime() + EFU_MIN * 60000)), transparency: "transparent", colorId: FU_COLOR }); return { id: r.id, v }; }
+    try { const r = await GC().createEvent({ id: efuEventId(q, w.k, v), summary: `Follow up: ${efuName(q, l)} (estimate ${q.number || ""}, ${tot})`, location: l ? leadAddr(l) : "", description: desc, start: w.at, end: localISO(new Date(new Date(w.at).getTime() + EFU_MIN * 60000)), transparency: "transparent", colorId: FU_COLOR });
+      // (one there already, from a try whose answer was lost: where Google has it)
+      return { id: r.id, v, at: r.existed && r.start ? localISO(new Date(r.start)) : w.at }; }
     catch (e) { if (e.code !== "taken") throw e; v++; }
   }
   throw new Error("Google Calendar wouldn't take this follow-up");
@@ -3735,12 +3804,16 @@ async function efuSweep() {
         // a stop from their lead, jobs or another estimate is checked with the database first (this device can be behind)
         const off = await efuOffSure(q);
         if (!off && efuOff(q)) { calTried.delete("efu:" + q0.id); continue; } // this device catches up, then it's looked at again
-        for (const w of efuCalWork(q, nowLocal(), gm, off)) {
+        for (let w of efuCalWork(q, nowLocal(), gm, off)) {
           if (!calBusiness()) { bad = true; break; }
           // written only while the estimate is still there (a deleted one isn't made again); one put on just as it was
-          // deleted comes back off
-          if (w.add) { const r = await efuCreate(q, w);
-            try { await G.patchDoc("quotes", q.id, { ["fuEv." + w.k]: { id: r.id, at: w.at, v: r.v } }); added++; }
+          // deleted comes back off. Another follow-up put at its time since it was planned: it goes at the nearest clear
+          // one (fuEv has where it went: efuAt)
+          // (noted as taken before Google answers: a sweep of leads' can run meanwhile)
+          if (w.add) { const at = fuClear(w.at, { q: q.id }), who = "q:" + q.id + "|" + w.k; if (at !== w.at) w = Object.assign({}, w, { at });
+            fuNote(w.at, EFU_MIN, who, efuEventId(q, w.k, w.v));
+            const r = await efuCreate(q, w); fuNote(r.at, EFU_MIN, who, r.id);
+            try { await G.patchDoc("quotes", q.id, { ["fuEv." + w.k]: { id: r.id, at: r.at, v: r.v } }); added++; }
             catch (e) { await GC().deleteEvent(r.id, "primary").catch(() => {}); if (/not.?found/i.test(String(e && (e.code || e.message)))) break; throw e; } }
           else { await GC().deleteEvent(w.id, "primary"); removed++;
             await G.patchDoc("quotes", q.id, { ["fuEv." + w.k]: { id: "", at: w.at, v: w.v + 1 } }).catch(e => { if (!/not.?found/i.test(String(e && (e.code || e.message)))) throw e; }); }
@@ -3752,7 +3825,9 @@ async function efuSweep() {
     const now = nowLocal(), gone = S.efuGone || {}, ids = Object.keys(gone).filter(id => gone[id] && String(gone[id]) > now);
     if (ids.length && !calTriedLately("efu:gone")) {
       calTried.set("efu:gone", Date.now()); const done = {}; let bad = false;
-      for (const id of ids) { if (!calBusiness()) { bad = true; break; } try { if ((await GC().deleteEvent(id, "primary")) !== false) { if (/^giclf/.test(id)) removedL++; else removed++; } done[id] = ""; } catch (e) { bad = true; } }
+      // (it comes off only if Google has it ahead, wherever it was moved to: one gone by stays as a record)
+      const ahead = async (id) => { let g = null; try { g = await GC().getEvent(id, "primary"); } catch (e) { if (e.code !== "gone") throw e; } return fuStartOf(g) > now; };
+      for (const id of ids) { if (!calBusiness()) { bad = true; break; } try { if ((await ahead(id)) && (await GC().deleteEvent(id, "primary")) !== false) { if (/^giclf/.test(id)) removedL++; else removed++; } done[id] = ""; } catch (e) { bad = true; } }
       if (Object.keys(done).length) await saveDoc("settings", "efu-gone", { kind: "efu-gone", ids: done }, true).catch(() => {});
       if (bad) missed = true; else calTried.delete("efu:gone");
     }
@@ -3773,8 +3848,10 @@ async function efuForget(q) {
   // as the database has it when it can be read (this device can be behind)
   const G = window.GIC, srv = G && G.serverDoc ? await Promise.race([G.serverDoc("quotes", q.id), new Promise(r => setTimeout(() => r(null), 3000))]).catch(() => null) : null; // (no more than 3 seconds on a weak signal)
   const live = srv ? Object.assign({}, srv, { id: q.id }) : S.quotes.find(x => x.id === q.id) || q;
-  const ev = live.fuEv || {}, now = nowLocal(), gm = efuGoogleAt(), ids = {};
-  Object.values(ev).forEach(e => { if (e && e.id) { const at = efuLater(e, gm); if (at > now) ids[e.id] = at; } });
+  const ev = live.fuEv || {}, now = nowLocal(), ids = {};
+  // (whatever time this device has for them: one may have been moved by hand since; efuSweep takes off the ones Google has
+  // ahead)
+  Object.values(ev).forEach(e => { if (e && e.id) ids[e.id] = "9999-12-31T23:59:00"; });
   // and the ones still running that the business device may be putting on right now, not written on the estimate yet
   // (their ids are known ahead; one that was never made is just skipped)
   if (!isInvoice(live) && live.status === "sent" && !live.fuOff && live.fu && Array.isArray(live.fu.at)) live.fu.at.forEach((at, i) => {
@@ -3798,7 +3875,7 @@ async function efuBackfill() {
       const line = l && (l.activity || []).find(a => a.type === "quote" && new RegExp("^Estimate " + String(q0.number || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + " sent\\b").test(a.text || ""));
       const sent = (line && line.at) || q0.updatedAt || (q0.date ? q0.date + "T12:00:00" : "");
       const d = new Date(sent); if (!sent || isNaN(d) || d.toISOString() < cut) continue;
-      const fu = { id: d.getTime().toString(36), sent: d.toISOString(), at: efuPlan(d) };
+      const fu = { id: d.getTime().toString(36), sent: d.toISOString(), at: efuPlan(d, q0.id) };
       await G.patchDoc("quotes", q0.id, { fu, fuOff: "" }).then(() => n++, () => {});
     }
     if (n) { const flag = await G.serverDoc("settings", "efu").catch(() => null); await saveDoc("settings", "efu", { kind: "efu", start: (flag && flag.start) || new Date().toISOString(), backfilled: ((flag && +flag.backfilled) || 0) + n }, true).catch(() => {}); calSweepSoon(); }
@@ -3817,7 +3894,7 @@ EXTRA_ACTS["efu-stop"] = async () => {
 };
 // an older estimate out to them is the one to follow up on after all: it starts over from now, and the newer one's stop
 EXTRA_ACTS["efu-this"] = async () => {
-  if (!QD || !QD.id) return; const fu = efuNewPlan();
+  if (!QD || !QD.id) return; const fu = efuNewPlan(QD.id);
   await saveDoc("quotes", QD.id, { fu, fuOff: "" }, true); Object.assign(QD, { fu, fuOff: "" });
   calSweepSoon(); syncQuoteChrome(); efuStartedToast(fu, "Following up on this estimate now.", Object.assign({}, S.quotes.find(x => x.id === QD.id) || QD, { fu, fuOff: "" }));
 };
@@ -3833,15 +3910,23 @@ EXTRA_ACTS["efu-resume"] = async () => {
 // ("my jobs and estimates are gold. I want my follow-ups to be, say, purple"), and a new day moves it: "I essentially
 // want the old date the follow-up was set to get updated to the new date I updated it to". A lead's Next follow-up that
 // you set (fuMine: the ones To do today shows, not a day the CRM set by itself after No answer, say) goes on Google
-// Calendar at 10 AM for 15 minutes, shown as Free, in Grape. Picking another day moves that same event there (keeping
-// the time it was moved to in Google Calendar, if it was). Clearing the day (moving them to Lost or Paid clears it), or
-// marking them do not contact, takes it off when it's still ahead (one already past stays as a record). Today's, set
-// after 10 AM, goes on at the next quarter hour (until 8 PM); a day already past doesn't go on. Only a device connected
-// to the business Google account does this (lfuSweep, after the bookings and estimate follow-ups), the way it does those.
+// Calendar at 10 AM for 30 minutes ("make follow-ups 30 minutes", 2026-10-26), shown as Free, in Grape; when another
+// follow-up is there then, at the nearest clear time that day (fuFree, estfu.js). Picking another day moves that same
+// event there (keeping the time it was moved to in Google Calendar, if it was). Clearing the day (moving them to Lost or
+// Paid clears it), or marking them do not contact, takes it off when it's still ahead (one already past stays as a
+// record). Today's, set after 10 AM, goes on at the next quarter hour (until 8 PM); a day already past doesn't go on.
+// Only a device connected to the business Google account does this (lfuSweep, after the bookings and estimate
+// follow-ups), the way it does those.
 //   fuCal on the lead: { id: the Google event's id ("" once it's off), day: the day it's on, at: its start, v, hm: the
-//   time of day it keeps (moved there in Google Calendar; "" for 10 AM), try: the day one is being put on for, under
-//   the id lfuEventId(l, v), until it's saved (if the answer is lost, the next try knows where it may be) }
-const LFU_AT = "10:00", LFU_MIN = 15;
+//   time of day it keeps (moved there in Google Calendar; "" for 10 AM), try, tryAt: the day and time one is being put
+//   on for, under the id lfuEventId(l, v), until it's saved (if the answer is lost, the next try knows where it may be);
+//   tries: the times it was being put on at before that (the CRM's own, not times moved to by hand); mvAt: where it's
+//   being moved to, until that's saved (Google may have it there: kept clear for it, and not a time moved by hand),
+//   with gAt: where Google had it when that move was sent, and hm0: the time of day it keeps where the lead says it is
+//   (at), should the move not have got there; rsAt: where it was before the one-time spacing out (fuRespace) moved it
+//   (not a time moved by hand either); atT: when the CRM last wrote it (until this device's copy of the calendar has
+//   been read since, where it says it is counts as taken too, fuTaken) }
+const LFU_AT = "10:00", LFU_MIN = 30;
 const lfuEventId = (l, v) => "giclf" + Array.from(new TextEncoder().encode(String(l.id)), b => b.toString(16).padStart(2, "0")).join("") + "v" + (v || 0);
 // the day a lead's follow-up belongs on Google Calendar ("" for none)
 function lfuWant(l) {
@@ -3851,53 +3936,81 @@ function lfuWant(l) {
 }
 // where its event is: on Google Calendar if this device has it (moved there by hand), else where it was put
 function lfuGoogle(id) { return id ? S.cal.events.find(e => e.id === id && e.start && e.start.dateTime) || null : null; }
+// a move that hadn't finished: its answer lost, or Google said no
+const lfuPend = (c) => /T\d\d:\d\d/.test((c && c.mvAt) || "") && String(c.mvAt) !== String(c.at || "");
 const lfuLater = (c) => { const g = lfuGoogle(c.id); return g ? localISO(new Date(g.start.dateTime)) : String(c.at || ""); };
 // what's left to do on Google Calendar for a lead: put it on, move it, or take it off
 function lfuWork(l, now) {
   const want = lfuWant(l), c = (l && l.fuCal) || {}, have = c.id ? String(c.day || "") : "", v = +c.v || 0;
   // one being put on whose answer never came back (the phone went to sleep, say) may be on Google Calendar all the same
   const tried = !c.id && /^\d{4}-\d\d-\d\d$/.test(c.try || "") ? String(c.try) : "";
-  if (want === have && !tried) return null;
+  // (a move that didn't finish, its answer lost, say, is tried again, even with the lead set back to the day it says)
+  const moving = c.id && lfuPend(c);
+  if (want === have && !tried && !moving) return null;
   if (!have) {
     // (put on again under the same id: one that's there already is moved to the day, lfuCreate)
-    if (want && lfuSlot(want).start > now) return { add: true, day: want, v };
+    if (want && lfuSlot(l, want).start > now) return { add: true, day: want, v };
     // (taken off only while it's still ahead, by where it is: lfuApply looks)
     return tried && tried !== want ? { off: true, id: lfuEventId(l, v), at: "", tried, v } : null;
   }
-  if (want) return { move: true, day: want, id: c.id, at: String(c.at || ""), hm: String(c.hm || ""), v };
-  return { off: true, id: c.id, at: lfuLater(c), v };
+  if (want) return { move: true, day: want, id: c.id, at: String(c.at || ""), hm: String(c.hm || ""), hm0: c.hm0 == null ? null : String(c.hm0), mvAt: String(c.mvAt || ""), gAt: String(c.gAt || ""), rsAt: String(c.rsAt || ""), v };
+  // (one that may have been moved on: lfuApply looks where it is)
+  return { off: true, id: c.id, at: lfuLater(c), mvAt: moving ? String(c.mvAt) : "", v };
 }
-// its start and end on the day: 10 AM for 15 minutes, or the time it was moved to in Google Calendar (for as long as it
-// has there). hm: that time, kept for the next day it's moved to (not the CRM's own next quarter hour of a today).
+// a lead's follow-up's start and end on the day: 10 AM for 30 minutes, or the time it was moved to in Google Calendar
+// (for as long as it has there), at the nearest clear time if another follow-up is there then. hm: the time moved to by
+// hand, kept for the next day it's moved to (not the CRM's own next quarter hour of a today, or a clear time it found).
 // ev: the event as Google has it right now, when it was just read (else this device's copy, which can be behind)
-function lfuSlot(day, w, ev) {
+function lfuSlot(l, day, w, ev) {
   const g = ev !== undefined ? (ev && ev.status !== "cancelled" && ev.start && ev.start.dateTime ? ev : null) : w && lfuGoogle(w.id);
   let keep = String((w && w.hm) || ""), min = LFU_MIN;
   if (g) { const s = new Date(g.start.dateTime), e = new Date((g.end && g.end.dateTime) || g.start.dateTime), m = Math.round((e - s) / 60000);
-    // not the time the CRM put it at: moved by hand
-    const ghm = pad(s.getHours()) + ":" + pad(s.getMinutes()); if (ghm !== String(w.at || "").slice(11, 16)) keep = ghm;
-    if (m >= 5 && m <= 720) min = m; }
+    keep = lfuKeep(w, localISO(s));
+    // (as long as it's made longer or shorter by hand: 15 minutes was the CRM's own before)
+    if (m >= 5 && m <= 720 && m !== 15) min = m; }
   let start = `${day}T${keep || LFU_AT}:00`;
   // today, with that time gone by: the next quarter hour, until 8 PM
   if (day === today() && start <= nowLocal()) { const d = new Date(); d.setSeconds(0, 0); d.setMinutes(d.getMinutes() + 15 - (d.getMinutes() % 15)); if (ymd(d) === day && d.getHours() * 60 + d.getMinutes() <= 20 * 60) start = localISO(d); }
+  start = fuClear(start, { l: l && l.id }, min);
   return { start, end: localISO(new Date(new Date(start).getTime() + min * 60000)), hm: keep };
+}
+// the time of day a lead's follow-up keeps for its next day (hm), from where Google has it (s): one it was moved to by
+// hand, else the one it kept. Not the CRM's own times (at; mvAt, where it was moving it; rsAt, where the one-time spacing
+// out found it), and by time of day: one moved to another day at the same time isn't moved to another time ("" for 10
+// AM). While a move hadn't finished (its answer lost): where it was when the move was sent (gAt), it keeps what the move
+// was taking (hm); back where the lead says it is (at, or rsAt), the one it keeps there (hm0); at the time the move was
+// going at, what the move was taking; anywhere else, it was moved by hand after the move was sent.
+function lfuKeep(w, s) {
+  const t = s.slice(11, 16), tod = (x) => String(x || "").slice(11, 16), hm = String(w.hm || ""), hand = t === LFU_AT ? "" : t;
+  if (!lfuPend(w)) return t !== tod(w.at) && t !== tod(w.mvAt) && t !== tod(w.rsAt) ? hand : hm;
+  if (s === String(w.gAt || "")) return hm;
+  if (s === String(w.at || "") || s === String(w.rsAt || "")) return String(w.hm0 == null ? hm : w.hm0);
+  return t === tod(w.mvAt) ? hm : hand;
 }
 function lfuEvent(l, slot) {
   const desc = [l.phone ? "Phone: " + l.phone : "", l.email ? "Email: " + l.email : "", leadAddr(l), "", "Set on their Next follow-up in the CRM. Pick another day there and this moves with it."].filter((x, i, a) => x || (i && a[i - 1])).join("\n");
   return { summary: "Follow up: " + leadName(l), location: leadAddr(l), description: desc, start: slot.start, end: slot.end, transparency: "transparent", colorId: FU_COLOR };
 }
-// mark(v): notes on the lead the id it's about to be put on under, first
+// one being put on for the day whose answer was lost: tried again at the same time while that's ahead and clear (the
+// others keep clear of it, fuTaken), "" if not
+const lfuTryAt = (l, day) => { const c = (l && l.fuCal) || {}; return !c.id && c.try === day && /T\d\d:\d\d/.test(c.tryAt || "") && c.tryAt.slice(0, 10) === day && c.tryAt > nowLocal() && fuClear(c.tryAt, { l: l.id }, LFU_MIN) === c.tryAt ? c.tryAt : ""; };
+// mark(v, at): notes on the lead the id and time it's about to be put on under, first
 async function lfuCreate(l, day, v, mark) {
-  const slot = lfuSlot(day);
+  const c = l.fuCal || {}, again = +c.v === v ? lfuTryAt(l, day) : "";
+  // (the times it was being put on at under this id, by tries whose answers were lost, on this day or another)
+  const mine = (v) => +c.v === v && !c.id ? [c.tryAt].concat(c.tries || []).filter(x => /T\d\d:\d\d/.test(x || "")) : [];
+  const slot = again ? { start: again, end: localISO(new Date(new Date(again).getTime() + LFU_MIN * 60000)), hm: "" } : lfuSlot(l, day);
   for (let i = 0; i < 4; i++) {
     if (i && !calBusiness()) throw new Error("Google Calendar isn't connected to the business account");
-    await mark(v);
+    await mark(v, slot.start); fuNote(slot.start, LFU_MIN, "l:" + l.id, lfuEventId(l, v));
     try { const r = await GC().createEvent(Object.assign({ id: lfuEventId(l, v) }, lfuEvent(l, slot)));
-      // there already (put on by a try whose answer was lost): on this day it stays as it is (moved to another time by
-      // hand, maybe: a time other than 10 AM on a day not today is kept); on another day it's moved to this one
-      if (r.existed) { const s = r.start ? localISO(new Date(r.start)) : "";
-        if (s.slice(0, 10) === day) return { id: r.id, at: s, v, hm: day !== today() && s.slice(11, 16) !== LFU_AT ? s.slice(11, 16) : "" };
-        await GC().patchEvent(r.id, lfuEvent(l, slot)); }
+      // there already (put on by a try whose answer was lost): on this day at a time moved to by hand, it stays there (a
+      // time other than 10 AM on a day not today is kept), and one already gone by today stays as it is; else (on another
+      // day, or at a time a try was putting it at, taken now maybe) it's moved to this one's
+      if (r.existed) { const s = r.start ? localISO(new Date(r.start)) : "", ours = mine(v).some(x => x.slice(11, 16) === s.slice(11, 16));
+        if (s.slice(0, 10) === day && s !== slot.start && (!ours || s <= nowLocal())) { fuNote(s, LFU_MIN, "l:" + l.id, r.id);
+          return { id: r.id, at: s, v, hm: !ours && day !== today() && s.slice(11, 16) !== LFU_AT ? s.slice(11, 16) : "" }; }
+        if (s !== slot.start) await GC().patchEvent(r.id, Object.assign(lfuEvent(l, slot), { untimed: !s })); }
       return { id: r.id, at: slot.start, v, hm: "" }; }
     catch (e) { if (e.code !== "taken") throw e; v++; }
   }
@@ -3905,11 +4018,14 @@ async function lfuCreate(l, day, v, mark) {
 }
 // does one lead's work, as the database has the lead; says what was done
 async function lfuApply(l, w) {
-  const G = window.GIC, save = (c) => G.patchDoc("leads", l.id, { fuCal: Object.assign({ id: "", day: "", at: "", hm: "", try: "" }, c) });
+  // (t: atT, when it isn't now)
+  const G = window.GIC, save = (c, t) => G.patchDoc("leads", l.id, { fuCal: Object.assign({ id: "", day: "", at: "", hm: "", try: "", tryAt: "", tries: [], mvAt: "", gAt: "", hm0: "", rsAt: "" }, c, { atT: t === undefined ? Date.now() : t }) });
   const gone = (e) => /not.?found/i.test(String(e && (e.code || e.message)));
   if (w.off) {
-    // one whose answer was lost: where it is, if it's there at all
-    if (w.tried) { let g = null; try { g = await GC().getEvent(w.id, "primary"); } catch (e) { if (e.code !== "gone") throw e; } w = Object.assign({}, w, { at: g && g.status !== "cancelled" && g.start && g.start.dateTime ? localISO(new Date(g.start.dateTime)) : "" }); }
+    // where it is as Google has it now, if it's there at all (this device's copy can be behind: moved by hand from a time
+    // gone by to one ahead, or put on or moved by a try whose answer was lost)
+    let g = null; try { g = await GC().getEvent(w.id, "primary"); } catch (e) { if (e.code !== "gone") throw e; }
+    w = Object.assign({}, w, { at: fuStartOf(g) });
     const was = w.at > nowLocal() ? await GC().deleteEvent(w.id, "primary") : false;
     await save({ v: w.v + 1 }).catch(e => { if (!gone(e)) throw e; });
     // (one already past stays as a record, and one that was never made isn't there to come off: neither is said)
@@ -3918,14 +4034,46 @@ async function lfuApply(l, w) {
   if (w.move) {
     // as Google Calendar has it right now (this device's copy can be behind, and read as a time moved by hand)
     let g = null, r = null; try { g = await GC().getEvent(w.id, "primary"); } catch (e) { if (e.code !== "gone") throw e; }
-    const slot = lfuSlot(w.day, w, g);
-    if (g && g.status !== "cancelled") try { r = await GC().patchEvent(w.id, lfuEvent(l, slot)); } catch (e) { if (e.code !== "gone") throw e; }
-    if (r && r.status !== "cancelled") { await save({ id: w.id, day: w.day, at: slot.start, v: w.v, hm: slot.hm }).catch(e => { if (!gone(e)) throw e; }); return "moved"; }
+    // (another device connected to the business calendar may be moving it right now: if the lead changed since it was
+    // read, it's left to that one, and looked at again later)
+    const fk = (c) => ["id", "day", "at", "v", "hm", "try", "tryAt", "mvAt", "gAt", "hm0", "rsAt"].map(f => String((c || {})[f] == null ? "" : c[f])).join("|");
+    const cur = await G.serverDoc("leads", l.id); if (cur && fk(cur.fuCal) !== fk(l.fuCal)) throw new Error("changed on another device");
+    const slot = lfuSlot(l, w.day, w, g), len = Math.round((new Date(slot.end) - new Date(slot.start)) / 60000), who = "l:" + l.id;
+    // noted as taken as soon as it's picked (a sweep can run meanwhile), and where it's going written on the lead before
+    // it's moved (mvAt: the answer can be lost; it's kept clear for it until the move is saved, so the note goes if it
+    // doesn't finish), with the time moved to by hand it keeps. Where Google has it already, a move before this whose
+    // answer was lost, is written there too.
+    if (g && g.status !== "cancelled") {
+      const drop = () => { const i = fuJust.findIndex(x => x.who === who); if (i >= 0) fuJust.splice(i, 1); };
+      const gs = fuStartOf(g), c0 = l.fuCal || {}, got = gs === String(c0.mvAt || "") ? { day: gs.slice(0, 10), at: gs } : {};
+      // (what it keeps where the lead says it is: where it was, or where a move before this got to)
+      const hm0 = got.at || !lfuPend(c0) ? String(c0.hm || "") : String(c0.hm0 == null ? c0.hm || "" : c0.hm0);
+      fuNote(slot.start, len, who, w.id); let pre = false;
+      if (slot.start !== gs) { await save(Object.assign({}, c0, got, { mvAt: slot.start, hm: slot.hm, gAt: gs, hm0 })).catch(e => { if (!gone(e)) { drop(); throw e; } }); pre = true; }
+      // (one made all-day in Google Calendar is made a timed one again. When it doesn't go through, where Google has it
+      // now says whether it moved: there, it's as if Google had answered; still where it was (or Google certainly said
+      // no), the lead's put back as it was, with where a move before this got to, and that spot noted as taken until this
+      // device's copy of the calendar, read again, has it; anywhere else, or not read, it's left as a move that hasn't
+      // finished. A 5xx can come back for a change that was made.)
+      try { r = await GC().patchEvent(w.id, Object.assign(lfuEvent(l, slot), { untimed: !(g.start && g.start.dateTime) })); }
+      catch (e) { drop(); if (e.code !== "gone") {
+        let n = null; if (pre) { try { n = await GC().getEvent(w.id, "primary"); } catch (e2) {} }
+        const ns = n && n.status !== "cancelled" ? fuStartOf(n) : "", no = e.code === "forbidden" || e.code === "expired" || (e.code === "http" && e.status < 500);
+        if (!(ns && ns === slot.start)) {
+          // (with the atT it had, unless it's put where Google has it: where it says was the CRM's no more lately than that)
+          if (pre && (ns === gs || (!n && no))) { fuNote(gs, fuLen(g), who, w.id); await save(Object.assign({}, c0, got), got.at ? undefined : +c0.atT || 0).catch(() => {}); }
+          if (n) { await GC().refresh(true).catch(() => {}); await GC().refresh(true).catch(() => {}); }
+          throw e; }
+        // (read twice, as after a move Google answered: the first may be a read already going, from before it)
+        r = n; await GC().refresh(true).catch(() => {}); await GC().refresh(true).catch(() => {}); } } }
+    if (r && r.status !== "cancelled") { fuNote(slot.start, len, "l:" + l.id, w.id); await save({ id: w.id, day: w.day, at: slot.start, v: w.v, hm: slot.hm }).catch(e => { if (!gone(e)) throw e; }); return "moved"; }
     // taken off Google Calendar by hand meanwhile: a new one on the new day (not on a day already past)
-    if (lfuSlot(w.day).start <= nowLocal()) { await save({ v: w.v + 1 }).catch(e => { if (!gone(e)) throw e; }); return ""; }
+    if (lfuSlot(l, w.day).start <= nowLocal()) { await save({ v: w.v + 1 }).catch(e => { if (!gone(e)) throw e; }); return ""; }
     w = { add: true, day: w.day, v: w.v + 1 };
   }
-  const c0 = l.fuCal || {}, mark = (v) => !c0.id && +c0.v === v && c0.try === w.day ? null : save({ v, try: w.day });
+  // (a new time under the same id keeps the ones before it: the lost try may be on Google at one of them)
+  const c0 = l.fuCal || {}, same = (v) => !c0.id && +c0.v === v;
+  const mark = (v, at) => same(v) && c0.try === w.day && c0.tryAt === at ? null : save({ v, try: w.day, tryAt: at, tries: same(v) ? [...new Set([c0.tryAt].concat(c0.tries || []))].filter(x => /T\d\d:\d\d/.test(x || "") && x !== at).slice(0, 8) : [] });
   let r; try { r = await lfuCreate(l, w.day, w.v, mark); } catch (e) { if (gone(e)) return ""; throw e; }
   // written only while the lead is still there: one put on just as the lead was deleted comes back off
   try { await save({ id: r.id, day: w.day, at: r.at, v: r.v, hm: r.hm }); }
@@ -3951,6 +4099,7 @@ async function lfuSweep() {
       } catch (e) { missed = true; }
     }
     await lfuRecolor().catch(() => {});
+    await fuRespace().catch(() => {});
   } finally { lfuSweeping = false; }
   // anything that didn't go through is tried again in 3 minutes
   if (missed) { clearTimeout(lfuSweep.later); lfuSweep.later = setTimeout(calSweepSoon, 185000); }
@@ -3981,6 +4130,70 @@ async function lfuRecolor() {
   for (const e of todo) { if (!calBusiness()) return; try { await GC().patchEvent(e.id, { colorId: FU_COLOR }, e.calendarId); } catch (er) { if (er.code !== "gone") return; } }
   await saveDoc("settings", "fucolor", { kind: "fucolor", at: new Date().toISOString(), n: todo.length }, true); lfuRecolor.done = true;
 }
+// follow-ups put on before they were 30 minutes and kept apart (2026-10-26): the ones still ahead on the business
+// calendar are made 30 minutes (one made longer or shorter by hand stays that long) and, where one is at the same time as
+// one before it, it goes to the nearest clear time that day; its lead or estimate says where it is now. Once
+// (settings/fu30 notes it). From the calendar as Google has it now: read again after what this sweep just put on or
+// moved (the read already going might not have it), and only a read that worked. One that doesn't finish is tried again
+// 10 minutes later.
+async function fuRespace() {
+  const G = window.GIC, gc = GC(); if (fuRespace.done || !G || !G.serverDoc || !G.patchDoc || !gc) return;
+  const flag = await G.serverDoc("settings", "fu30"); if (flag && flag.at) { fuRespace.done = true; return; }
+  if (Date.now() - (fuRespace.tried || 0) < 600000) return; fuRespace.tried = Date.now();
+  await gc.refresh(true); const was = gc.loadedAt(); await gc.refresh(true);
+  if (!calBusiness() || gc.status() !== "ready" || !(gc.loadedAt() > was)) return;
+  const nf = (e) => { if (!/not.?found/i.test(String(e && (e.code || e.message)))) throw e; };
+  const now = nowLocal(), main = (gc.calendars() || []).find(c => c.primary), ISO = (e) => localISO(new Date(e));
+  const evs = gc.events().filter(e => /^gic(fu|lf)/.test(e.id || "") && e.status !== "cancelled" && e.start && e.start.dateTime && (!main || e.calendarId === main.id))
+    .map(e => { const m = Math.round((new Date((e.end && e.end.dateTime) || e.start.dateTime) - new Date(e.start.dateTime)) / 60000); return { e, s: ISO(e.start.dateTime), len: m === 15 || m < 5 || m > 720 ? LFU_MIN : m, was: m }; })
+    .filter(x => x.s > now).sort((a, b) => a.s.localeCompare(b.s) || a.e.id.localeCompare(b.e.id));
+  let n = 0;
+  for (let i = 0; i < evs.length; i++) {
+    if (!calBusiness()) return;
+    const x = evs[i], day = x.s.slice(0, 10), span = (o) => [fuMin(o.s), fuMin(o.s) + o.len];
+    const hits = (o, m) => o.s.slice(0, 10) === day && m < span(o)[1] && span(o)[0] < m + x.len;
+    let at = x.s, noted = "";
+    // on top of one before it: clear of the ones before it (where they are now) and the ones after it
+    if (evs.slice(0, i).some(o => hits(o, fuMin(x.s)))) {
+      const l = /^giclf/.test(x.e.id) && S.leads.find(y => (y.fuCal || {}).id === x.e.id), q = !l && S.quotes.find(y => Object.values(y.fuEv || {}).some(e => e && e.id === x.e.id));
+      const taken = fuTaken(day, { id: x.e.id, l: l ? l.id : "", q: q ? q.id : "" }).concat(evs.filter((o, j) => j !== i && o.s.slice(0, 10) === day).map(span));
+      at = day + "T" + fuFreeOf(taken, day, x.s.slice(11, 16), x.len) + ":00";
+      // (noted as taken right away: the estimates' sweep can run meanwhile)
+      const k0 = q && Object.keys(q.fuEv || {}).find(kk => (q.fuEv[kk] || {}).id === x.e.id);
+      if (at !== x.s) { noted = l ? "l:" + l.id : k0 ? "q:" + q.id + "|" + k0 : "e:" + x.e.id; fuNote(at, x.len, noted, x.e.id); }
+    }
+    if (at === x.s && x.len === x.was) continue;
+    // moved: where it goes is written on its lead or estimate first (as the database has them), then it's moved, so a
+    // move Google's answer is lost for isn't left with the old time on them; one that doesn't go through stops here
+    // (the next try finds it still on top of the other), and one Google said no to (or that never went) is put back on
+    // them. A lead's moved by hand in Google Calendar keeps that time for its next day (hm), as it would have. When it
+    // has moved, they say when (atT: not before, as a read of the calendar meanwhile can still have it where it was).
+    let undo = null, stamp = null;
+    if (at !== x.s) {
+      if (/^giclf/.test(x.e.id)) { const l = S.leads.find(y => (y.fuCal || {}).id === x.e.id), cur = l && await G.serverDoc("leads", l.id);
+        // (rsAt: where it is now, should the move not get there: not a time moved by hand)
+        // (with a move that hadn't finished, what it keeps there is hm0: hm is what the move is taking)
+        if (cur && (cur.fuCal || {}).id === x.e.id) { const c = cur.fuCal, k = lfuKeep(c, x.s);
+          await G.patchDoc("leads", l.id, { fuCal: Object.assign({}, c, { at, rsAt: x.s }, lfuPend(c) ? { hm0: k } : { hm: k }) }).catch(nf);
+          undo = () => G.patchDoc("leads", l.id, { fuCal: c }); stamp = () => G.patchDoc("leads", l.id, { "fuCal.atT": Date.now() }); } }
+      else { const q = S.quotes.find(y => Object.values(y.fuEv || {}).some(e => e && e.id === x.e.id)), cur = q && await G.serverDoc("quotes", q.id);
+        const k = cur && Object.keys(cur.fuEv || {}).find(kk => (cur.fuEv[kk] || {}).id === x.e.id);
+        if (k) { const e0 = cur.fuEv[k]; await G.patchDoc("quotes", q.id, { ["fuEv." + k]: Object.assign({}, e0, { at }) }).catch(nf); undo = () => G.patchDoc("quotes", q.id, { ["fuEv." + k]: e0 });
+          stamp = () => G.patchDoc("quotes", q.id, { ["fuEv." + k + ".atT"]: Date.now() }); } }
+    }
+    try { await GC().patchEvent(x.e.id, { start: at, end: ISO(new Date(at).getTime() + x.len * 60000) }, x.e.calendarId); }
+    // (Google answered no, or the sign-in ran out first: it didn't move. Anything else, a 5xx too, it may have)
+    catch (er) { if (er.code === "gone") continue;
+      if (er.code === "forbidden" || er.code === "expired" || (er.code === "http" && er.status < 500)) { const j = noted ? fuJust.findIndex(y => y.who === noted) : -1; if (j >= 0) fuJust.splice(j, 1); if (undo) await undo().catch(() => {}); }
+      // (else read again, so this device's copy shows where it is now)
+      // (twice: the first may be one already going, from before the move)
+      else { await gc.refresh(true).catch(() => {}); await gc.refresh(true).catch(() => {}); }
+      return; }
+    if (stamp) await stamp().catch(() => {});
+    n++; x.s = at;
+  }
+  await saveDoc("settings", "fu30", { kind: "fu30", at: new Date().toISOString(), n }, true); fuRespace.done = true;
+}
 // a deleted lead's follow-up still ahead comes off from the business device (with deleted estimates' ones, efuSweep);
 // and the one the business device may be putting on right now, not written on the lead yet (its id is known ahead)
 async function lfuForget(l) {
@@ -3988,18 +4201,20 @@ async function lfuForget(l) {
   const c = l.fuCal || {}, now = nowLocal(), ids = {}, v = +c.v || 0;
   // (an id listed twice keeps the later time: it comes off while either is still ahead)
   const put = (id, at) => { if (at > now && !(ids[id] > at)) ids[id] = at; };
-  if (c.id) put(c.id, lfuLater(c));
+  // (whatever time this device has for it: it may have been moved since, by hand or by a move whose answer was lost; it
+  // comes off only if Google has it ahead, efuSweep)
+  if (c.id) put(c.id, "9999-12-31T23:59:00");
   // one being put on whose answer never came back
-  else if (/^\d{4}-\d\d-\d\d$/.test(c.try || "")) put(lfuEventId(l, v), c.try + "T23:59:00");
+  else if (/^\d{4}-\d\d-\d\d$/.test(c.try || "")) put(lfuEventId(l, v), "9999-12-31T23:59:00");
   const want = lfuWant(l);
-  if (want && (!c.id || c.day !== want)) { const end = want + "T23:59:00"; put(lfuEventId(l, v), end); put(lfuEventId(l, v + 1), end); }
+  if (want && (!c.id || c.day !== want)) { put(lfuEventId(l, v), "9999-12-31T23:59:00"); put(lfuEventId(l, v + 1), "9999-12-31T23:59:00"); }
   if (!Object.keys(ids).length) return;
   await saveDoc("settings", "efu-gone", { kind: "efu-gone", ids }, true).catch(() => {});
   calSweepSoon();
 }
 // said when a follow-up day is set on the owner's device that can't put it on the business calendar itself (l: the lead
 // as it is now; nothing's said for one that doesn't go on)
-const lfuElsewhere = (l) => STANDALONE && GC() && calOwner() && !calBusiness() && lfuWant(l) && lfuSlot(lfuWant(l)).start > nowLocal() ? " It goes on your Google Calendar from a device connected to it." : "";
+const lfuElsewhere = (l) => STANDALONE && GC() && calOwner() && !calBusiness() && lfuWant(l) && lfuSlot(l, lfuWant(l)).start > nowLocal() ? " It goes on your Google Calendar from a device connected to it." : "";
 // the Calendar tab's lead follow-ups between two days, from the CRM (their Google copies aren't shown twice)
 function lfuItems(startT, endT) {
   const out = [];
@@ -4008,7 +4223,7 @@ function lfuItems(startT, endT) {
     // at the time its event has (on Google Calendar, else where it was put), or the time it'll go on at: on the day it's
     // on there, so one moved to another day in Google Calendar shows on that one (as estimate follow-ups do)
     const c = l.fuCal || {}, on = c.id && c.day === d, g = on && lfuGoogle(c.id);
-    const start = g ? localISO(new Date(g.start.dateTime)) : on && /T\d\d:\d\d/.test(c.at || "") ? c.at : lfuSlot(d, c).start;
+    const start = g ? localISO(new Date(g.start.dateTime)) : on && /T\d\d:\d\d/.test(c.at || "") ? c.at : lfuTryAt(l, d) || lfuSlot(l, d, c).start;
     if (start.slice(0, 10) < startT || start.slice(0, 10) > endT) return;
     const end = g ? localISO(new Date((g.end && g.end.dateTime) || g.start.dateTime)) : localISO(new Date(new Date(start).getTime() + LFU_MIN * 60000));
     out.push({ src: "lfu", id: "lfu:" + l.id, title: "Follow up: " + leadName(l), start, end, where: [l.phone, leadAddr(l)].filter(Boolean).join(" · "), leadId: l.id, free: true });
