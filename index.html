@@ -5074,19 +5074,21 @@ function healJobLeads() {
 // ---------- CREW BONUS (elias, 2026-10-21) ----------
 // Who did each paid job, what it put in the business bank (its price times its % to bank, the same as Money's "Paid into
 // bank") and who's in the lead, so a % of it can be paid out as a bonus at the end of the year. A job worked by two or
-// more people counts the same for each of them. Opened from the Crew bonus section on Money.
+// more people counts the same for each of them. Opened from the Crew bonus section on Money. An employee (AL, Adam: elias,
+// 2026-10-27, "Adam is an employee, so he does not participate in any bonuses") is shown on the jobs he helped on, but a
+// job he worked with someone counts all for them, and he's not on the bonus or in the lead.
 S.bonus = { year: "" };
 S.bonusPct = null; // settings/bonus: the bonus %, of what each person's jobs put in the bank
 S.bonusOut = null; // settings/bonus: who's left out of the bonus
 const crewName = (x) => x.length <= 3 ? x.toUpperCase() : x;
 const crewNames = (c) => [...new Set(String(c || "").split(/\s*(?:\+|&|,|\/|\band\b)\s*/i).map(x => x.trim()).filter(Boolean).map(crewName))];
 // left out until the owner changes it: elias, 2026-10-25, "Take Adam off the bonus" (Adam is AL)
-const BONUS_OUT = ["AL"];
+const BONUS_OUT = ["AL"], BONUS_STAFF = ["AL"];
 const bonusOut = () => (Array.isArray(S.bonusOut) ? S.bonusOut : BONUS_OUT).map(x => crewName(String(x).trim()));
 const inBonus = (p) => p.name !== "Not recorded" && !bonusOut().includes(p.name);
 function bonusYears(R) { const y = today().slice(0, 4), ys = [...new Set(R.jobs.map(j => j.date.slice(0, 4)).filter(x => /^\d{4}$/.test(x)).concat(y))]; return ys.sort().reverse(); }
 function bonusCalc(R, y) {
-  const jobs = R.jobs.filter(j => y === "all" || j.date.startsWith(y)).map(j => Object.assign({}, j, { bank: j.price * (j.bankPct || 0), who: crewNames(j.j.crew) }));
+  const jobs = R.jobs.filter(j => y === "all" || j.date.startsWith(y)).map(j => { const crew = crewNames(j.j.crew); return Object.assign({}, j, { bank: j.price * (j.bankPct || 0), crew, who: crew.filter(n => !BONUS_STAFF.includes(n)) }); });
   const P = {};
   jobs.forEach(j => { const w = j.who.length ? j.who : ["Not recorded"]; w.forEach(p => { const x = P[p] = P[p] || { name: p, jobs: 0, sales: 0, bank: 0 }; x.jobs++; x.sales += j.price / w.length; x.bank += j.bank / w.length; }); });
   // the people on the bonus first, by what they put in the bank, then "Not recorded", then anyone left out of the bonus
@@ -5114,9 +5116,9 @@ VIEWS.bonus = () => {
   const tag = (p) => !inBonus(p) ? (p.name === "Not recorded" ? "" : ` <span class="pill s-lost">Not in the bonus</span>`) : c.lead && !c.tied && p === c.lead ? ` <span class="pill s-paid">In the lead</span>` : c.tied && c.lead && Math.abs(p.bank - c.lead.bank) < 0.005 ? ` <span class="pill s-scheduled">Tied</span>` : "";
   const rank = (p, i) => inBonus(p) ? i + 1 : "";
   // everyone who has worked a job, for "Who gets a bonus"
-  const crew = [...new Set(CREW.concat(R.jobs.flatMap(j => crewNames(j.j.crew))))], out = bonusOut();
+  const crew = [...new Set(CREW.concat(R.jobs.flatMap(j => crewNames(j.j.crew))))].filter(n => !BONUS_STAFF.includes(n)), out = bonusOut();
   const jobs = c.jobs.slice().sort((a, b) => b.date.localeCompare(a.date) || a.client.localeCompare(b.client)), noPct = jobs.filter(j => j.bankPct == null).length;
-  const crewL = (j) => j.who.length ? j.who.join(" + ") + (j.who.length > 1 ? " (shared)" : "") : "Not recorded";
+  const crewL = (j) => j.crew.length ? j.crew.join(" + ") + (j.who.length > 1 ? " (shared)" : "") : "Not recorded";
   return `${pageHead("Crew bonus", `Who did each paid job, what it put in the business bank, and who's in the lead. ${esc(yl === "all time" ? "All time" : yl)}.`, `<button class="btn" data-nav="money">Back to Money</button>`)}
   ${noDbBanner()}
   <div class="chips" role="group" aria-label="Pick a year">${ys.map(x => [x, x]).concat([["all", "All time"]]).map(([k, t]) => `<button data-act="bonus-year" data-y="${k}" aria-pressed="${k === y}">${t}</button>`).join("")}</div>
