@@ -1914,7 +1914,7 @@ VIEWS.today = () => {
     <section class="panel flush" id="todo-today"><div class="panel-h"><h2>To do today</h2><span class="count">${todo ? plural(todo, "thing") : ""}</span></div>
       ${todo ? `<div class="list">
         ${booked.length ? `<div class="sub-h">Booked today · ${booked.length}</div>${booked.map(eventRow).join("")}` : ""}
-        ${due.length ? `<div class="sub-h">Follow-ups · ${due.length}</div>${due.map(leadRow).join("")}` : ""}
+        ${due.length ? `<div class="sub-h">Follow-ups · ${due.length}</div>${due.map(l => leadRow(l, "today")).join("")}` : ""}
         ${efu.length ? `<div class="sub-h">Estimate follow-ups · ${efu.length}</div>${efu.map(efuRow).join("")}` : ""}
       </div>` : `<div class="empty">Nothing booked today and no follow-ups due. Today's estimates and jobs, the follow-ups you schedule and the ones on estimates you've sent show up here.</div>`}
     </section>
@@ -1941,7 +1941,8 @@ function mailSummary() {
   }
   return `<div class="stack" style="gap:8px">${line(out.length, "Outreach contacts")}${line(out.filter(l => l.email).length, "With an email address")}</div>`;
 }
-function leadRow(l) {
+// done: where the row is (Today's follow-ups), for a Done button that asks for the next follow-up
+function leadRow(l, done) {
   const ds = dueState(l);
   const sub = [l.company && l.name ? l.name : "", l.area && l.area !== l.city ? l.area : "", l.city, (l.services || []).slice(0, 2).join(", ")].filter(Boolean).join(" · ");
   const tag = l.crashOut ? '<span class="pill dnc">Crash out</span>' : l.dnc ? '<span class="pill dnc">Do not contact</span>' : isOutreach(l) ? '<span class="pill out">Outreach</span>' : stagePill(l.stage);
@@ -1950,8 +1951,10 @@ function leadRow(l) {
   const fu = ef ? `<span class="pill ${ef.over ? "over" : "due"}">${ef.over ? "Estimate follow-up overdue" : "Estimate follow-up today"}</span>`
     : l.nextFollowUp && !l.dnc ? (ds ? `<span class="pill ${ds}">${ds === "over" ? "Overdue · " + esc(fmtD(l.nextFollowUp)) : "Call today"}</span>` : `<span class="note">Follow up ${esc(fmtD(l.nextFollowUp))}</span>`)
     : en ? `<span class="note">Estimate follow-up ${esc(fmtD(en.at))}</span>` : (l.value ? `<span class="note num">${money(l.value)}</span>` : "");
+  const main = `<div class="main-col"><span class="t">${esc(leadName(l))}</span><span class="s">${esc(sub || l.email || l.phone || "")}</span></div>`;
+  if (done && l.nextFollowUp) return `<div class="item flow" role="button" tabindex="0" data-open-lead="${esc(l.id)}">${main}<div class="r">${tag}${fu}${fuDoneBtn(l, done)}</div></div>${fuAskHTML("done", l.id, done)}`;
   return `<button class="item" data-open-lead="${esc(l.id)}">
-    <div class="main-col"><span class="t">${esc(leadName(l))}</span><span class="s">${esc(sub || l.email || l.phone || "")}</span></div>
+    ${main}
     <div class="r">${tag}${fu}</div></button>`;
 }
 function dripRow(x, inLead) {
@@ -2050,23 +2053,33 @@ function dropOnStage(l, stage) {
   setStage(l, stage, null, stage === "lost" ? "Find them with “Lost” in the list above." : "").catch(() => {});
 }
 // ---------- Follow up: the day to follow up, asked when the call result, an email result or the stage is picked ----------
-// via: "call" (call result), "email" (Email > Inbox, id = the conversation) or "stage" (stage button or pipeline drop)
+// via: "call" (call result), "email" (Email > Inbox, id = the conversation), "stage" (stage button or pipeline drop) or
+// "done" (Done on a follow-up: id = where, "today", "cal" or "lead"; asks for the next one)
 function fuAskOpen(via, leadId, id) {
   const l = leadById(leadId), cur = l && l.nextFollowUp && l.nextFollowUp > today() ? l.nextFollowUp : "";
-  S.fuAsk = { via, leadId, id: id || "", date: cur || addDays(1) };
-  if (via === "email") render(); else refreshLeadModal(true);
+  S.fuAsk = { via, leadId, id: id || "", date: via === "done" ? addDays(3) : cur || addDays(1) };
+  fuAskRedraw(S.fuAsk);
   setTimeout(() => { const el = document.getElementById("fu-ask-date"); if (el) el.focus(); }, 30);
 }
+// the box is in a list (Email > Inbox, a follow-up's Done on Today or the Calendar) or on the lead's page
+const fuAskRedraw = (a) => { if (a && (a.via === "email" || (a.via === "done" && a.id !== "lead"))) render(); else refreshLeadModal(true); };
+const fuDoneBtn = (l, where) => `<button class="btn sm" data-act="lfu-done" data-id="${esc(l.id)}" data-where="${esc(where)}">Done</button>`;
 const FU_CHIPS = [[1, "Tomorrow"], [3, "In 3 days"], [7, "Next week"], [14, "In 2 weeks"], [30, "In a month"]];
+const FU_DONE_CHIPS = [[3, "In 3 days"], [7, "In 1 week"], [14, "In 2 weeks"]];
 function fuAskHTML(via, leadId, id) {
-  const a = S.fuAsk; if (!a || a.via !== via || a.leadId !== leadId || (via === "email" && a.id !== id)) return "";
+  const a = S.fuAsk; if (!a || a.via !== via || a.leadId !== leadId || ((via === "email" || via === "done") && a.id !== id)) return "";
   const l = leadById(leadId), name = l ? leadName(l) : "them";
+  // Done: tapping 3 days, 1 week or 2 weeks sets it right away; a day picked in the box takes Save
+  if (via === "done") return `<div class="fu-ask" role="group" aria-label="Next follow-up day"><div class="row"><b>Follow-up done. When's the next one with ${esc(name)}?</b></div>
+    <div class="row">${FU_DONE_CHIPS.map(([n, t]) => `<button class="btn sm" data-act="fu-chip" data-days="${n}">${t}</button>`).join("")}</div>
+    <div class="row"><input type="date" id="fu-ask-date" value="${esc(a.date)}" min="${esc(today())}" aria-label="Next follow-up day"><button class="btn sm primary" data-act="fu-save">Save</button><button class="btn sm ghost" data-act="fu-cancel">Cancel</button></div></div>`;
   return `<div class="fu-ask" role="group" aria-label="Follow-up day"><div class="row"><b>When should you follow up with ${esc(name)}?</b></div>
     <div class="row"><input type="date" id="fu-ask-date" value="${esc(a.date)}" min="${esc(today())}" aria-label="Follow-up day">${FU_CHIPS.map(([n, t]) => `<button class="btn sm" data-act="fu-chip" data-days="${n}" aria-pressed="${a.date === addDays(n)}">${t}</button>`).join("")}</div>
     <div class="row"><button class="btn sm primary" data-act="fu-save">Move to Follow up</button><button class="btn sm ghost" data-act="fu-cancel">Cancel</button><span class="note">It shows on Today under “To do today” that day.</span></div></div>`;
 }
-async function fuAskSave() {
-  const a = S.fuAsk; if (!a) return; const el = document.getElementById("fu-ask-date"), v = el ? el.value : a.date;
+// pick: a day from a quick button (Done), instead of the one in the box
+async function fuAskSave(pick) {
+  const a = S.fuAsk; if (!a) return; const el = pick ? null : document.getElementById("fu-ask-date"), v = pick || (el ? el.value : a.date);
   if (!/^\d{4}-\d\d-\d\d$/.test(v || "") || (el && el.validity && el.validity.badInput) || !fuYearOk(v)) { toast("Pick the day to follow up"); if (el) el.focus(); return; }
   if (v < today()) { toast("Pick today or a day after"); if (el) el.focus(); return; }
   const l = leadById(a.leadId); if (!l) { S.fuAsk = null; return; }
@@ -2076,6 +2089,13 @@ async function fuAskSave() {
   try {
     if (a.via === "call") { await logDispo("Follow up", v); ok = true; }
     else if (a.via === "email") ok = (await ibDispo(a.id, "Follow up", v)) !== false;
+    else if (a.via === "done") {
+      const was = { nextFollowUp: l.nextFollowUp || "", fuBy: l.fuBy || "", activity: l.activity || [] }, day = fmtD(v, { weekday: "short", month: "short", day: "numeric" });
+      const upd = { nextFollowUp: v, fuBy: "you", activity: activity(l, "followup", `Follow-up done · next one ${day}`), updatedAt: new Date().toISOString() };
+      await saveDoc("leads", l.id, upd, true); ok = true;
+      toast(`Follow-up done. Next one with ${leadName(l)}: ${day}.${lfuElsewhere(Object.assign({}, l, upd))}`, 7000, { label: "Undo", fn: () => { saveDoc("leads", l.id, Object.assign({}, was, { updatedAt: new Date().toISOString() }), true).catch(() => {}); } });
+      fuAskRedraw(a);
+    }
     else {
       const upd = { stage: "followup", nextFollowUp: v, fuBy: "you", activity: activity(l, "stage", `Moved to Follow up · follow up ${fmtD(v)}`), updatedAt: new Date().toISOString() };
       if (l.stage === "followup") delete upd.stage;
@@ -2084,9 +2104,9 @@ async function fuAskSave() {
       refreshLeadModal(true);
     }
   } catch (e) {} finally { fuAskSave.busy = false; }
-  if (!ok && !S.fuAsk) { S.fuAsk = Object.assign({}, a, { date: v }); if (a.via === "email") render(); else refreshLeadModal(true); }
+  if (!ok && !S.fuAsk) { S.fuAsk = Object.assign({}, a, { date: v }); fuAskRedraw(a); }
 }
-function fuAskCancel() { const a = S.fuAsk; S.fuAsk = null; if (a && a.via === "email") render(); else refreshLeadModal(true); }
+function fuAskCancel() { const a = S.fuAsk; S.fuAsk = null; fuAskRedraw(a); }
 
 // ---------- DB writes ----------
 const writing = {};
@@ -2212,9 +2232,9 @@ function leadInfo(l) {
   return `<div class="info-grid">
     ${infoCell("Company", esc(l.company))}${infoCell("Contact", esc(l.name))}${infoCell("Type", esc(l.type))}
     ${infoCell("Phone", phone, phoneActs, true)}${infoCell("Email", esc(l.email), emailActs, true)}${infoCell("Address", esc(addr) + (l.area && l.area !== l.city && !addr.includes(l.area) ? `<span class="note"> · ${esc(l.area)}</span>` : ""), addrActs, true)}
-    ${infoCell("Lead source", esc(l.source))}${infoCell("Services wanted", esc((l.services || []).join(", ")))}${infoCell("Next follow-up", `<input type="date" id="fu-date" value="${esc(l.nextFollowUp || "")}" aria-label="Next follow-up date">`)}
+    ${infoCell("Lead source", esc(l.source))}${infoCell("Services wanted", esc((l.services || []).join(", ")))}${infoCell("Next follow-up", `<input type="date" id="fu-date" value="${esc(l.nextFollowUp || "")}" aria-label="Next follow-up date">`, l.nextFollowUp && !l.dnc ? fuDoneBtn(l, "lead") : "")}
     ${infoCell("Last call", last)}${infoCell("Created", esc(fmtD(l.createdAt, dLong)))}${infoCell("Last updated", esc(fmtD(l.updatedAt, dLong)))}
-  </div>${l.otherContacts ? `<div class="note" style="white-space:pre-wrap">${esc(l.otherContacts)}</div>` : ""}${notes}`;
+  </div>${fuAskHTML("done", l.id, "lead")}${l.otherContacts ? `<div class="note" style="white-space:pre-wrap">${esc(l.otherContacts)}</div>` : ""}${notes}`;
 }
 function stageRow(l) { const cur = l.stage || "new"; return `<div class="stage-row" role="group" aria-label="Stage">${STAGES.map(([k, t]) => `<button class="stg" data-stage-to="${k}" aria-pressed="${cur === k}">${t}</button>`).join("")}</div>`; }
 // Paid needs the payment recorded first (same as dropping the card on Paid); every other stage is a plain move.
@@ -3234,7 +3254,12 @@ function upcomingItems(days) { return rangeItems(ymd(new Date()), addDays(days))
 function eventRow(e) {
   const tag = e.src === "crm" ? `<span class="pill ${e.kind === "job" ? "s-scheduled" : "s-visit"}">${e.kind === "job" ? "Job" : "Estimate"}</span>` : e.src === "fu" || e.src === "lfu" ? `<span class="pill s-selling">${e.done ? "Follow-up done" : "Follow-up"}</span>` : `<span class="chip">${esc(e.cal || "Google")}</span>`;
   const attrs = (e.src === "crm" || e.src === "fu" || e.src === "lfu") && e.leadId && leadById(e.leadId) ? `data-open-lead="${esc(e.leadId)}"` : e.src === "crm" && e.kind === "job" ? jobCustAttr(e.id) : e.src === "fu" ? `data-open-quote="${esc(e.quoteId)}"` : (e.link ? `data-href="${esc(e.link)}"` : "");
-  return `<button class="item" ${attrs}><div class="main-col"><span class="t">${esc(e.title)}</span><span class="s">${esc(e.allDay ? fmtD(e.start, { weekday: "short", month: "short", day: "numeric" }) + " · all day" : fmtDT(e.start))}${e.where ? " · " + esc(String(e.where).split("\n")[0]) : ""}</span></div><div class="r">${tag}${e.amount ? `<span class="note num">${money(e.amount)}</span>` : ""}</div></button>`;
+  const main = `<div class="main-col"><span class="t">${esc(e.title)}</span><span class="s">${esc(e.allDay ? fmtD(e.start, { weekday: "short", month: "short", day: "numeric" }) + " · all day" : fmtDT(e.start))}${e.where ? " · " + esc(String(e.where).split("\n")[0]) : ""}</span></div>`;
+  // a follow-up not done yet has Done: a lead's asks for the next one, an estimate's moves on to its next one
+  const l = e.src === "lfu" ? leadById(e.leadId) : null;
+  const done = e.done ? "" : l ? fuDoneBtn(l, "cal") : e.src === "fu" ? `<button class="btn sm" data-act="efu-done" data-q="${esc(e.quoteId)}" data-k="${esc(e.id)}">Done</button>` : "";
+  if (done) return `<div class="item flow" role="button" tabindex="0" ${attrs}>${main}<div class="r">${tag}${done}</div></div>${l ? fuAskHTML("done", l.id, "cal") : ""}`;
+  return `<button class="item" ${attrs}>${main}<div class="r">${tag}${e.amount ? `<span class="note num">${money(e.amount)}</span>` : ""}</div></button>`;
 }
 // the note at the top of the Calendar tab, by connection state
 // a calendar box left unticked on Google's screen ("read" or "write"): only a Reconnect fixes that, unlike being offline
@@ -9235,7 +9260,8 @@ document.addEventListener("click", async (e) => {
       case "mail-hist-refresh": if (l) { loadMailHist(l, true); refreshLeadModal(); } break;
       case "ib-refresh": ibLoad({ key: ibKey() }); if (S.inbox.sel) ibConvLoad(S.inbox.sel, true); break;
       case "ib-ads": S.inbox.showAds = !S.inbox.showAds; render(); break;
-      case "fu-chip": if (S.fuAsk) { S.fuAsk.date = addDays(+t.dataset.days || 1); if (S.fuAsk.via === "email") render(); else refreshLeadModal(true); } break;
+      case "fu-chip": if (S.fuAsk) { S.fuAsk.date = addDays(+t.dataset.days || 1); if (S.fuAsk.via === "done") fuAskSave(S.fuAsk.date).catch(() => {}); else fuAskRedraw(S.fuAsk); } break;
+      case "lfu-done": fuAskOpen("done", t.dataset.id, t.dataset.where); break;
       case "fu-save": fuAskSave().catch(() => {}); break;
       case "fu-cancel": fuAskCancel(); break;
       case "ib-more": ibLoad({ key: ibKey(), more: true }); break;
