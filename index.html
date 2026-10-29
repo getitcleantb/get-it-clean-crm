@@ -4737,7 +4737,7 @@ function fillFromEstimate(force) {
 after.money = () => syncJobForm(false);
 
 // ---------- SETTINGS ----------
-const SET_TABS = [["prices", "Prices"], ["drips", "Drips"], ["texts", "Texts"], ["sources", "Connections"], ["look", "Theme"]];
+const SET_TABS = [["prices", "Prices"], ["drips", "Follow-ups"], ["texts", "Text templates"], ["sources", "Connections"], ["look", "Theme"]];
 VIEWS.settings = () => {
   const st = S.setDraft || settings(); const tab = S.setTab; // unsaved edits live in setDraft, so quotes keep using the saved prices
   const gc = GC();
@@ -4762,7 +4762,7 @@ VIEWS.settings = () => {
     <div class="tablewrap"><table class="t" id="pb"><thead><tr><th>Service</th><th>Priced by</th><th class="n">Rate ($)</th><th class="n">Minimum ($)</th><th></th></tr></thead><tbody>
     ${st.priceBook.map((p, i) => `<tr data-i="${i}"><td data-l="Service"><input type="text" data-pk="name" value="${esc(p.name)}" aria-label="Service"></td><td data-l="Priced by"><select data-pk="unit" aria-label="Priced by">${[["sqft", "Per sq ft"], ["lnft", "Per linear ft"], ["each", "Each"], ["flat", "Flat"]].map(([k, t]) => `<option value="${k}" ${p.unit === k ? "selected" : ""}>${t}</option>`).join("")}</select></td><td class="n" data-l="Rate ($)"><input type="number" step="0.01" data-pk="rate" value="${esc(p.rate)}" aria-label="Rate"></td><td class="n" data-l="Minimum ($)"><input type="number" step="1" data-pk="min" value="${esc(p.min)}" aria-label="Minimum"></td><td><button class="btn sm ghost" data-act="pb-del" data-i="${i}" aria-label="Remove ${esc(p.name)}">Remove</button></td></tr>`).join("")}
     </tbody></table></div></section>`;
-  else if (tab === "drips") body = `<p class="note">When a lead moves into a stage, these messages come due on the day you set, counted from the day they entered that stage. Due messages show on the Today tab, ready to send in one tap. Moving the lead to another stage stops the old drip and starts the new one. Do-not-contact leads and outreach contacts never get drips.</p>
+  else if (tab === "drips") body = `<p class="note">When a lead moves into a stage, these messages come due on the day you set, counted from the day they entered that stage. Due messages show on the lead's Messages tab, ready to send in one tap. Moving the lead to another stage stops the old drip and starts the new one. Do-not-contact leads and outreach contacts never get drips.</p>
     ${STAGES.map(([k, t]) => { const steps = (st.drips || {})[k] || []; return `<section class="panel"><div class="panel-h"><h2>${esc(t)}</h2><button class="btn sm" data-act="dr-add" data-stage="${k}">+ Add message</button></div>
       ${steps.map((d, i) => `<div class="tpl" data-dr-stage="${k}" data-dr-i="${i}"><div class="controls"><label class="row note">Day <input type="number" min="0" data-dk="day" value="${esc(d.day)}" style="width:80px" aria-label="Days after entering stage"></label><select data-dk="channel" aria-label="Channel"><option value="text" ${d.channel !== "email" ? "selected" : ""}>Text</option><option value="email" ${d.channel === "email" ? "selected" : ""}>Email</option></select><input type="text" data-dk="name" value="${esc(d.name)}" aria-label="Message name" style="flex:1 1 160px"><button class="btn sm ghost" data-act="dr-del" data-stage="${k}" data-i="${i}">Remove</button></div>
         ${d.channel === "email" ? `<input type="text" data-dk="subject" value="${esc(d.subject || "")}" placeholder="Email subject" aria-label="Email subject">` : ""}<textarea data-dk="body" rows="3" aria-label="Message">${esc(d.body)}</textarea></div>`).join("") || `<p class="note">No messages for this stage.</p>`}</section>`; }).join("")}`;
@@ -7913,6 +7913,7 @@ function textBlastsHTML() {
     return `<button class="item flow" data-act="tb-open" data-id="${esc(b.id)}"><div class="main-col"><span class="t">${esc(b.name || "Untitled text blast")}</span><span class="s" style="white-space:normal">${esc(sub)}</span></div><div class="r"><span class="pill ${cls}">${esc(st)}</span></div></button>`; }).join("");
   return `<section class="panel flush"><div class="panel-h"><h2>Text blasts</h2>${own ? `<button class="btn primary" data-act="tb-new">+ New text blast</button>` : ""}</div>
     ${rows ? `<div class="list">${rows}</div>` : `<div class="pad note">Write one text, pick who gets it, and it goes out a few at a time from your business number. Nothing goes out until you tap Start.</div>`}
+    ${own ? `<div class="pad row"><span class="note">Your messages:</span><button class="btn sm" data-nav="settings" data-tx-set="texts">Text templates</button><button class="btn sm" data-nav="settings" data-tx-set="drips">Follow-up messages</button></div>` : ""}
     <p class="pad note">Only text people who are your customers or asked you about a job: marketing texts need their OK. Every blast text ends with “${esc(TX_STOP_LINE)}”, and anyone who texts STOP never gets another one. Blasts send between 8 AM and 8 PM, as Florida's rules allow.</p></section>`;
 }
 // the blast being edited
@@ -7949,12 +7950,13 @@ function openTextBlast(b) {
   showModal(tbHTML(), true); tbRefresh();
 }
 function tbHTML() {
-  const own = canEditBlast(), live = tbLive(), ro = !own || TB.status === "stopped" ? "disabled" : "";
+  const own = canEditBlast(), live = tbLive(), ro = !own || TB.status === "stopped" ? "disabled" : "", tpls = settings().texts || [];
   return `<div class="sh"><div class="sh-t"><h2 id="tb-h">${esc(TB.name || "New text blast")}</h2><span class="pill" id="tb-pill"></span></div><button class="x" data-close="1" aria-label="Close">×</button></div>
   <div class="sb stack">
     <label class="f">Name (only you see it)<input type="text" id="tb-name" value="${esc(TB.name)}" ${ro}></label>
     <label class="f">The text<textarea id="tb-body" rows="5" maxlength="${TX_MAX}" ${ro || (live ? "disabled" : "")}>${esc(TB.body)}</textarea></label>
-    <p class="note">{first} becomes their first name (or “there”), {place} the community or address. “${esc(TX_STOP_LINE)}” goes at the end of every one.${live ? " It has started, so the text can't change now." : ""}</p>
+    ${!ro && !live ? `<div class="row">${tpls.length ? `<select id="tb-tpl" aria-label="Start from a template"><option value="">Start from a template…</option>${tpls.map((t, i) => `<option value="${i}">${esc(t.name)}</option>`).join("")}</select>` : ""}<button class="btn sm ghost" data-act="tb-save-tpl">Save as a template</button></div>` : ""}
+    <p class="note">{first} becomes their first name (or “there”), {place} the community or address. Only those two change for each person. “${esc(TX_STOP_LINE)}” goes at the end of every one.${live ? " It has started, so the text can't change now." : ""}</p>
     <div class="tm-msgs short"><div class="tm-b out"><div class="tm-txt" id="tb-prev"></div><div class="tm-meta" id="tb-parts"></div></div></div>
     <section class="panel flush"><div class="panel-h"><h2>Who gets it</h2><span class="pill" id="tb-count"></span></div>
       ${own && !live ? `<div class="pad row"><button class="btn sm" data-act="tb-quick" data-k="cust">Past customers</button><button class="btn sm" data-act="tb-quick" data-k="open">Open leads</button><button class="btn sm" data-act="tb-quick" data-k="lost">Lost leads</button><button class="btn sm" data-act="tb-quick" data-k="all">Everyone</button><button class="btn sm ghost" data-act="tb-quick" data-k="none">Clear</button></div>
@@ -8010,9 +8012,13 @@ function tbRefresh() {
   else if (c === "delete") acts.innerHTML = `<div class="banner warn spread"><span>Delete this blast?${s !== "draft" ? " The texts it sent stay in Messages." : ""}</span><span class="row"><button class="btn danger" data-act="tb-delete-yes">Delete</button><button class="btn" data-act="tb-no">Keep it</button></span></div>`;
   else acts.innerHTML = `<div class="row">${s !== "stopped" && s !== "finished" ? `<button class="btn" data-act="tb-save"${TBP.saving ? " disabled" : ""}>Save</button>` : ""}${s === "draft" ? `<button class="btn primary" data-act="tb-start">Start</button>` : ""}${s === "running" ? `<button class="btn" data-act="tb-pause">Pause</button>` : ""}${s === "paused" ? `<button class="btn primary" data-act="tb-resume">Resume</button>` : ""}${s === "running" || s === "paused" ? `<button class="btn ghost" data-act="tb-stop">Stop</button>` : ""}${TB.id && s !== "running" ? `<button class="btn ghost" data-act="tb-delete">Delete</button>` : ""}</div>`;
 }
+// a text template in a blast: the script fills in only {first} and {place}, so the others are written out here
+const tbFromTemplate = (body) => String(body || "").replace(/\{name\}/g, "{first}").replace(/\{company\}/g, "{place}").replace(/\{greeting\}/g, "Hi").replace(/\{source\}/g, "your request").replace(/\{service\}/g, "the cleaning").replace(/\{times\}/g, "this week");
 function tbProblem(starting) {
   if (!TB.name) return "Give the blast a name.";
   if (!String(TB.body || "").trim() || TB.body.trim() === TB_START.trim()) return "Write the text.";
+  const odd = (String(TB.body).match(/\{[a-z]+\}/gi) || []).find(x => !/^\{(first|place)\}$/.test(x));
+  if (odd) return `${odd} can't be filled in for each person in a text blast. Only {first} and {place} can. Take ${odd} out or write it out.`;
   if (tbFill(TB.body, { first: "Christopher", place: "Lansbrook Village Homeowners" }).length > TX_MAX) return "That text is too long.";
   if (!TB.days.length) return "Pick at least one day.";
   if (!(TB.start >= "08:00" && TB.end <= "20:00" && TB.start < TB.end)) return "Texts can go between 8 AM and 8 PM. Pick a start and an end in that window.";
@@ -8123,6 +8129,15 @@ Object.assign(EXTRA_ACTS, {
     try { if (await txQueue(leadPhone(l), fill(tp.body, l), { lead: l })) toast(`Text to ${firstName(l)} is going out from your business number`); } catch (e) {} finally { t.disabled = false; setTimeout(() => txSending.delete(k), 1500); }
   },
   "tb-new": () => openTextBlast(null),
+  // the blast's text kept as a text template (Settings > Texts), under the blast's name; the same name updates it
+  "tb-save-tpl": async (t) => {
+    if (!TB) return; tbRead(); const body = String(TB.body || "").trim(), name = TB.name || "Text blast";
+    if (!body || body === TB_START.trim()) { toast("Write the text first."); return; }
+    const list = (settings().texts || []).map(x => Object.assign({}, x)), i = list.findIndex(x => x.name === name);
+    if (i >= 0) list[i].body = body; else list.push({ name, body });
+    t.disabled = true;
+    try { await saveDoc("settings", "main", { texts: list }, true); toast(i >= 0 ? `Template “${name}” updated.` : `Saved as a template: “${name}”. Change your templates in Settings > Text templates.`, 5000); } catch (e) {} finally { t.disabled = false; }
+  },
   "tb-open": (t) => { const b = S.textBlasts.find(x => x.id === t.dataset.id); if (b) openTextBlast(b); },
   "tb-quick": (t) => {
     const k = t.dataset.k, f = { cust: l => ["paid", "completed"].includes(l.stage), open: l => OPEN_STAGES.includes(l.stage) && !["paid", "completed"].includes(l.stage), lost: l => l.stage === "lost", all: () => true }[k];
@@ -8184,9 +8199,14 @@ document.addEventListener("click", (e) => {
   if (t.dataset.tm) { if (!S.tx.sel) S.tx.listY = window.scrollY; S.tx.sel = t.dataset.tm; S.tx.newOpen = false; render(); if (ibNarrow()) window.scrollTo(0, 0); return; }
   if (t.dataset.tmTo) { S.tx.sel = t.dataset.tmTo; S.tx.newOpen = false; S.tx.newQ = ""; render(); setTimeout(() => { const b = $("#tm-body"); if (b) b.focus(); }, 30); return; }
   if (t.dataset.txTab) { S.tx.tab = t.dataset.txTab; render(); return; }
-  if (t.dataset.txSet) { S.setTab = "texting"; return; } // data-nav takes it to Settings
+  if (t.dataset.txSet) { S.setTab = t.dataset.txSet === "1" ? "texting" : t.dataset.txSet; return; } // data-nav takes it to Settings
   if (t.dataset.tbDay) { S.dirty = true; setTimeout(() => { tbRead(); tbRefresh(); }, 0); }
 }, true);
+document.addEventListener("change", (e) => {
+  if (!TB || e.target.id !== "tb-tpl") return; const el = e.target, tp = (settings().texts || [])[+el.value]; el.value = ""; const b = $("#tb-body"); if (!tp || !b || b.disabled) return;
+  b.value = tbFromTemplate(tp.body); const n = $("#tb-name"); if (n && !n.value.trim()) { n.value = tp.name; const h = $("#tb-h"); if (h) h.textContent = tp.name; }
+  S.dirty = true; tbRead(); tbRefresh(); b.focus();
+});
 document.addEventListener("input", (e) => {
   if (!TB || !e.target.closest || !e.target.closest("#modal") || !$("#modal #tb-acts")) return;
   const id = e.target.id;
