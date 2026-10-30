@@ -1640,6 +1640,8 @@ const DEFAULT_SETTINGS = {
   reminders: {
     // {day} is "today" or "tomorrow", to match when it goes out; {time} like 8:30 AM
     job: "Hi {first}, this is Elias with Get It Clean Tampa Bay. Just a reminder, we have you on the schedule for {day} at {time}. See you then!",
+    // the day of a job: 1 hour before one that starts before 10 AM, 2 hours before a later one (elias, 2026-10-30)
+    jobHead: "Hi {first}, it's Elias with Get It Clean Tampa Bay. Just a heads-up, we'll be heading over shortly for your appointment at {time}. See you soon!",
     visit: "Hi {first}, this is Elias with Get It Clean Tampa Bay. Just a reminder, we have you on the schedule for your free estimate {day} at {time}. See you then!"
   },
   // re-clean texts by service (elias, 2026-10-30): Text 1 the months below after the job is paid, Text 2 `second` days
@@ -7693,7 +7695,7 @@ function ibGo(id, leadId) {
 // with "Reply STOP to opt out." Blasts only send 8 AM to 8 PM Eastern (Florida's limits), and none in vacation mode.
 const TX_ON = () => STANDALONE && !!window.GIC;
 // 3: appointment reminders and re-clean texts (autotext.js). Texting works with 2; only the automatic texts need 3.
-const TEXT_SENDER_VERSION = 5, TEXT_SENDER_MIN = 2;
+const TEXT_SENDER_VERSION = 6, TEXT_SENDER_MIN = 2;
 const TX_STOP_LINE = "Reply STOP to opt out.";
 const TX_MAX = 1500; // characters in one text (Quo takes 1,600)
 S.texts = []; S.textBlasts = []; S.textRuns = {}; S.textSender = null; S.textOut = {}; S.textKey = null; S.textRulesOk = null;
@@ -8175,7 +8177,7 @@ if (TX_ON()) {
       <label class="f">Service<select id="tx-provider" aria-label="Texting service"><option value="quo" selected>Quo (formerly OpenPhone)</option></select></label>
       <p class="note">Texts go out from your Quo business number, and the answers come back into Email & Texts. A small script in your own Google account does the sending once a minute, so it keeps going when the CRM is closed and your Quo key stays off your crew's logins. Quo charges about 1¢ a text on top of your plan. Set it up once, on a computer.</p>
       ${st !== "none" ? `<p class="note">${s.number ? `Texting from <b>${esc(fmtPhone(s.number))}</b>. ` : ""}Last check ${esc(fmtWhen(new Date(s.lastRun)))}.${s.sentToday ? ` ${plural(s.sentToday, "text")} sent today.` : ""}${s.lastError ? ` <span class="pill due">Problem</span> ${esc(s.lastError)}` : ""}</p>${txBackfilling() ? `<p class="note">${esc(txBackfillNote())}</p>` : ""}` : ""}
-      ${st !== "none" && st !== "old" && (+s.version || 0) < TEXT_SENDER_VERSION ? `<div class="banner info">There's new code for the texting script. It adds re-clean texts by service and appointment reminders (Settings > Follow-ups), which stay off until you turn them on there, plus notifications on your phone (Settings > Notifications). Texting keeps working with the code you have now. To get it, do steps 4 and 5 again, and allow it if Google asks.</div>` : ""}
+      ${st !== "none" && st !== "old" && (+s.version || 0) < TEXT_SENDER_VERSION ? `<div class="banner info">There's new code for the texting script. It adds re-clean texts by service and the two job reminders (Settings > Follow-ups), which stay off until you turn them on there, plus notifications on your phone (Settings > Notifications). Texting keeps working with the code you have now. To get it, do steps 4 and 5 again, and allow it if Google asks.</div>` : ""}
       ${step(1, `Get your Quo API key${done(k ? k.has : null)}`, `<p class="note">In Quo on a computer, open Settings, then <b>API</b>, then <b>Generate API key</b> (only the Quo account owner or an admin sees it). Name it CRM, copy it, and paste it here. Quo also has to finish your US carrier registration (10DLC) before texts can go out this way. That's under Settings in Quo too.</p>
         <div class="row"><input type="password" id="tx-key" placeholder="${k && k.has ? `Saved key ending in ${esc(k.last4)}` : "Paste the API key"}" autocomplete="off" spellcheck="false" style="flex:1 1 240px" aria-label="Quo API key"><button class="btn primary" data-act="tx-key-save">Save key</button>${k && k.has ? `<button class="btn ghost" data-act="tx-key-del">Remove</button>` : ""}</div>`)}
       ${step(2, `Update your database rules${done(S.textRulesOk)}`, `<p class="note">${S.textRulesOk ? "Your rules are up to date: only you can read the key or start text blasts." : `Open the <a href="https://console.firebase.google.com/project/${esc(pid)}/firestore/rules" target="_blank" rel="noopener">Firebase rules page</a>, select everything there, paste the new rules over it, and tap Publish. The key can't be saved until this is done. (The same rules cover email blasts and the links in invoice texts.)`}</p>${S.textRulesOk ? "" : `<div class="row"><button class="btn" data-act="tx-copy-rules">Copy the rules</button></div>`}`)}
@@ -8928,7 +8930,8 @@ function textSender(PROJECT, VERSION, fsKit) {
     if (!res.failed) { try { F.patch("leads/" + l.id, { activity: [{ at: now.toISOString(), type: "text", text: note }].concat((l.activity || []).slice(0, 199)), lastContact: when(now).day, updatedAt: now.toISOString() }, ["activity", "lastContact", "updatedAt"], l._t); } catch (e) {} }
     return { failed: !!res.failed };
   }
-  // 2 hours before an estimate or a job; one that starts before 10 AM, at 6 PM the evening before (autoPlan.remAt)
+  // an estimate 2 hours before (before 10 AM, at 6 PM the evening before); a job at 6 PM the evening before and a heads-up
+  // the day of (autoPlan.remList)
   function reminders(cfg, st, now, ctx, rem) {
     const nowW = wall(now), day = nowW.slice(0, 10), byId = {};
     F.query("jobs", [["start", "GREATER_THAN_OR_EQUAL", day], ["start", "LESS_THAN", AP.addDay(day, 3)]], 300).forEach(j => { byId[j.id] = j; });
@@ -8943,16 +8946,17 @@ function textSender(PROJECT, VERSION, fsKit) {
       // on Google Calendar: its time there (none when it's gone from there, or the calendar can't be read)
       const start = j.eventId ? (g && g[id]) || "" : String(j.start || "").slice(0, 16);
       if (!/^\d{4}-\d\d-\d\dT\d\d:\d\d$/.test(start) || start <= nowW) continue;
-      const at = AP.remAt(start);
-      if (at > nowW || !AP.remOk(at) || wmin(nowW) - wmin(at) > 60) continue;
-      const tid = "texts/r-" + id + "-" + start.replace(/\D/g, "");
-      if (F.get(tid)) continue;
-      const chk = blockedWhy({ k: "", phone: "", leadId: j.leadId, lookup: true }, ctx); if (typeof chk === "string") continue;
-      const l = chk.lead, phone = chk.phone, body = AP.remText(rem[AP.remKey(j.kind)], { first: AP.first(l), start: start });
-      if (!body.trim() || AP.leftover(body)) { st.autoErr = "A reminder didn't go out: its text has " + (AP.leftover(body) || "nothing") + " in it (Settings > Follow-ups)."; continue; }
-      const r = autoSend(cfg, st, now, ctx, tid, phone, body, l, "reminder", "Reminder text sent: " + (j.kind === "visit" ? "estimate " : "job ") + AP.remWhen(start));
-      if (r === false) return;
-      if (++n >= 10) return;
+      for (const [k, at] of AP.remList(j.kind === "visit" ? "visit" : "job", start)) {
+        if (at > nowW || !AP.remOk(at) || wmin(nowW) - wmin(at) > 60) continue;
+        const tid = "texts/r-" + id + "-" + (k === "job" ? "eve-" : k === "jobHead" ? "day-" : "") + start.replace(/\D/g, "");
+        if (F.get(tid)) continue;
+        const chk = blockedWhy({ k: "", phone: "", leadId: j.leadId, lookup: true }, ctx); if (typeof chk === "string") break;
+        const l = chk.lead, phone = chk.phone, body = AP.remText(rem[k], { first: AP.first(l), start: start, at: at });
+        if (!body.trim() || AP.leftover(body)) { st.autoErr = "A reminder didn't go out: its text has " + (AP.leftover(body) || "nothing") + " in it (Settings > Follow-ups)."; continue; }
+        const r = autoSend(cfg, st, now, ctx, tid, phone, body, l, "reminder", (k === "jobHead" ? "Heads-up text sent: job " : "Reminder text sent: " + (k === "visit" ? "estimate " : "job ")) + AP.remWhen(start, at));
+        if (r === false) return;
+        if (++n >= 10) return;
+      }
     }
   }
   // re-clean texts by service, once a day from 10 AM: the first on its day (6, 10 or 12 months after the latest paid job,
@@ -9203,11 +9207,12 @@ const TEXT_MANIFEST = JSON.stringify({ timeZone: "America/New_York", runtimeVers
   oauthScopes: ["https://www.googleapis.com/auth/datastore", "https://www.googleapis.com/auth/script.external_request", "https://www.googleapis.com/auth/script.scriptapp", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/calendar.readonly", "https://www.googleapis.com/auth/firebase.messaging"] }, null, 2);
 // ---------- AUTOMATIC TEXTS (elias, 2026-10-29): appointment reminders and re-clean texts ----------
 // Both are off until elias turns them on (settings/blast-autotext, which only the owner can change). The texting script
-// (version 3) sends them from the business number, 8 AM to 8 PM:
-//   reminders: 2 hours before an estimate or a job; one that starts before 10 AM, at 6 PM the evening before ({day} says
-//     "today" or "tomorrow" to match). The time
-//     in Google Calendar counts (a booking dragged there). None for a canceled or finished one, none more than an hour
-//     late, and no STOP line (it's about their appointment).
+// (version 6) sends them from the business number, 8 AM to 8 PM:
+//   reminders: 2 hours before an estimate; one that starts before 10 AM, at 6 PM the evening before. A job (elias,
+//     2026-10-30) gets two: at 6 PM the evening before, and a heads-up the day of, 1 hour before one that starts before
+//     10 AM and 2 hours before a later one (at 8 AM if that's earlier, and none if the job starts by 8). {day} says
+//     "today" or "tomorrow" to match when it goes. The time in Google Calendar counts (a booking dragged there). None
+//     for a canceled or finished one, none more than an hour late, and no STOP line (it's about their appointment).
 //   re-clean (by service, elias 2026-10-30; texting script version 5): from a customer's latest paid job, the first text
 //     at 10 AM 6 months later for window cleaning, 10 for power washing (driveways, pool cages, lanais) and 12 for
 //     everything else; a job with several services goes by the soonest. The second 2 weeks later, then one a month,
@@ -9230,14 +9235,18 @@ function autoPlan() {
   const remAt = (start) => { const d = start.slice(0, 10), m = mins(start); return m < 600 ? addDay(d, -1) + "T18:00" : d + "T" + hhmm(m - 120); };
   // texts only go 8 AM to 8 PM
   const remOk = (at) => mins(at) >= 480 && mins(at) < 1200;
-  // "today" when it goes 2 hours before, "tomorrow" when it goes the evening before
-  const remDay = (start) => mins(start) < 600 ? "tomorrow" : "today";
-  const remWhen = (start) => remDay(start) + " at " + clock(mins(start));
+  // a job: the evening before ("job"), and the heads-up the day of ("jobHead")
+  const remJob = (start) => { const d = start.slice(0, 10), m = mins(start), h = Math.max(480, m < 600 ? m - 60 : m - 120); return [["job", addDay(d, -1) + "T18:00"]].concat(h < m ? [["jobHead", d + "T" + hhmm(h)]] : []); };
+  // every reminder a booking gets: [which text, when]
+  const remList = (kind, start) => kind === "visit" ? [["visit", remAt(start)]] : remJob(start);
+  // "today" or "tomorrow", to match when it goes (an estimate's own time, when that's not given)
+  const remDay = (start, at) => (at || remAt(start)).slice(0, 10) < start.slice(0, 10) ? "tomorrow" : "today";
+  const remWhen = (start, at) => remDay(start, at) + " at " + clock(mins(start));
   const greet = (h) => h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
   const first = (l) => (String((l && l.name) || "").trim().split(/\s+/)[0] || "there").replace(/[,.]$/, "");
   const place = (l) => (l && (l.company || l.address)) || "your property";
   // the words a reminder or a re-clean text fills in; anything else in braces is left, and stops it going
-  const remText = (body, o) => String(body || "").replace(/\{first\}/g, o.first || "there").replace(/\{day\}/g, remDay(o.start)).replace(/\{time\}/g, clock(mins(o.start))).replace(/\{when\}/g, remWhen(o.start)).replace(/\{greeting\}/g, greet(mins(remAt(o.start)) / 60));
+  const remText = (body, o) => String(body || "").replace(/\{first\}/g, o.first || "there").replace(/\{day\}/g, remDay(o.start, o.at)).replace(/\{time\}/g, clock(mins(o.start))).replace(/\{when\}/g, remWhen(o.start, o.at)).replace(/\{greeting\}/g, greet(mins(o.at || remAt(o.start)) / 60));
   const remKey = (kind) => kind === "visit" ? "visit" : "job";
   const isWindow = (svc) => /window/i.test(String(svc || ""));
   // re-clean groups: window cleaning, power washing (driveways, pool cages, lanais) and everything else. A job with more
@@ -9278,13 +9287,13 @@ function autoPlan() {
     list.forEach(j => { if (!j || !j.leadId || j.status === "paid" || j.status === "canceled") return; const cur = by.get(j.leadId); if (cur && String(j.start || "").slice(0, 10) >= cur.d) by.delete(j.leadId); });
     const out = new Map(); by.forEach((v, k) => out.set(k, v.j)); return out;
   }
-  return { addDay: addDay, addMonths: addMonths, mins: mins, clock: clock, remAt: remAt, remKey: remKey, remOk: remOk, remWhen: remWhen, remText: remText, first: first, place: place, isWindow: isWindow, rcGroup: rcGroup, rcFill: rcFill, rcBody: rcBody, rcNext: rcNext, rcMonths: rcMonths, rcDue: rcDue, rcText: rcText, rcJobs: rcJobs, leftover: leftover };
+  return { addDay: addDay, addMonths: addMonths, mins: mins, clock: clock, remAt: remAt, remList: remList, remKey: remKey, remOk: remOk, remWhen: remWhen, remText: remText, first: first, place: place, isWindow: isWindow, rcGroup: rcGroup, rcFill: rcFill, rcBody: rcBody, rcNext: rcNext, rcMonths: rcMonths, rcDue: rcDue, rcText: rcText, rcJobs: rcJobs, leftover: leftover };
 }
 const AP = autoPlan();
 S.autoText = null; S.autoAsk = "";
 const autoOn = (k) => !!(S.autoText && S.autoText[k] === true);
-// the texting script that can send them: reminders from version 3, re-clean texts by service from version 5
-const autoReady = (k) => !!(S.textSender && (+S.textSender.version || 0) >= (k === "reclean" ? 5 : 3));
+// the texting script that can send them: re-clean texts by service from version 5, two job reminders from version 6
+const autoReady = (k) => !!(S.textSender && (+S.textSender.version || 0) >= (k === "reclean" ? 5 : 6));
 const wallOf = (s) => { const d = parseD(s); return d ? ymd(d) + "T" + pad(d.getHours()) + ":" + pad(d.getMinutes()) : ""; };
 const wallNow = () => wallOf(new Date().toISOString());
 const atText = (w) => `${fmtD(w.slice(0, 10), { weekday: "short", month: "short", day: "numeric" })} at ${AP.clock(AP.mins(w))}`;
@@ -9293,10 +9302,10 @@ const atText = (w) => `${fmtD(w.slice(0, 10), { weekday: "short", month: "short"
 function remPlanned(rem) {
   const now = wallNow(), byId = new Map(S.jobs.map(j => [j.id, j]));
   return rangeItems(today(), addDays(3)).filter(e => e.src === "crm" && (e.kind === "job" || e.kind === "visit") && !e.allDay && String(e.start || "").length > 10)
-    .map(e => { const j = byId.get(e.id) || {}, l = leadById(e.leadId), start = wallOf(e.start), at = start ? AP.remAt(start) : "";
-      const no = ["completed", "paid", "canceled"].includes(j.status) ? "done" : !l ? "No customer on it" : l.dnc ? "Do not contact" : !leadPhone(l) ? "No cell number" : typeof txBlocked === "function" && txBlocked(leadPhone(l)) ? "Texts to them are off" : !AP.remOk(at) ? "Too late at night" : "";
-      return { e, l, start, at, no, kind: e.kind === "visit" ? "visit" : "job", body: l ? AP.remText(rem[AP.remKey(e.kind)], { first: AP.first(l), start }) : "" }; })
-    .filter(x => x.start && x.no !== "done" && x.start > now).sort((a, b) => a.at.localeCompare(b.at));
+    .flatMap(e => { const j = byId.get(e.id) || {}, l = leadById(e.leadId), start = wallOf(e.start), kind = e.kind === "visit" ? "visit" : "job"; if (!start) return [];
+      const no0 = ["completed", "paid", "canceled"].includes(j.status) ? "done" : !l ? "No customer on it" : l.dnc ? "Do not contact" : !leadPhone(l) ? "No cell number" : typeof txBlocked === "function" && txBlocked(leadPhone(l)) ? "Texts to them are off" : "";
+      return AP.remList(kind, start).map(([k, at]) => ({ e, l, start, at, k, kind, no: no0 || (!AP.remOk(at) ? "Too late at night" : ""), body: l ? AP.remText(rem[k], { first: AP.first(l), start, at }) : "" })); })
+    .filter(x => x.no !== "done" && x.at > now && x.start > now).sort((a, b) => a.at.localeCompare(b.at));
 }
 function rcPlanned(rc) {
   const t = today(), latest = AP.rcJobs(S.jobs), up = [], past = [];
@@ -9325,7 +9334,7 @@ function rcOf(st) {
 // is a form that a data update doesn't redraw)
 function autoTopHTML() {
   const own = canEditBlast(), sv = S.textSender || {}, err = sv.autoError ? `<div class="banner warn">${esc(sv.autoError)}</div>` : "";
-  const ready = !autoReady("reminders") ? `<p class="note">To send these by themselves, the texting script needs its new code first: Settings > Texting, steps 4 and 5. Until then they can't be turned on.</p>` : !autoReady("reclean") ? `<p class="note">Re-clean texts by service need the newest texting script code first: Settings > Texting, steps 4 and 5. Until then they can't be turned on.</p>` : "";
+  const ready = !autoReady("reclean") ? `<p class="note">To send these by themselves, the texting script needs its new code first: Settings > Texting, steps 4 and 5. Until then they can't be turned on.</p>` : !autoReady("reminders") ? `<p class="note">Appointment reminders need the newest texting script code first: Settings > Texting, steps 4 and 5. Until then they can't be turned on.</p>` : "";
   return `<div class="panel-h"><h2>Automatic texts</h2></div>
     <p class="note">These go out by themselves from your business number, between 8 AM and 8 PM, only while they're on. Vacation mode at the top of Email & Texts stops them too, along with every blast. ${own ? "Read the texts below first. Nothing goes out until you turn it on here." : "Only Elias can turn them on."}</p>
     ${autoSwitch("reminders", "Appointment reminders")}${autoSwitch("reclean", "Re-clean texts")}${ready}${err}`;
@@ -9335,14 +9344,14 @@ function autoHTML(st) {
   const rem = remOf(st), rc = rcOf(st);
   const warn = (s, ok) => { const w = AP.leftover(s); return w && !ok.includes(w) ? `<p class="note bad">${esc(w)} can't be filled in here, so this text won't go out. Use ${ok.join(", ")}.</p>` : ""; };
   const rp = remPlanned(rem), rcp = rcPlanned(rc), lim = 8;
-  const remRows = rp.slice(0, lim).map(x => `<div class="item static flow"><div class="main-col"><span class="t">${esc(x.l ? leadName(x.l) : x.e.title)} · ${x.kind === "visit" ? "Estimate" : "Job"} ${esc(atText(x.start))}</span><span class="s">${x.no ? esc(x.no) + ": no reminder" : "Reminder " + esc(atText(x.at))}</span></div></div>`).join("");
+  const remRows = rp.slice(0, lim).map(x => `<div class="item static flow"><div class="main-col"><span class="t">${esc(x.l ? leadName(x.l) : x.e.title)} · ${x.kind === "visit" ? "Estimate" : "Job"} ${esc(atText(x.start))}</span><span class="s">${x.no ? esc(x.no) + ": no " + (x.k === "jobHead" ? "heads-up" : "reminder") : (x.k === "jobHead" ? "Heads-up " : "Reminder ") + esc(atText(x.at))}</span></div></div>`).join("");
   const rcRows = rcp.up.slice(0, lim).map(x => `<div class="item static flow"><div class="main-col"><span class="t">${esc(leadName(x.l))} · ${esc(fmtD(x.due, { weekday: "short", month: "short", day: "numeric", year: x.due.slice(0, 4) !== today().slice(0, 4) ? "numeric" : undefined }))} at 10 AM</span><span class="s">${esc(x.j.service || "Job")} paid ${esc(fmtD(String(x.j.paidDate || x.j.start).slice(0, 10)))} · ${esc(RC_G.find(g => g[0] === AP.rcGroup(x.j.service, rc))[1].split(":")[0])}, ${AP.rcMonths(x.j, rc)} months</span></div></div>`).join("");
   const sample = rp.find(x => x.l && !x.no), rcs = rcp.up[0];
   const prev = (s) => `<div class="tm-msgs short"><div class="tm-b out"><div class="tm-txt">${esc(s)}</div></div></div>`;
   return `<section class="panel" id="auto-top">${autoTopHTML()}</section>
   <section class="panel"><div class="panel-h"><h2>Appointment reminders</h2></div>
-    <p class="note">For every estimate and job on your calendar with a customer who has a cell number: 2 hours before it starts. If it starts before 10 AM, at 6 PM the evening before instead. If you move it in Google Calendar, the reminder moves with it. Canceled ones get none. {first} is their first name, {time} the time it starts (like 8:30 AM), and {day} says “today” or “tomorrow” by itself, to match when the reminder goes out.</p>
-    ${[["job", "Jobs"], ["visit", "Estimates"]].map(([k, t]) => `<div class="tpl" data-rem="${k}"><b>${t}</b><textarea data-rk="body" rows="3" aria-label="${esc(t)} reminder">${esc(rem[k])}</textarea>${warn(rem[k], ["{first}", "{day}", "{time}", "{when}", "{greeting}"])}</div>`).join("")}
+    <p class="note">For every estimate and job on your calendar with a customer who has a cell number. Jobs get two: one at 6 PM the evening before, and a heads-up the day of, 1 hour before a job that starts before 10 AM and 2 hours before a later one (never before 8 AM). Estimates get one, 2 hours before; if it starts before 10 AM, at 6 PM the evening before instead. If you move it in Google Calendar, the reminders move with it. Canceled ones get none. {first} is their first name, {time} the time it starts (like 8:30 AM), and {day} says “today” or “tomorrow” by itself, to match when the text goes out.</p>
+    ${[["job", "Jobs: the evening before"], ["jobHead", "Jobs: heads-up the day of"], ["visit", "Estimates"]].map(([k, t]) => `<div class="tpl" data-rem="${k}"><b>${t}</b><textarea data-rk="body" rows="3" aria-label="${esc(t)} reminder">${esc(rem[k])}</textarea>${warn(rem[k], ["{first}", "{day}", "{time}", "{when}", "{greeting}"])}</div>`).join("")}
     ${sample ? `<p class="note">${esc(leadName(sample.l))} would get this ${esc(atText(sample.at))}:</p>${prev(sample.body)}` : ""}
     <div class="sub-h">The next 3 days${rp.length ? ` · ${rp.length}` : ""}</div>${rp.length ? `<div class="list">${remRows}</div>` : `<p class="note">No estimates or jobs on the calendar in the next 3 days.</p>`}</section>
   <section class="panel"><div class="panel-h"><h2>Re-clean texts</h2></div>

@@ -1,7 +1,7 @@
 // Keeps the CRM opening fast and working with a weak signal. The site's own files are fetched fresh when online
 // (so updates show on the next open) and come from this cache when offline. Your data isn't cached here;
 // Firebase keeps its own copy on the device.
-const CACHE = "gic-crm-848bb7e97e85";
+const CACHE = "gic-crm-875630a3fa4a";
 const SHELL = ["./", "./index.html", "./fb.js", "./config.js", "./manifest.webmanifest", "./icons/icon-192.png", "./icons/apple-touch-icon.png"];
 const CDN = /^https:\/\/(cdnjs\.cloudflare\.com|fonts\.googleapis\.com|fonts\.gstatic\.com)\//;
 self.addEventListener("install", (e) => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())); });
