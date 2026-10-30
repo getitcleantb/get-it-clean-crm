@@ -1761,7 +1761,9 @@ const fmtDT = (s) => { if (s && s.length <= 10) return fmtD(s, { weekday: "short
 const fmtT = (s) => { const d = parseD(s); return d ? d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }) : ""; };
 const money = (n, cents) => (Number(n) < 0 ? "-" : "") + Math.abs(Number(n) || 0).toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: cents ? 2 : 0, maximumFractionDigits: cents ? 2 : 0 });
 const pct = (n) => Math.round(n * 100) + "%";
-const firstName = (l) => (String(l.name || "").trim().split(/\s+/)[0] || "there").replace(/[,.]$/, "");
+// a lead with no real name ("Customer at 1140 Fuchsia Dr") gets "there", or the greeting in place of "Hi {first}," (elias, 2026-10-30)
+const noRealName = (n) => { const s = String(n || "").trim(); return !s || /^(customer|client|homeowner|home ?owner|resident|unknown|no name|n\/?a)\b/i.test(s); };
+const firstName = (l) => noRealName(l.name) ? "there" : String(l.name).trim().split(/\s+/)[0].replace(/[,.]$/, "");
 const place = (l) => l.company || l.address || "your property";
 const leadAddr = (l) => [l.address, l.city].filter(Boolean).join(", ");
 const leadById = (id) => S.leads.find(l => l.id === id);
@@ -1839,7 +1841,7 @@ async function markDrip(l, key, how) {
   const step = dripSteps(l, true).find(x => x.key === key); const name = step ? step.st.name : "message";
   await saveDoc("leads", l.id, { dripDone: (l.dripDone || []).concat([key]).slice(-100), activity: activity(l, "drip", `Drip ${how}: ${name}`), lastContact: how === "skipped" ? (l.lastContact || "") : today(), updatedAt: new Date().toISOString() }, true);
 }
-function fill(tpl, l) { return String(tpl).replace(/\{greeting\}/g, greeting()).replace(/\{source\}/g, sourcePhrase(l)).replace(/\{service\}/g, servicePhrase(l)).replace(/\{times\}/g, () => slotText(freeSlots(3))).replace(/\{first\}/g, firstName(l)).replace(/\{name\}/g, l.name || "").replace(/\{place\}/g, place(l)).replace(/\{company\}/g, l.company || ""); }
+function fill(tpl, l) { return String(tpl).replace(/\b(?:hi|hey|hello)\s+\{first\}\s*[,!.]?/gi, m => noRealName(l.name) ? greeting() + "," : m).replace(/\{greeting\}/g, greeting()).replace(/\{source\}/g, sourcePhrase(l)).replace(/\{service\}/g, servicePhrase(l)).replace(/\{times\}/g, () => slotText(freeSlots(3))).replace(/\{first\}/g, firstName(l)).replace(/\{name\}/g, l.name || "").replace(/\{place\}/g, place(l)).replace(/\{company\}/g, l.company || ""); }
 const smsHref = (l, body) => `sms:${esc(digits(l.phone))}${body != null ? "?&body=" + encodeURIComponent(body) : ""}`;
 
 const ICONS = {
@@ -7695,7 +7697,7 @@ function ibGo(id, leadId) {
 // with "Reply STOP to opt out." Blasts only send 8 AM to 8 PM Eastern (Florida's limits), and none in vacation mode.
 const TX_ON = () => STANDALONE && !!window.GIC;
 // 3: appointment reminders and re-clean texts (autotext.js). Texting works with 2; only the automatic texts need 3.
-const TEXT_SENDER_VERSION = 6, TEXT_SENDER_MIN = 2;
+const TEXT_SENDER_VERSION = 7, TEXT_SENDER_MIN = 2;
 const TX_STOP_LINE = "Reply STOP to opt out.";
 const TX_MAX = 1500; // characters in one text (Quo takes 1,600)
 S.texts = []; S.textBlasts = []; S.textRuns = {}; S.textSender = null; S.textOut = {}; S.textKey = null; S.textRulesOk = null;
@@ -9243,10 +9245,14 @@ function autoPlan() {
   const remDay = (start, at) => (at || remAt(start)).slice(0, 10) < start.slice(0, 10) ? "tomorrow" : "today";
   const remWhen = (start, at) => remDay(start, at) + " at " + clock(mins(start));
   const greet = (h) => h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
-  const first = (l) => (String((l && l.name) || "").trim().split(/\s+/)[0] || "there").replace(/[,.]$/, "");
+  // a lead with no real name ("Customer at 1140 Fuchsia Dr") has no first name: its text opens with the greeting instead
+  // of "Hi {first}," (elias, 2026-10-30)
+  const noName = (n) => { const s = String(n || "").trim(); return !s || /^(customer|client|homeowner|home ?owner|resident|unknown|no name|n\/?a)\b/i.test(s); };
+  const first = (l) => noName(l && l.name) ? "" : String(l.name).trim().split(/\s+/)[0].replace(/[,.]$/, "");
+  const hiFirst = (s, g) => s.replace(/\b(?:hi|hey|hello)\s+\{first\}\s*[,!.]?/gi, g + ",");
   const place = (l) => (l && (l.company || l.address)) || "your property";
   // the words a reminder or a re-clean text fills in; anything else in braces is left, and stops it going
-  const remText = (body, o) => String(body || "").replace(/\{first\}/g, o.first || "there").replace(/\{day\}/g, remDay(o.start, o.at)).replace(/\{time\}/g, clock(mins(o.start))).replace(/\{when\}/g, remWhen(o.start, o.at)).replace(/\{greeting\}/g, greet(mins(o.at || remAt(o.start)) / 60));
+  const remText = (body, o) => (o.first ? String(body || "") : hiFirst(String(body || ""), greet(mins(o.at || remAt(o.start)) / 60))).replace(/\{first\}/g, o.first || "there").replace(/\{day\}/g, remDay(o.start, o.at)).replace(/\{time\}/g, clock(mins(o.start))).replace(/\{when\}/g, remWhen(o.start, o.at)).replace(/\{greeting\}/g, greet(mins(o.at || remAt(o.start)) / 60));
   const remKey = (kind) => kind === "visit" ? "visit" : "job";
   const isWindow = (svc) => /window/i.test(String(svc || ""));
   // re-clean groups: window cleaning, power washing (driveways, pool cages, lanais) and everything else. A job with more
@@ -9278,7 +9284,7 @@ function autoPlan() {
   const rcBody = (rc, g, n) => { const t = (((rc && rc[g]) || {}).texts || []).map(s => String(s || "")), mo = t.slice(2).filter(s => s.trim()); return n <= 1 ? t[0] || "" : n === 2 ? t[1] || "" : mo.length ? mo[(n - 3) % mo.length] : ""; };
   // when the one after the nth goes: the second a few days after the first (2 weeks), then a month after each
   const rcNext = (day, n, rc) => n <= 1 ? addDay(day, Math.min(60, Math.max(3, +(rc && rc.second) || 14))) : addMonths(day, 1);
-  const rcText = (body, o) => { const s = String(body || "").replace(/\{first\}/g, o.first || "there").replace(/\{place\}/g, o.place || "your property").replace(/\{service\}/g, String(o.service || "cleaning").toLowerCase()).replace(/\{reason\}/g, o.reason || "it starts building back up").replace(/\{greeting\}/g, "Good morning").replace(/\s+$/, ""); return /reply\s+stop\b[^\n]*$/i.test(s) ? s : s + "\n\nReply STOP to opt out."; };
+  const rcText = (body, o) => { const s = (o.first ? String(body || "") : hiFirst(String(body || ""), "Good morning")).replace(/\{first\}/g, o.first || "there").replace(/\{place\}/g, o.place || "your property").replace(/\{service\}/g, String(o.service || "cleaning").toLowerCase()).replace(/\{reason\}/g, o.reason || "it starts building back up").replace(/\{greeting\}/g, "Good morning").replace(/\s+$/, ""); return /reply\s+stop\b[^\n]*$/i.test(s) ? s : s + "\n\nReply STOP to opt out."; };
   const leftover = (s) => (String(s || "").match(/\{[a-z]+\}/i) || [""])[0];
   // each customer's latest paid job, unless they've booked again since (an estimate or a job on or after it)
   function rcJobs(list) {
