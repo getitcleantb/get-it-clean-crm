@@ -7699,7 +7699,7 @@ function ibGo(id, leadId) {
 // with "Reply STOP to opt out." Blasts only send 8 AM to 8 PM Eastern (Florida's limits), and none in vacation mode.
 const TX_ON = () => STANDALONE && !!window.GIC;
 // 3: appointment reminders and re-clean texts (autotext.js). Texting works with 2; only the automatic texts need 3.
-const TEXT_SENDER_VERSION = 10, TEXT_SENDER_MIN = 2;
+const TEXT_SENDER_VERSION = 11, TEXT_SENDER_MIN = 2;
 const TX_STOP_LINE = "Reply STOP to opt out.";
 const TX_MAX = 1500; // characters in one text (Quo takes 1,600)
 S.texts = []; S.textBlasts = []; S.textRuns = {}; S.textSender = null; S.textOut = {}; S.textKey = null; S.textRulesOk = null;
@@ -8948,7 +8948,8 @@ function textSender(PROJECT, VERSION, fsKit) {
     let n = 0;
     for (const id of Object.keys(byId)) {
       const j = byId[id];
-      if ((j.kind !== "job" && j.kind !== "visit") || !j.leadId || ["canceled", "completed", "paid"].indexOf(j.status) >= 0) continue;
+      // noRemind: turned off for this one booking in Settings > Follow-ups
+      if ((j.kind !== "job" && j.kind !== "visit") || !j.leadId || j.noRemind || ["canceled", "completed", "paid"].indexOf(j.status) >= 0) continue;
       // on Google Calendar: its time there (none when it's gone from there, or the calendar can't be read)
       const start = j.eventId ? (g && g[id]) || "" : String(j.start || "").slice(0, 16);
       if (!/^\d{4}-\d\d-\d\dT\d\d:\d\d$/.test(start) || start <= nowW) continue;
@@ -9328,7 +9329,7 @@ function remPlanned(rem) {
   const now = wallNow(), byId = new Map(S.jobs.map(j => [j.id, j]));
   return rangeItems(today(), addDays(3)).filter(e => e.src === "crm" && (e.kind === "job" || e.kind === "visit") && !e.allDay && String(e.start || "").length > 10)
     .flatMap(e => { const j = byId.get(e.id) || {}, l = leadById(e.leadId), start = wallOf(e.start), kind = e.kind === "visit" ? "visit" : "job"; if (!start) return [];
-      const no0 = ["completed", "paid", "canceled"].includes(j.status) ? "done" : !l ? "No customer on it" : l.dnc ? "Do not contact" : !leadPhone(l) ? "No cell number" : typeof txBlocked === "function" && txBlocked(leadPhone(l)) ? "Texts to them are off" : "";
+      const no0 = ["completed", "paid", "canceled"].includes(j.status) ? "done" : j.noRemind ? "Turned off" : !l ? "No customer on it" : l.dnc ? "Do not contact" : !leadPhone(l) ? "No cell number" : typeof txBlocked === "function" && txBlocked(leadPhone(l)) ? "Texts to them are off" : "";
       return AP.remList(kind, start).map(([k, at]) => ({ e, l, start, at, k, kind, no: no0 || (!AP.remOk(at) ? "Too late at night" : ""), body: l ? AP.remText(rem[k], { first: AP.first(l), start, at, sender: AP.sender(j, sendersOf(settings())) }) : "" })); })
     .filter(x => x.no !== "done" && x.at > now && x.start > now).sort((a, b) => a.at.localeCompare(b.at));
 }
@@ -9372,7 +9373,7 @@ function autoHTML(st) {
   const rem = remOf(st), rc = rcOf(st);
   const warn = (s, ok) => { const w = AP.leftover(s); return w && !ok.includes(w) ? `<p class="note bad">${esc(w)} can't be filled in here, so this text won't go out. Use ${ok.join(", ")}.</p>` : ""; };
   const rp = remPlanned(rem), rcp = rcPlanned(rc), lim = 8;
-  const remRows = rp.slice(0, lim).map(x => `<div class="item static flow"><div class="main-col"><span class="t">${esc(x.l ? leadName(x.l) : x.e.title)} · ${x.kind === "visit" ? "Estimate" : "Job"} ${esc(atText(x.start))}</span><span class="s">${x.no ? esc(x.no) + ": no " + (x.k === "jobHead" ? "heads-up" : "reminder") : (x.k === "jobHead" ? "Heads-up " : "Reminder ") + esc(atText(x.at))}</span></div></div>`).join("");
+  const remRows = rp.slice(0, lim).map(x => `<div class="item static flow"><div class="main-col"><span class="t">${esc(x.l ? leadName(x.l) : x.e.title)} · ${x.kind === "visit" ? "Estimate" : "Job"} ${esc(atText(x.start))}</span><span class="s">${x.no ? esc(x.no) + ": no " + (x.k === "jobHead" ? "heads-up" : "reminder") : (x.k === "jobHead" ? "Heads-up " : "Reminder ") + esc(atText(x.at))}</span></div>${canEditBlast() && byJob(x.e.id) ? `<button class="btn sm ghost" data-act="rem-skip" data-id="${esc(x.e.id)}">${byJob(x.e.id).noRemind ? "Send it" : "Don't send"}</button>` : ""}</div>`).join("");
   const rcRows = rcp.up.slice(0, lim).map(x => `<div class="item static flow"><div class="main-col"><span class="t">${esc(leadName(x.l))} · ${esc(fmtD(x.due, { weekday: "short", month: "short", day: "numeric", year: x.due.slice(0, 4) !== today().slice(0, 4) ? "numeric" : undefined }))} at 10 AM</span><span class="s">${esc(x.j.service || "Job")} paid ${esc(fmtD(String(x.j.paidDate || x.j.start).slice(0, 10)))} · ${esc(RC_G.find(g => g[0] === AP.rcGroup(x.j.service, rc))[1].split(":")[0])}, ${AP.rcMonths(x.j, rc)} months</span></div></div>`).join("");
   const sample = rp.find(x => x.l && !x.no), rcs = rcp.up[0];
   const prev = (s) => `<div class="tm-msgs short"><div class="tm-b out"><div class="tm-txt">${esc(s)}</div></div></div>`;
@@ -9384,7 +9385,7 @@ function autoHTML(st) {
     <p class="note">Elias or Tarik: whichever of you is on the job's crew (both: whoever booked it), or whoever booked the estimate. Anything else, like a job only AL is on, and bookings made before this say Elias.</p>
     <div class="form">${SND.map(([c, label]) => `<label class="f">${esc(c)}<input data-snd="${c}" value="${esc(sendersOf(st)[c] || "")}" placeholder="${esc(AP.SENDERS[c])}" aria-label="${esc(c)} first name"></label>`).join("")}</div>
     ${sample ? `<p class="note">${esc(leadName(sample.l))} would get this ${esc(atText(sample.at))}:</p>${prev(sample.body)}` : ""}
-    <div class="sub-h">The next 3 days${rp.length ? ` · ${rp.length}` : ""}</div>${rp.length ? `<div class="list">${remRows}</div>` : `<p class="note">No estimates or jobs on the calendar in the next 3 days.</p>`}</section>
+    <div class="sub-h">The next 3 days${rp.length ? ` · ${rp.length}` : ""}</div>${rp.length ? `<p class="note">Don't send skips the reminders for that one booking (a job's evening-before and heads-up both). The customer still gets them for their other bookings.</p>` : ""}${rp.length ? `<div class="list">${remRows}</div>` : `<p class="note">No estimates or jobs on the calendar in the next 3 days.</p>`}</section>
   <section class="panel"><div class="panel-h"><h2>Re-clean texts</h2></div>
     <p class="note">From a customer's latest paid job: Text 1 at 10 AM once it's been the months below, Text 2 a couple of weeks later, then one a month, taking turns through Monthly A to D. A job with more than one service goes by the one that comes up soonest, so a customer only ever gets one set. They stop when the customer replies, texts STOP, books again or you mark them do not contact. Each one ends with “Reply STOP to opt out.” Customers already past their Text 1 day when you turn it on don't get one (a text blast can reach them). {first} is their first name, {place} their company or address.</p>
     <div class="form"><label class="f">Text 2 goes<span class="row"><input type="number" id="rc-2nd" min="3" max="60" value="${esc(rc.second)}" style="width:80px"> days after Text 1</span></label></div>
@@ -9420,8 +9421,16 @@ Object.assign(EXTRA_ACTS, {
     await autoSave(k, false);
   },
   "auto-sw-yes": async (t) => { S.autoAsk = ""; await autoSave(t.dataset.k, true); },
-  "auto-sw-no": () => { S.autoAsk = ""; autoRedraw(); }
+  "auto-sw-no": () => { S.autoAsk = ""; autoRedraw(); },
+  // no reminders for this one booking (both of a job's), or back on (elias, 2026-10-30)
+  "rem-skip": async (t) => {
+    const j = byJob(t.dataset.id); if (!j || !canEditBlast()) return;
+    const off = !j.noRemind; t.disabled = true;
+    try { await saveDoc("jobs", j.id, { noRemind: off }, true); j.noRemind = off; toast(off ? "No reminders for this one" : "Reminders back on for this one"); } finally { t.disabled = false; }
+    autoRedraw();
+  }
 });
+const byJob = (id) => S.jobs.find(j => j.id === id) || null;
 // what's typed in Settings stays through the redraw
 const autoRedraw = () => { if (S.view === "settings" && document.querySelector("[data-rem]")) S.setDraft = readSettingsForm(); render(); };
 async function autoSave(k, on) {
