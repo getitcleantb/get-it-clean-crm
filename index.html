@@ -9558,7 +9558,7 @@ if (TX_ON()) {
     if (where === "home") device = `<div class="banner info">On iPhone, notifications only come to the CRM opened from its home screen icon. In Safari, tap Share, then <b>Add to Home Screen</b>. Open the CRM from that icon and come back here.</div>`;
     else if (where === "old") device = `<div class="banner warn">This iPhone needs iOS 16.4 or later for notifications. Update it in Settings > General > Software Update.</div>`;
     else if (where === "no") device = `<p class="note">This browser can't get notifications from the CRM. Use the CRM on your iPhone, opened from its home screen icon.</p>`;
-    else if (here && perm === "granted") device = `<p class="note"><span class="pill s-scheduled">On</span> This ${esc(here.name || "device")} gets notifications.</p><div class="row"><button class="btn" data-act="push-test"${ver < PUSH_VERSION ? " disabled" : ""}>Send a test notification</button><button class="btn ghost" data-act="push-off">Turn off here</button></div>`;
+    else if (here && perm === "granted") device = `<p class="note"><span class="pill s-scheduled">On</span> This ${esc(here.name || "device")} gets notifications.</p><div class="row"><button class="btn" data-act="push-test">Send a test notification</button><button class="btn ghost" data-act="push-off">Turn off here</button></div>`;
     else if (perm === "denied") device = `<div class="banner warn">Notifications are blocked for the CRM on this device. On iPhone: Settings > Notifications > GIC CRM > Allow Notifications. Then come back and tap Turn on.</div><div class="row"><button class="btn primary" data-act="push-on">Turn on notifications here</button></div>`;
     else device = `<p class="note"><span class="pill s-lost">Off</span> This ${esc(pushDevName())} doesn't get notifications yet.</p><div class="row"><button class="btn primary" data-act="push-on"${ui.busy ? " disabled" : ""}>Turn on notifications here</button></div>`;
     const testNote = t && t.at ? (td && td.for === t.at ? (td.err ? `Test couldn't be sent: ${esc(td.err)}` : td.sent ? `Test sent to ${plural(td.sent, "device")} ${esc(fmtWhen(new Date(td.at)))}.` : "Test wasn't sent: no device has notifications on.") : "Test notification on its way. The texting script sends it within a minute.") : "";
@@ -9591,6 +9591,8 @@ if (TX_ON()) {
       try { await pushSave(x => { x[k] = !on; }); toast(`${k === "texts" ? "New texts" : "Closed deals"}: notifications ${on ? "off" : "on"}`); schedule(); } catch (e) { toast("Couldn't save. Check your internet connection and try again."); }
     },
     "push-test": async () => {
+      // the texting script sends it, so it has to have the new code first (a button that does nothing reads as broken)
+      if ((+(S.textSender || {}).version || 0) < PUSH_VERSION) { pushSays("The test can't go yet: your texting script doesn't have the new code. On a computer, reload the CRM, then in Settings > Texting do steps 4 and 5 again (Copy the code and Copy the settings), and run textSetup.", true); return; }
       try { await pushSave(x => { x.test = { at: new Date().toISOString(), by: S.myId || "" }; }); S.pushUI = { busy: false, msg: "", bad: false }; schedule(); } catch (e) { pushSays("Couldn't ask for a test. Check your internet connection and try again.", true); }
     }
   });
