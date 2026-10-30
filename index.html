@@ -7698,7 +7698,7 @@ function ibGo(id, leadId) {
 // with "Reply STOP to opt out." Blasts only send 8 AM to 8 PM Eastern (Florida's limits), and none in vacation mode.
 const TX_ON = () => STANDALONE && !!window.GIC;
 // 3: appointment reminders and re-clean texts (autotext.js). Texting works with 2; only the automatic texts need 3.
-const TEXT_SENDER_VERSION = 8, TEXT_SENDER_MIN = 2;
+const TEXT_SENDER_VERSION = 9, TEXT_SENDER_MIN = 2;
 const TX_STOP_LINE = "Reply STOP to opt out.";
 const TX_MAX = 1500; // characters in one text (Quo takes 1,600)
 S.texts = []; S.textBlasts = []; S.textRuns = {}; S.textSender = null; S.textOut = {}; S.textKey = null; S.textRulesOk = null;
@@ -8906,18 +8906,20 @@ function textSender(PROJECT, VERSION, fsKit) {
     if (sw.reclean === true && main.reclean2) reclean(cfg, st, now, ctx, main.reclean2, sw);
   }
   // the business calendar from an hour ago to 3 days out, as Google has it (a booking can be dragged there): the CRM's
-  // bookings (their event ids are the job's id in hex) → their Eastern start. null when the calendar can't be read.
+  // bookings (their event ids are the job's id in hex) → their Eastern start. Read with Apps Script's own CalendarApp,
+  // which needs nothing turned on (the Calendar API is off in the script's default Google Cloud project), else with the
+  // Calendar API. { starts } or { why } when neither can read it.
   function gcalStarts(now) {
-    const q = "timeMin=" + encodeURIComponent(new Date(now.getTime() - 3600000).toISOString()) + "&timeMax=" + encodeURIComponent(new Date(now.getTime() + 3 * DAY).toISOString()) + "&singleEvents=true&maxResults=250";
-    let r = null, j = null;
-    try { r = UrlFetchApp.fetch("https://www.googleapis.com/calendar/v3/calendars/primary/events?" + q, { headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() }, muteHttpExceptions: true }); j = JSON.parse(r.getContentText()); } catch (e) { return null; }
-    if (r.getResponseCode() >= 300 || !j) return null;
-    const out = {};
-    (j.items || []).forEach(ev => {
-      const m = /^([0-9a-f]+)v\d+$/.exec(String(ev.id || "")); if (!m || m[1].length % 2 || ev.status === "cancelled" || !ev.start || !ev.start.dateTime) return;
-      const id = m[1].match(/../g).map(h => String.fromCharCode(parseInt(h, 16))).join(""); if (/^[\w-]+$/.test(id)) out[id] = wall(new Date(ev.start.dateTime));
-    });
-    return out;
+    const lo = new Date(now.getTime() - 3600000), hi = new Date(now.getTime() + 3 * DAY), why = [];
+    const add = (out, evId, start) => { const m = /^([0-9a-f]+)v\d+$/.exec(String(evId || "").replace(/@google\.com$/, "")); if (!m || m[1].length % 2 || !start) return; const id = m[1].match(/../g).map(h => String.fromCharCode(parseInt(h, 16))).join(""); if (/^[\w-]+$/.test(id)) out[id] = wall(start); };
+    try { const out = {}; CalendarApp.getDefaultCalendar().getEvents(lo, hi).forEach(ev => { if (!ev.isAllDayEvent()) add(out, ev.getId(), ev.getStartTime()); }); return { starts: out }; } catch (e) { why.push(String((e && e.message) || e)); }
+    const q = "timeMin=" + encodeURIComponent(lo.toISOString()) + "&timeMax=" + encodeURIComponent(hi.toISOString()) + "&singleEvents=true&maxResults=250";
+    try {
+      const r = UrlFetchApp.fetch("https://www.googleapis.com/calendar/v3/calendars/primary/events?" + q, { headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() }, muteHttpExceptions: true }), j = JSON.parse(r.getContentText() || "{}");
+      if (r.getResponseCode() < 300) { const out = {}; (j.items || []).forEach(ev => { if (ev.status !== "cancelled" && ev.start && ev.start.dateTime) add(out, ev.id, new Date(ev.start.dateTime)); }); return { starts: out }; }
+      why.push((j.error && j.error.message) || "error " + r.getResponseCode());
+    } catch (e) { why.push(String((e && e.message) || e)); }
+    return { why: why.join(" / ").slice(0, 300) };
   }
   // one automatic text, made with its own id first so it can only ever go once: true (it was made before), false (stop
   // this run: try again later), or { failed }
@@ -8938,8 +8940,8 @@ function textSender(PROJECT, VERSION, fsKit) {
   function reminders(cfg, st, now, ctx, rem) {
     const nowW = wall(now), day = nowW.slice(0, 10), byId = {};
     F.query("jobs", [["start", "GREATER_THAN_OR_EQUAL", day], ["start", "LESS_THAN", AP.addDay(day, 3)]], 300).forEach(j => { byId[j.id] = j; });
-    const g = gcalStarts(now);
-    if (!g) st.autoErr = "The texting script can't read your Google Calendar, so reminders for bookings on it are on hold. Paste the newest code and run textSetup again (Settings > Texting).";
+    const gc = gcalStarts(now), g = gc.starts || null;
+    if (!g) st.autoErr = "The texting script can't read your Google Calendar, so reminders for bookings on it are on hold. Google said: " + gc.why;
     // one dragged into these days in Google Calendar
     else Object.keys(g).forEach(id => { if (!byId[id]) { const j = F.get("jobs/" + id); if (j) byId[id] = j; } });
     let n = 0;
