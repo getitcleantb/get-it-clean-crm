@@ -1761,9 +1761,10 @@ const fmtDT = (s) => { if (s && s.length <= 10) return fmtD(s, { weekday: "short
 const fmtT = (s) => { const d = parseD(s); return d ? d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }) : ""; };
 const money = (n, cents) => (Number(n) < 0 ? "-" : "") + Math.abs(Number(n) || 0).toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: cents ? 2 : 0, maximumFractionDigits: cents ? 2 : 0 });
 const pct = (n) => Math.round(n * 100) + "%";
-// a lead with no real name ("Customer at 1140 Fuchsia Dr") gets "there", or the greeting in place of "Hi {first}," (elias, 2026-10-30)
-const noRealName = (n) => { const s = String(n || "").trim(); return !s || /^(customer|client|homeowner|home ?owner|resident|unknown|no name|n\/?a)\b/i.test(s); };
-const firstName = (l) => noRealName(l.name) ? "there" : String(l.name).trim().split(/\s+/)[0].replace(/[,.]$/, "");
+// a lead with no real name ("Customer at 1140 Fuchsia Dr", an address, a phone number or an email) gets "there", or the
+// greeting in place of "Hi {first}," (elias, 2026-10-30). Same rule as noName in autoPlan (v2/autotext.js).
+const noRealName = (n) => { const s = String(n || "").trim(), w = s.split(/\s+/)[0]; return !s || /\d|@/.test(w) || !/[a-z]/i.test(w) || /\d{3}/.test(s) || /^(mr|mrs|ms|miss|dr)\.?$/i.test(s) || /^(customer|client|homeowner|home ?owner|resident|occupant|owner|tenant|unknown|no name|none|n\/?a|lead|new lead|unit|lot|apt)\b/i.test(s); };
+const firstName = (l) => { if (noRealName(l.name)) return "there"; const p = String(l.name).trim().split(/\s+/), w = p[0].replace(/[,.]$/, ""); if (/^(mr|mrs|ms|miss|dr)$/i.test(w) && p[1]) return w[0].toUpperCase() + w.slice(1).toLowerCase() + ". " + p[p.length - 1].replace(/[,.]$/, ""); return w === w.toLowerCase() ? w[0].toUpperCase() + w.slice(1) : w; };
 const place = (l) => l.company || l.address || "your property";
 const leadAddr = (l) => [l.address, l.city].filter(Boolean).join(", ");
 const leadById = (id) => S.leads.find(l => l.id === id);
@@ -7697,7 +7698,7 @@ function ibGo(id, leadId) {
 // with "Reply STOP to opt out." Blasts only send 8 AM to 8 PM Eastern (Florida's limits), and none in vacation mode.
 const TX_ON = () => STANDALONE && !!window.GIC;
 // 3: appointment reminders and re-clean texts (autotext.js). Texting works with 2; only the automatic texts need 3.
-const TEXT_SENDER_VERSION = 7, TEXT_SENDER_MIN = 2;
+const TEXT_SENDER_VERSION = 8, TEXT_SENDER_MIN = 2;
 const TX_STOP_LINE = "Reply STOP to opt out.";
 const TX_MAX = 1500; // characters in one text (Quo takes 1,600)
 S.texts = []; S.textBlasts = []; S.textRuns = {}; S.textSender = null; S.textOut = {}; S.textKey = null; S.textRulesOk = null;
@@ -9245,10 +9246,10 @@ function autoPlan() {
   const remDay = (start, at) => (at || remAt(start)).slice(0, 10) < start.slice(0, 10) ? "tomorrow" : "today";
   const remWhen = (start, at) => remDay(start, at) + " at " + clock(mins(start));
   const greet = (h) => h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
-  // a lead with no real name ("Customer at 1140 Fuchsia Dr") has no first name: its text opens with the greeting instead
-  // of "Hi {first}," (elias, 2026-10-30)
-  const noName = (n) => { const s = String(n || "").trim(); return !s || /^(customer|client|homeowner|home ?owner|resident|unknown|no name|n\/?a)\b/i.test(s); };
-  const first = (l) => noName(l && l.name) ? "" : String(l.name).trim().split(/\s+/)[0].replace(/[,.]$/, "");
+  // a lead with no real name ("Customer at 1140 Fuchsia Dr", an address, a phone number or an email) has no first name:
+  // its text opens with the greeting instead of "Hi {first}," (elias, 2026-10-30). Same rule as noRealName in the CRM.
+  const noName = (n) => { const s = String(n || "").trim(), w = s.split(/\s+/)[0]; return !s || /\d|@/.test(w) || !/[a-z]/i.test(w) || /\d{3}/.test(s) || /^(mr|mrs|ms|miss|dr)\.?$/i.test(s) || /^(customer|client|homeowner|home ?owner|resident|occupant|owner|tenant|unknown|no name|none|n\/?a|lead|new lead|unit|lot|apt)\b/i.test(s); };
+  const first = (l) => { if (noName(l && l.name)) return ""; const p = String(l.name).trim().split(/\s+/), w = p[0].replace(/[,.]$/, ""); if (/^(mr|mrs|ms|miss|dr)$/i.test(w) && p[1]) return w[0].toUpperCase() + w.slice(1).toLowerCase() + ". " + p[p.length - 1].replace(/[,.]$/, ""); return w === w.toLowerCase() ? w[0].toUpperCase() + w.slice(1) : w; };
   const hiFirst = (s, g) => s.replace(/\b(?:hi|hey|hello)\s+\{first\}\s*[,!.]?/gi, g + ",");
   const place = (l) => (l && (l.company || l.address)) || "your property";
   // the words a reminder or a re-clean text fills in; anything else in braces is left, and stops it going
