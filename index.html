@@ -1642,11 +1642,41 @@ const DEFAULT_SETTINGS = {
     job: "Hi {first}, this is Elias with Get It Clean Tampa Bay. Just a reminder, we have you on the schedule for {day} at {time}. See you then!",
     visit: "Hi {first}, this is Elias with Get It Clean Tampa Bay. Just a reminder, we have you on the schedule for your free estimate {day} at {time}. See you then!"
   },
-  reclean: {
-    windowMonths: 6, otherMonths: 10, every: 21,
-    window: "Hi {first}, it's Elias with Get It Clean Tampa Bay. It's been about 6 months since we cleaned your windows. Want me to get you back on the schedule?",
-    other: "Hi {first}, it's Elias with Get It Clean Tampa Bay. It's been about 10 months since your {service}. Florida mildew comes back fast. Want me to get you back on the schedule?",
-    again: "Hi {first}, Elias with Get It Clean Tampa Bay again. Just checking in to see if you'd like to get on the schedule for a cleaning. Let me know!"
+  // re-clean texts by service (elias, 2026-10-30): Text 1 the months below after the job is paid, Text 2 `second` days
+  // later, then one a month taking turns through the monthly ones. {reason} is the line for the service (other only).
+  reclean2: {
+    second: 14,
+    window: { months: 6, texts: [
+      "Hi {first}, it's Elias with Get It Clean Tampa Bay. It's been about 6 months since we cleaned your windows, and that's usually when the water spots and pollen start building back up. Want me to get you back on the schedule?",
+      "Hey {first}, just following up on my last message. I'm putting together my window cleaning schedule for the next few weeks and would be happy to fit you in. Just reply with a day that works for you.",
+      "Hi {first}, Elias with Get It Clean Tampa Bay here. Just checking in to see if you're ready to get your windows cleaned again. I have openings this month if you'd like me to get you on the schedule.",
+      "Hey {first}, between the rain, pollen and lovebugs, Florida windows don't stay clean for long. If you'd like yours looking crystal clear again, just reply and I'll get you on the schedule.",
+      "Hi {first}, it's Elias. I'm booking window cleanings for the next couple of weeks. Want me to save you a spot?",
+      "Hi {first}, quick check-in from Get It Clean Tampa Bay. Whenever you're ready for a window cleaning, just reply here and I'll take care of the rest."] },
+    power: { months: 10, texts: [
+      "Hi {first}, it's Elias with Get It Clean Tampa Bay. It's been about 10 months since your last power washing, and with Florida's heat and rain, the mildew and dirt come back fast. Want me to get you back on the schedule?",
+      "Hey {first}, just following up on my last message. I'm setting my power washing schedule for the next few weeks and would be happy to fit you in. Just reply with a day that works for you.",
+      "Hi {first}, Elias with Get It Clean Tampa Bay here. Just checking in to see if you're ready for another power washing. I have openings this month if you'd like me to get you on the schedule.",
+      "Hey {first}, those dark spots on concrete and screens are usually mildew coming back. If you want everything looking fresh again, reply here and I'll get you on the schedule.",
+      "Hi {first}, it's Elias. I'm booking power washing jobs for the next couple of weeks. Want me to save you a spot?",
+      "Hi {first}, quick check-in from Get It Clean Tampa Bay. Whenever you're ready for power washing, just reply here and I'll take care of the rest."] },
+    other: { months: 12, texts: [
+      "Hi {first}, it's Elias with Get It Clean Tampa Bay. It's been about a year since your {service}, and that's usually when {reason}. Want me to get you back on the schedule?",
+      "Hey {first}, just following up on my last message. I'm setting my schedule for the next few weeks and would be happy to fit in your {service}. Just reply with a day that works for you.",
+      "Hi {first}, Elias with Get It Clean Tampa Bay here. Just checking in to see if you're ready for your yearly {service}. I have openings this month if you'd like me to get you on the schedule.",
+      "Hey {first}, this time of year is usually when {reason}. If you'd like your {service} done again, reply here and I'll get you on the schedule.",
+      "Hi {first}, it's Elias. I'm booking a few {service} jobs for the next couple of weeks. Want me to save you a spot?",
+      "Hi {first}, quick check-in from Get It Clean Tampa Bay. Whenever you're ready for your {service}, just reply here and I'll take care of the rest."] },
+    reasons: {
+      house: "the mildew and black streaks start showing up on the siding again",
+      roof: "the black streaks start coming back on the roof",
+      gutters: "the gutters start filling back up with leaves and debris",
+      pavers: "the dirt and mildew start building back up",
+      sealing: "the sealer starts wearing thin and the pavers lose their color",
+      fence: "the green mildew starts coming back on the fence",
+      rust: "the sprinkler rust stains start coming back",
+      else: "the dirt and grime start building back up"
+    }
   },
   drips: {
     new: [
@@ -7663,7 +7693,7 @@ function ibGo(id, leadId) {
 // with "Reply STOP to opt out." Blasts only send 8 AM to 8 PM Eastern (Florida's limits), and none in vacation mode.
 const TX_ON = () => STANDALONE && !!window.GIC;
 // 3: appointment reminders and re-clean texts (autotext.js). Texting works with 2; only the automatic texts need 3.
-const TEXT_SENDER_VERSION = 4, TEXT_SENDER_MIN = 2;
+const TEXT_SENDER_VERSION = 5, TEXT_SENDER_MIN = 2;
 const TX_STOP_LINE = "Reply STOP to opt out.";
 const TX_MAX = 1500; // characters in one text (Quo takes 1,600)
 S.texts = []; S.textBlasts = []; S.textRuns = {}; S.textSender = null; S.textOut = {}; S.textKey = null; S.textRulesOk = null;
@@ -8145,7 +8175,7 @@ if (TX_ON()) {
       <label class="f">Service<select id="tx-provider" aria-label="Texting service"><option value="quo" selected>Quo (formerly OpenPhone)</option></select></label>
       <p class="note">Texts go out from your Quo business number, and the answers come back into Email & Texts. A small script in your own Google account does the sending once a minute, so it keeps going when the CRM is closed and your Quo key stays off your crew's logins. Quo charges about 1¢ a text on top of your plan. Set it up once, on a computer.</p>
       ${st !== "none" ? `<p class="note">${s.number ? `Texting from <b>${esc(fmtPhone(s.number))}</b>. ` : ""}Last check ${esc(fmtWhen(new Date(s.lastRun)))}.${s.sentToday ? ` ${plural(s.sentToday, "text")} sent today.` : ""}${s.lastError ? ` <span class="pill due">Problem</span> ${esc(s.lastError)}` : ""}</p>${txBackfilling() ? `<p class="note">${esc(txBackfillNote())}</p>` : ""}` : ""}
-      ${st !== "none" && st !== "old" && (+s.version || 0) < TEXT_SENDER_VERSION ? `<div class="banner info">There's new code for the texting script. It adds notifications on your phone (Settings > Notifications), plus appointment reminders and re-clean texts (Settings > Follow-ups), which stay off until you turn them on there. Texting keeps working with the code you have now. To get it, do steps 4 and 5 again: Google asks once more, now also to read your calendar (for the reminders) and to send notifications.</div>` : ""}
+      ${st !== "none" && st !== "old" && (+s.version || 0) < TEXT_SENDER_VERSION ? `<div class="banner info">There's new code for the texting script. It adds re-clean texts by service and appointment reminders (Settings > Follow-ups), which stay off until you turn them on there, plus notifications on your phone (Settings > Notifications). Texting keeps working with the code you have now. To get it, do steps 4 and 5 again, and allow it if Google asks.</div>` : ""}
       ${step(1, `Get your Quo API key${done(k ? k.has : null)}`, `<p class="note">In Quo on a computer, open Settings, then <b>API</b>, then <b>Generate API key</b> (only the Quo account owner or an admin sees it). Name it CRM, copy it, and paste it here. Quo also has to finish your US carrier registration (10DLC) before texts can go out this way. That's under Settings in Quo too.</p>
         <div class="row"><input type="password" id="tx-key" placeholder="${k && k.has ? `Saved key ending in ${esc(k.last4)}` : "Paste the API key"}" autocomplete="off" spellcheck="false" style="flex:1 1 240px" aria-label="Quo API key"><button class="btn primary" data-act="tx-key-save">Save key</button>${k && k.has ? `<button class="btn ghost" data-act="tx-key-del">Remove</button>` : ""}</div>`)}
       ${step(2, `Update your database rules${done(S.textRulesOk)}`, `<p class="note">${S.textRulesOk ? "Your rules are up to date: only you can read the key or start text blasts." : `Open the <a href="https://console.firebase.google.com/project/${esc(pid)}/firestore/rules" target="_blank" rel="noopener">Firebase rules page</a>, select everything there, paste the new rules over it, and tap Publish. The key can't be saved until this is done. (The same rules cover email blasts and the links in invoice texts.)`}</p>${S.textRulesOk ? "" : `<div class="row"><button class="btn" data-act="tx-copy-rules">Copy the rules</button></div>`}`)}
@@ -8868,7 +8898,7 @@ function textSender(PROJECT, VERSION, fsKit) {
     // vacation mode (Email & Texts) stops these too
     const vac = F.get("settings/blast-pause"); if (vac && vac.kind === "pause" && vac.on === true) return;
     if (sw.reminders === true && main.reminders) reminders(cfg, st, now, ctx, main.reminders);
-    if (sw.reclean === true && main.reclean) reclean(cfg, st, now, ctx, main.reclean, sw);
+    if (sw.reclean === true && main.reclean2) reclean(cfg, st, now, ctx, main.reclean2, sw);
   }
   // the business calendar from an hour ago to 3 days out, as Google has it (a booking can be dragged there): the CRM's
   // bookings (their event ids are the job's id in hex) → their Eastern start. null when the calendar can't be read.
@@ -8925,8 +8955,9 @@ function textSender(PROJECT, VERSION, fsKit) {
       if (++n >= 10) return;
     }
   }
-  // re-clean texts, once a day from 10 AM: the first on its day (6 or 10 months after the latest paid job), then every
-  // few days until they reply, text STOP, book again or are marked do not contact
+  // re-clean texts by service, once a day from 10 AM: the first on its day (6, 10 or 12 months after the latest paid job,
+  // by its service), the second 2 weeks later, then one a month, until they reply, text STOP, book again or are marked
+  // do not contact
   function reclean(cfg, st, now, ctx, rc, sw) {
     const w = when(now), day = w.day; if (w.h < 10 || st.rcDay === day) return;
     const on = sw.recleanAt ? when(new Date(sw.recleanAt)).day : day, sel = ["leadId", "status", "paidDate", "start", "service", "kind"];
@@ -8954,13 +8985,15 @@ function textSender(PROJECT, VERSION, fsKit) {
     const phone = chk.phone; l = chk.lead;
     // they answered since the first one: Elias takes it from there
     if (again && F.query("texts", [["phone", "EQUAL", phone]], 300).some(m => m.dir === "in" && String(m.at || "") > String(cur.first || ""))) return stop("replied");
-    const body = AP.rcText(again ? rc.again : AP.isWindow(j.service) ? rc.window : rc.other, { first: AP.first(l), place: AP.place(l), service: j.service });
+    const k = again ? n : 1, f = AP.rcFill(j.service, rc), tpl = AP.rcBody(rc, f.group, k);
+    if (!tpl.trim()) { st.autoErr = "A re-clean text didn't go out: one of the texts in Settings > Follow-ups is empty."; return ""; }
+    const body = AP.rcText(tpl, { first: AP.first(l), place: AP.place(l), service: f.service, reason: f.reason });
     if (AP.leftover(body)) { st.autoErr = "A re-clean text didn't go out: its text has " + AP.leftover(body) + " in it (Settings > Follow-ups)."; return ""; }
-    const k = again ? n : 1, r = autoSend(cfg, st, now, ctx, "texts/rc-" + j.id + "-" + k, phone, body, l, "reclean", "Re-clean text " + k + " sent");
+    const r = autoSend(cfg, st, now, ctx, "texts/rc-" + j.id + "-" + k, phone, body, l, "reclean", "Re-clean text " + k + " sent");
     if (r === false) return false;
     if (r !== true && r.failed) { F.patch("leads/" + l.id, { reclean: { job: j.id, n: k, first: cur.first || now.toISOString(), next: "", stopped: "text didn't go" } }, ["reclean"]); return ""; }
     // sent now, or by a run whose answer was lost: the next one is set either way
-    F.patch("leads/" + l.id, { reclean: { job: j.id, n: k, first: again ? cur.first || now.toISOString() : now.toISOString(), last: day, next: AP.addDay(day, Math.max(7, +rc.every || 21)) } }, ["reclean"]);
+    F.patch("leads/" + l.id, { reclean: { job: j.id, n: k, first: again ? cur.first || now.toISOString() : now.toISOString(), last: day, next: AP.rcNext(day, k, rc) } }, ["reclean"]);
     return r !== true;
   }
 
@@ -9175,11 +9208,13 @@ const TEXT_MANIFEST = JSON.stringify({ timeZone: "America/New_York", runtimeVers
 //     "today" or "tomorrow" to match). The time
 //     in Google Calendar counts (a booking dragged there). None for a canceled or finished one, none more than an hour
 //     late, and no STOP line (it's about their appointment).
-//   re-clean: from a customer's latest paid job, 6 months later for window cleaning and 10 months for other jobs (at
-//     10 AM), then every 3 weeks until they reply, text STOP, book again or are marked do not contact. Only the ones that
-//     come due after it's turned on; each ends with the STOP line.
+//   re-clean (by service, elias 2026-10-30; texting script version 5): from a customer's latest paid job, the first text
+//     at 10 AM 6 months later for window cleaning, 10 for power washing (driveways, pool cages, lanais) and 12 for
+//     everything else; a job with several services goes by the soonest. The second 2 weeks later, then one a month,
+//     taking turns through the monthly texts, until they reply, text STOP, book again or are marked do not contact.
+//     Only the ones that come due after it's turned on; each ends with the STOP line.
 // Vacation mode (settings/blast-pause) stops both, like every blast and drip (elias, 2026-10-29: one off switch).
-// The wording lives with the other messages in settings/main (reminders, reclean): Settings > Follow-ups.
+// The wording lives with the other messages in settings/main (reminders, reclean2): Settings > Follow-ups.
 
 // what the CRM and the texting script both work out (the script gets a copy of this function's code)
 function autoPlan() {
@@ -9205,9 +9240,36 @@ function autoPlan() {
   const remText = (body, o) => String(body || "").replace(/\{first\}/g, o.first || "there").replace(/\{day\}/g, remDay(o.start)).replace(/\{time\}/g, clock(mins(o.start))).replace(/\{when\}/g, remWhen(o.start)).replace(/\{greeting\}/g, greet(mins(remAt(o.start)) / 60));
   const remKey = (kind) => kind === "visit" ? "visit" : "job";
   const isWindow = (svc) => /window/i.test(String(svc || ""));
-  const rcMonths = (j, rc) => isWindow(j.service) ? +rc.windowMonths || 6 : +rc.otherMonths || 10;
+  // re-clean groups: window cleaning, power washing (driveways, pool cages, lanais) and everything else. A job with more
+  // than one service goes by the group that comes due soonest.
+  const RC_MONTHS = { window: 6, power: 10, other: 12 };
+  const rcParts = (svc) => String(svc || "").split(/\s*(?:,|\+|&|\/|\band\b)\s*/i).map(s => s.trim()).filter(Boolean);
+  const rcKind = (s) => /wind?ows?|widow/i.test(s) ? "window" : /driv|\bdr\b|pool|lan[ai]i?|lini|screen|cage|enclosure/i.test(s) ? "power" : "other";
+  const rcMo = (rc, g) => +((rc && rc[g]) || {}).months || RC_MONTHS[g];
+  const rcGroup = (svc, rc) => { const ks = rcParts(svc).map(rcKind); return ["window", "power", "other"].filter(g => ks.indexOf(g) >= 0 || (!ks.length && g === "other")).sort((a, b) => rcMo(rc, a) - rcMo(rc, b))[0]; };
+  const rcMonths = (j, rc) => rcMo(rc, rcGroup(j.service, rc));
   const rcDue = (j, rc) => addMonths(String(j.paidDate || j.start || "").slice(0, 10), rcMonths(j, rc));
-  const rcText = (body, o) => { const s = String(body || "").replace(/\{first\}/g, o.first || "there").replace(/\{place\}/g, o.place || "your property").replace(/\{service\}/g, String(o.service || "cleaning").toLowerCase()).replace(/\{greeting\}/g, "Good morning").replace(/\s+$/, ""); return /reply\s+stop\b[^\n]*$/i.test(s) ? s : s + "\n\nReply STOP to opt out."; };
+  // what {service} says for each service in "everything else", and which {reason} line goes with it
+  const RC_SVC = [[/roof/i, "roof cleaning", "roof"], [/gutter/i, "gutter cleaning", "gutters"], [/seal/i, "paver sealing", "sealing"], [/paver/i, "paver cleaning", "pavers"], [/patio/i, "patio cleaning", "pavers"],
+    [/sidewalk|walk ?way/i, "sidewalk cleaning", "pavers"], [/concrete/i, "concrete cleaning", "pavers"], [/fence/i, "fence cleaning", "fence"], [/rust/i, "rust removal", "rust"], [/hou[sc]e|soft ?wash|siding/i, "house wash", "house"],
+    [/storefront|building/i, "storefront cleaning", "else"], [/dumpster/i, "dumpster pad cleaning", "else"]];
+  const rcSvc = (s) => { for (const x of RC_SVC) if (x[0].test(s)) return { name: x[1], why: x[2] }; return { name: String(s).trim().toLowerCase(), why: "else" }; };
+  const rcList = (xs) => xs.length > 1 ? xs.slice(0, -1).join(", ") + " and " + xs[xs.length - 1] : xs[0] || "";
+  // the group, {service} and {reason} for a job
+  function rcFill(svc, rc) {
+    const g = rcGroup(svc, rc);
+    if (g === "window") return { group: g, service: "window cleaning", reason: "the water spots and pollen start building back up" };
+    if (g === "power") return { group: g, service: "power washing", reason: "the mildew and dirt start coming back" };
+    const ps = rcParts(svc).filter(p => rcKind(p) === "other").map(rcSvc), rs = (rc && rc.reasons) || {};
+    if (!ps.length) ps.push({ name: "cleaning", why: "else" });
+    const why = String(rs[ps[0].why] || rs.else || "the dirt and grime start building back up").trim().replace(/[.!]+$/, "");
+    return { group: g, service: rcList(ps.map(p => p.name).filter((n, i, a) => a.indexOf(n) === i)), reason: why };
+  }
+  // the text for the nth one: 1 the first, 2 the second, then the monthly ones in turn (blank ones skipped)
+  const rcBody = (rc, g, n) => { const t = (((rc && rc[g]) || {}).texts || []).map(s => String(s || "")), mo = t.slice(2).filter(s => s.trim()); return n <= 1 ? t[0] || "" : n === 2 ? t[1] || "" : mo.length ? mo[(n - 3) % mo.length] : ""; };
+  // when the one after the nth goes: the second a few days after the first (2 weeks), then a month after each
+  const rcNext = (day, n, rc) => n <= 1 ? addDay(day, Math.min(60, Math.max(3, +(rc && rc.second) || 14))) : addMonths(day, 1);
+  const rcText = (body, o) => { const s = String(body || "").replace(/\{first\}/g, o.first || "there").replace(/\{place\}/g, o.place || "your property").replace(/\{service\}/g, String(o.service || "cleaning").toLowerCase()).replace(/\{reason\}/g, o.reason || "it starts building back up").replace(/\{greeting\}/g, "Good morning").replace(/\s+$/, ""); return /reply\s+stop\b[^\n]*$/i.test(s) ? s : s + "\n\nReply STOP to opt out."; };
   const leftover = (s) => (String(s || "").match(/\{[a-z]+\}/i) || [""])[0];
   // each customer's latest paid job, unless they've booked again since (an estimate or a job on or after it)
   function rcJobs(list) {
@@ -9216,13 +9278,13 @@ function autoPlan() {
     list.forEach(j => { if (!j || !j.leadId || j.status === "paid" || j.status === "canceled") return; const cur = by.get(j.leadId); if (cur && String(j.start || "").slice(0, 10) >= cur.d) by.delete(j.leadId); });
     const out = new Map(); by.forEach((v, k) => out.set(k, v.j)); return out;
   }
-  return { addDay: addDay, addMonths: addMonths, mins: mins, clock: clock, remAt: remAt, remKey: remKey, remOk: remOk, remWhen: remWhen, remText: remText, first: first, place: place, isWindow: isWindow, rcMonths: rcMonths, rcDue: rcDue, rcText: rcText, rcJobs: rcJobs, leftover: leftover };
+  return { addDay: addDay, addMonths: addMonths, mins: mins, clock: clock, remAt: remAt, remKey: remKey, remOk: remOk, remWhen: remWhen, remText: remText, first: first, place: place, isWindow: isWindow, rcGroup: rcGroup, rcFill: rcFill, rcBody: rcBody, rcNext: rcNext, rcMonths: rcMonths, rcDue: rcDue, rcText: rcText, rcJobs: rcJobs, leftover: leftover };
 }
 const AP = autoPlan();
 S.autoText = null; S.autoAsk = "";
 const autoOn = (k) => !!(S.autoText && S.autoText[k] === true);
-// the texting script that can send them (version 3 and up)
-const autoReady = () => !!(S.textSender && (+S.textSender.version || 0) >= 3);
+// the texting script that can send them: reminders from version 3, re-clean texts by service from version 5
+const autoReady = (k) => !!(S.textSender && (+S.textSender.version || 0) >= (k === "reclean" ? 5 : 3));
 const wallOf = (s) => { const d = parseD(s); return d ? ymd(d) + "T" + pad(d.getHours()) + ":" + pad(d.getMinutes()) : ""; };
 const wallNow = () => wallOf(new Date().toISOString());
 const atText = (w) => `${fmtD(w.slice(0, 10), { weekday: "short", month: "short", day: "numeric" })} at ${AP.clock(AP.mins(w))}`;
@@ -9244,23 +9306,26 @@ function rcPlanned(rc) {
   return { up, past, going };
 }
 function autoSwitch(k, label) {
-  const on = autoOn(k), own = canEditBlast(), ready = autoReady() || on;
+  const on = autoOn(k), own = canEditBlast(), ready = autoReady(k) || on;
   return `<div class="row spread auto-sw"><span><b>${label}</b> <span class="pill ${on ? "s-scheduled" : "s-lost"}">${on ? "On" : "Off"}</span></span><button class="switch" role="switch" data-act="auto-sw" data-k="${k}" aria-checked="${on}" aria-label="${esc(label)}"${own && ready ? "" : " disabled"}><span class="knob" aria-hidden="true"></span></button></div>
     ${S.autoAsk === k && !on ? `<div class="banner warn stack"><span>Turn on ${esc(label.toLowerCase())}? ${k === "reminders" ? "Reminders start going out by themselves from your business number for the estimates and jobs on your calendar." : "Re-clean texts start going out by themselves to past customers as their date comes up."}</span><div class="row"><button class="btn sm primary" data-act="auto-sw-yes" data-k="${k}">Turn on</button><button class="btn sm ghost" data-act="auto-sw-no">Cancel</button></div></div>` : ""}`;
 }
 // the wording, with the starting texts for any not written yet
 const remOf = (st) => Object.assign({}, DEFAULT_SETTINGS.reminders, st.reminders || {});
+// re-clean texts by service (reclean2; the older single set of re-clean texts, never turned on, is left unused)
+const RC_G = [["window", "Window cleaning"], ["power", "Power washing: driveways, pool cages and lanais"], ["other", "Everything else: house wash, roof, gutters, pavers, fences and the rest"]];
+const RC_T = ["Text 1", "Text 2", "Monthly A", "Monthly B", "Monthly C", "Monthly D"];
+const RC_WHY = [["house", "House wash"], ["roof", "Roof cleaning"], ["gutters", "Gutter cleaning"], ["pavers", "Pavers, patios, sidewalks"], ["sealing", "Paver sealing"], ["fence", "Fence"], ["rust", "Rust removal"], ["else", "Storefront, dumpster pad, anything else"]];
 function rcOf(st) {
-  const rc = Object.assign({}, DEFAULT_SETTINGS.reclean, st.reclean || {});
-  // the 10-month text already written as a Paid follow-up is the one to start from
-  if (!(st.reclean || {}).other) { const p = ((st.drips || {}).paid || []).find(x => x.channel !== "email" && /10.?month/i.test(String(x.name || ""))); if (p && p.body) rc.other = p.body; }
+  const d = DEFAULT_SETTINGS.reclean2, s = st.reclean2 || {}, rc = { second: +s.second || d.second, reasons: Object.assign({}, d.reasons, s.reasons || {}) };
+  RC_G.forEach(([g]) => { const x = s[g] || {}, t = Array.isArray(x.texts) ? x.texts : []; rc[g] = { months: +x.months || d[g].months, texts: d[g].texts.map((v, i) => typeof t[i] === "string" ? t[i] : v) }; });
   return rc;
 }
 // the switches, and what the texting script says went wrong (redrawn in place when it checks in: the rest of the page
 // is a form that a data update doesn't redraw)
 function autoTopHTML() {
   const own = canEditBlast(), sv = S.textSender || {}, err = sv.autoError ? `<div class="banner warn">${esc(sv.autoError)}</div>` : "";
-  const ready = autoReady() ? "" : `<p class="note">To send these by themselves, the texting script needs its new code first: Settings > Texting, steps 4 and 5. Until then they can't be turned on.</p>`;
+  const ready = !autoReady("reminders") ? `<p class="note">To send these by themselves, the texting script needs its new code first: Settings > Texting, steps 4 and 5. Until then they can't be turned on.</p>` : !autoReady("reclean") ? `<p class="note">Re-clean texts by service need the newest texting script code first: Settings > Texting, steps 4 and 5. Until then they can't be turned on.</p>` : "";
   return `<div class="panel-h"><h2>Automatic texts</h2></div>
     <p class="note">These go out by themselves from your business number, between 8 AM and 8 PM, only while they're on. Vacation mode at the top of Email & Texts stops them too, along with every blast. ${own ? "Read the texts below first. Nothing goes out until you turn it on here." : "Only Elias can turn them on."}</p>
     ${autoSwitch("reminders", "Appointment reminders")}${autoSwitch("reclean", "Re-clean texts")}${ready}${err}`;
@@ -9271,7 +9336,7 @@ function autoHTML(st) {
   const warn = (s, ok) => { const w = AP.leftover(s); return w && !ok.includes(w) ? `<p class="note bad">${esc(w)} can't be filled in here, so this text won't go out. Use ${ok.join(", ")}.</p>` : ""; };
   const rp = remPlanned(rem), rcp = rcPlanned(rc), lim = 8;
   const remRows = rp.slice(0, lim).map(x => `<div class="item static flow"><div class="main-col"><span class="t">${esc(x.l ? leadName(x.l) : x.e.title)} · ${x.kind === "visit" ? "Estimate" : "Job"} ${esc(atText(x.start))}</span><span class="s">${x.no ? esc(x.no) + ": no reminder" : "Reminder " + esc(atText(x.at))}</span></div></div>`).join("");
-  const rcRows = rcp.up.slice(0, lim).map(x => `<div class="item static flow"><div class="main-col"><span class="t">${esc(leadName(x.l))} · ${esc(fmtD(x.due, { weekday: "short", month: "short", day: "numeric", year: x.due.slice(0, 4) !== today().slice(0, 4) ? "numeric" : undefined }))} at 10 AM</span><span class="s">${esc(x.j.service || "Job")} paid ${esc(fmtD(String(x.j.paidDate || x.j.start).slice(0, 10)))} · ${AP.rcMonths(x.j, rc)} months</span></div></div>`).join("");
+  const rcRows = rcp.up.slice(0, lim).map(x => `<div class="item static flow"><div class="main-col"><span class="t">${esc(leadName(x.l))} · ${esc(fmtD(x.due, { weekday: "short", month: "short", day: "numeric", year: x.due.slice(0, 4) !== today().slice(0, 4) ? "numeric" : undefined }))} at 10 AM</span><span class="s">${esc(x.j.service || "Job")} paid ${esc(fmtD(String(x.j.paidDate || x.j.start).slice(0, 10)))} · ${esc(RC_G.find(g => g[0] === AP.rcGroup(x.j.service, rc))[1].split(":")[0])}, ${AP.rcMonths(x.j, rc)} months</span></div></div>`).join("");
   const sample = rp.find(x => x.l && !x.no), rcs = rcp.up[0];
   const prev = (s) => `<div class="tm-msgs short"><div class="tm-b out"><div class="tm-txt">${esc(s)}</div></div></div>`;
   return `<section class="panel" id="auto-top">${autoTopHTML()}</section>
@@ -9281,16 +9346,15 @@ function autoHTML(st) {
     ${sample ? `<p class="note">${esc(leadName(sample.l))} would get this ${esc(atText(sample.at))}:</p>${prev(sample.body)}` : ""}
     <div class="sub-h">The next 3 days${rp.length ? ` · ${rp.length}` : ""}</div>${rp.length ? `<div class="list">${remRows}</div>` : `<p class="note">No estimates or jobs on the calendar in the next 3 days.</p>`}</section>
   <section class="panel"><div class="panel-h"><h2>Re-clean texts</h2></div>
-    <p class="note">From a customer's latest paid job: the first text at 10 AM on the day it's been the months below. Then, if they don't reply, another every few days you set, until they reply, text STOP, book again or you mark them do not contact. Each one ends with “Reply STOP to opt out.” Customers already past their day when you turn it on don't get one (a text blast can reach them). {first} is their first name, {service} the job's service, {place} their company or address.</p>
-    <div class="form">
-      <label class="f">Window cleaning jobs: first text after<span class="row"><input type="number" id="rc-wm" min="1" max="36" value="${esc(rc.windowMonths)}" style="width:80px"> months</span></label>
-      <label class="f">All other jobs: first text after<span class="row"><input type="number" id="rc-om" min="1" max="36" value="${esc(rc.otherMonths)}" style="width:80px"> months</span></label>
-      <label class="f">If they don't reply, again every<span class="row"><input type="number" id="rc-ev" min="7" max="90" value="${esc(rc.every)}" style="width:80px"> days</span></label>
-    </div>
-    <div class="tpl"><b>First text, window cleaning</b><textarea data-rcb="window" rows="3" aria-label="Window cleaning re-clean text">${esc(rc.window)}</textarea>${warn(rc.window, ["{first}", "{service}", "{place}"])}</div>
-    <div class="tpl"><b>First text, all other jobs</b><textarea data-rcb="other" rows="3" aria-label="Re-clean text for other jobs">${esc(rc.other)}</textarea>${warn(rc.other, ["{first}", "{service}", "{place}"])}</div>
-    <div class="tpl"><b>Each one after that</b><textarea data-rcb="again" rows="3" aria-label="Re-clean text after the first">${esc(rc.again)}</textarea>${warn(rc.again, ["{first}", "{service}", "{place}"])}</div>
-    ${rcs ? `<p class="note">${esc(leadName(rcs.l))} would get this ${esc(fmtD(rcs.due, { weekday: "short", month: "short", day: "numeric" }))} at 10 AM:</p>${prev(AP.rcText(AP.isWindow(rcs.j.service) ? rc.window : rc.other, { first: AP.first(rcs.l), place: AP.place(rcs.l), service: rcs.j.service }))}` : ""}
+    <p class="note">From a customer's latest paid job: Text 1 at 10 AM once it's been the months below, Text 2 a couple of weeks later, then one a month, taking turns through Monthly A to D. A job with more than one service goes by the one that comes up soonest, so a customer only ever gets one set. They stop when the customer replies, texts STOP, books again or you mark them do not contact. Each one ends with “Reply STOP to opt out.” Customers already past their Text 1 day when you turn it on don't get one (a text blast can reach them). {first} is their first name, {place} their company or address.</p>
+    <div class="form"><label class="f">Text 2 goes<span class="row"><input type="number" id="rc-2nd" min="3" max="60" value="${esc(rc.second)}" style="width:80px"> days after Text 1</span></label></div>
+    ${RC_G.map(([g, label]) => `<div class="sub-h">${esc(label)}</div>
+    <div class="form"><label class="f">Text 1 goes<span class="row"><input type="number" data-rcm="${g}" min="1" max="36" value="${esc(rc[g].months)}" style="width:80px"> months after the job is paid</span></label></div>
+    ${g === "other" ? `<p class="note">{service} is what you did for them, like “roof cleaning” or “house wash”. {reason} is that service's line below.</p>` : ""}
+    ${rc[g].texts.map((t, i) => `<div class="tpl"><b>${RC_T[i]}</b><textarea data-rcg="${g}" data-i="${i}" rows="3" aria-label="${esc(label.split(":")[0] + " " + RC_T[i])}">${esc(t)}</textarea>${warn(t, ["{first}", "{service}", "{place}", "{reason}"])}${i < 2 && !t.trim() ? `<p class="note bad">Empty, so the texts stop here.</p>` : ""}</div>`).join("")}`).join("")}
+    <div class="sub-h">{reason} for each service</div>
+    <div class="form">${RC_WHY.map(([k, label]) => `<label class="f">${esc(label)}<input data-rcr="${k}" value="${esc(rc.reasons[k] || "")}" aria-label="${esc(label)} reason"></label>`).join("")}</div>
+    ${rcs ? (() => { const f = AP.rcFill(rcs.j.service, rc); return `<p class="note">${esc(leadName(rcs.l))} would get this ${esc(fmtD(rcs.due, { weekday: "short", month: "short", day: "numeric" }))} at 10 AM:</p>${prev(AP.rcText(AP.rcBody(rc, f.group, 1), { first: AP.first(rcs.l), place: AP.place(rcs.l), service: f.service, reason: f.reason }))}`; })() : ""}
     <div class="sub-h">Coming up${rcp.up.length ? ` · ${rcp.up.length}` : ""}</div>${rcp.up.length ? `<div class="list">${rcRows}</div>${rcp.up.length > lim ? `<p class="note">And ${rcp.up.length - lim} more after that.</p>` : ""}` : `<p class="note">No paid jobs coming up on their re-clean day.</p>`}
     ${rcp.past.length ? `<p class="note">${plural(rcp.past.length, "customer")} ${rcp.past.length === 1 ? "is" : "are"} already past their re-clean day, so ${rcp.past.length === 1 ? "they don't" : "they don't"} get one automatically.</p>` : ""}
     ${rcp.going.length ? `<p class="note">Getting re-clean texts now: ${rcp.going.slice(0, 6).map(l => `${esc(leadName(l))} (next ${esc(fmtD(l.reclean.next))})`).join(", ")}${rcp.going.length > 6 ? "…" : ""}</p>` : ""}
@@ -9301,8 +9365,10 @@ function readAutoForm(st) {
   if (!document.querySelector("[data-rem]")) return;
   st.reminders = {}; document.querySelectorAll("[data-rem]").forEach(el => { st.reminders[el.dataset.rem] = el.querySelector('[data-rk="body"]').value; });
   const n = (id, lo, hi, d) => { const v = Math.round(Number(($("#" + id) || {}).value)); return v >= lo && v <= hi ? v : d; };
-  st.reclean = { windowMonths: n("rc-wm", 1, 36, 6), otherMonths: n("rc-om", 1, 36, 10), every: n("rc-ev", 7, 90, 21) };
-  document.querySelectorAll("[data-rcb]").forEach(el => { st.reclean[el.dataset.rcb] = el.value; });
+  const d = DEFAULT_SETTINGS.reclean2, rc = { second: n("rc-2nd", 3, 60, d.second), reasons: {} };
+  RC_G.forEach(([g]) => { const m = Math.round(Number((document.querySelector(`[data-rcm="${g}"]`) || {}).value)); rc[g] = { months: m >= 1 && m <= 36 ? m : d[g].months, texts: [...document.querySelectorAll(`[data-rcg="${g}"]`)].sort((a, b) => a.dataset.i - b.dataset.i).map(el => el.value) }; });
+  document.querySelectorAll("[data-rcr]").forEach(el => { rc.reasons[el.dataset.rcr] = el.value.trim(); });
+  st.reclean2 = rc;
 }
 
 Object.assign(EXTRA_ACTS, {
@@ -9319,13 +9385,13 @@ Object.assign(EXTRA_ACTS, {
 const autoRedraw = () => { if (S.view === "settings" && document.querySelector("[data-rem]")) S.setDraft = readSettingsForm(); render(); };
 async function autoSave(k, on) {
   if (!["reminders", "reclean"].includes(k) || !canEditBlast()) return;
-  if (on && !autoReady()) { toast("The texting script needs its new code first (Settings > Texting)."); autoRedraw(); return; }
+  if (on && !autoReady(k)) { toast("The texting script needs its new code first (Settings > Texting)."); autoRedraw(); return; }
   // it sends the saved wording: unsaved changes are saved first, and the starting texts are saved as they show
   if (on && S.setDirty) { toast("Save your changes first, then turn it on.", 5000); autoRedraw(); return; }
   const now = new Date().toISOString(), doc = Object.assign({ kind: "autotext", reminders: false, reclean: false }, S.autoText || {}, { [k]: on, [k + "At"]: on ? now : "", by: S.myId || "", updatedAt: now });
   delete doc.id; delete doc._t;
   try {
-    if (on) { const cur = settings(), fix = { reminders: remOf(cur), reclean: rcOf(cur) }; if (S.settings) await saveDoc("settings", "main", fix, true); else await saveDoc("settings", "main", Object.assign({}, cur, fix)); }
+    if (on) { const cur = settings(), fix = { reminders: remOf(cur), reclean2: rcOf(cur) }; if (S.settings) await saveDoc("settings", "main", fix, true); else await saveDoc("settings", "main", Object.assign({}, cur, fix)); }
     await saveDoc("settings", "blast-autotext", doc);
   } catch (e) { autoRedraw(); return; }
   S.autoText = doc;
