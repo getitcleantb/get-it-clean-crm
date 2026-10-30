@@ -1407,6 +1407,34 @@ html.gated, html.gated body { overflow: hidden; }
     serverColl: async (coll) => { checkPath(coll); const s = await F.getDocsFromServer(F.collection(fs, coll)); return s.docs.map(d => Object.assign({ id: d.id }, toPlain(d.data()))); },
     signOut: () => F.signOut(auth),
     resetPassword: (email) => F.sendPasswordResetEmail(auth, email || (me && me.email)),
+    // notifications on this device (Settings > Notifications), through Firebase Cloud Messaging and the site's sw.js.
+    // where(): "ok"; "home" (an iPhone or iPad in a Safari tab: notifications only come to the CRM opened from its home
+    // screen icon); "old" (iOS before 16.4); "no" (this browser can't). Tests use a pretend one (config fakePush).
+    push: (() => {
+      const ios = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+      const home = () => navigator.standalone === true || !!(window.matchMedia && matchMedia("(display-mode: standalone)").matches);
+      const can = () => "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+      // the pretend one keeps its permission and token on the device, as a real one does
+      const fk = (k, v) => { try { if (v === undefined) return localStorage.getItem("gic-fake-push-" + k) || ""; localStorage.setItem("gic-fake-push-" + k, v); } catch (e) {} return v; };
+      const fake = CFG.fakePush ? { get perm() { return fk("perm") || "default"; }, set perm(v) { fk("perm", v); }, get tok() { return fk("tok"); }, set tok(v) { fk("tok", v); } } : null;
+      let msg = null; const m = () => msg || (msg = F.getMessaging(app));
+      const tokenNow = () => navigator.serviceWorker.ready.then(reg => F.getToken(m(), Object.assign({ serviceWorkerRegistration: reg }, CFG.vapidKey ? { vapidKey: CFG.vapidKey } : {})));
+      const fail = (code, message) => Object.assign(new Error(message), { code });
+      return Object.freeze({
+        where: () => fake ? (CFG.fakePush === "home" ? "home" : "ok") : ios && !home() ? "home" : !can() ? (ios ? "old" : "no") : "ok",
+        permission: () => fake ? fake.perm : ("Notification" in window ? Notification.permission : "denied"),
+        // straight from the tap: an iPhone only asks for permission from one
+        enable: () => {
+          if (fake) { fake.perm = CFG.fakePushDeny ? "denied" : "granted"; if (CFG.fakePushDeny) return Promise.reject(fail("denied", "Notifications weren't allowed.")); fake.tok = fake.tok || "fake-token-" + Math.random().toString(36).slice(2, 10); return Promise.resolve(fake.tok); }
+          let ask; try { ask = Notification.requestPermission(); } catch (e) { ask = new Promise(r => Notification.requestPermission(r)); }
+          return Promise.resolve(ask).then(p => { if (p !== "granted") throw fail("denied", "Notifications weren't allowed."); return F.msgSupported(); })
+            .then(ok => { if (!ok) throw fail("unsupported", "This browser can't get notifications from the CRM."); return tokenNow(); });
+        },
+        // this device's current token when notifications are allowed (it can change now and then), else ""
+        token: () => fake ? Promise.resolve(fake.perm === "granted" ? fake.tok : "") : (can() && Notification.permission === "granted" ? F.msgSupported().then(ok => ok ? tokenNow() : "") : Promise.resolve("")),
+        disable: () => fake ? Promise.resolve((fake.tok = "")) : F.deleteToken(m()).catch(() => false)
+      });
+    })(),
     members: async () => { const s = await F.getDocs(F.collection(fs, "members")); return s.docs.map(d => Object.assign({ email: d.id }, toPlain(d.data()))); },
     addMember: async ({ name, email, password }) => {
       email = String(email || "").trim().toLowerCase(); name = String(name || "").trim();
@@ -2126,6 +2154,9 @@ async function saveDoc(coll, id, data, merge) {
   if (!S.db) { toast(STANDALONE ? "You're signed out. Sign in again to save changes." : "Open this page in claude.ai to save changes"); throw new Error("no db"); }
   const key = coll + "/" + id;
   if (coll === "leads" && data.stage && !data.stageSince) { const cur = leadById(id); if (!cur || cur.stage !== data.stage) data.stageSince = today(); }
+  // a deal closes when a lead moves to Won / Scheduled from anywhere but Done: the texting script sends the owner's
+  // phone "EL closed a deal" (notify.js)
+  if (coll === "leads" && merge && data.stage === "scheduled" && !data.won) { const cur = leadById(id); if (cur && !["scheduled", "completed"].includes(cur.stage || "new")) data.won = { at: new Date().toISOString(), who: dealWho(), by: S.myId || "" }; }
   while (writing[key]) await writing[key];
   const p = (async () => {
     try { const ref = S.db.collection(coll).doc(id); if (merge) await ref.update(data); else await ref.set(data); }
@@ -5754,7 +5785,7 @@ function blastListen(db) {
     // an address you allowed again is off this list at once, before the sender catches up
     const o = docs.find(d => d.id === "blast-out"), out = (o && o.out) || {}; S.blastOut = {};
     Object.keys(out).forEach(k => { if (!(Date.parse(S.blastAllow[k] || 0) >= Date.parse((out[k] || {}).at || 0))) S.blastOut[k] = out[k]; });
-    if (S.view === "email" || S.view === "today" || S.view === "bonus" || S.view === "money" || (S.view === "settings" && ["blasts", "texting"].includes(S.setTab))) schedule();
+    if (S.view === "email" || S.view === "today" || S.view === "bonus" || S.view === "money" || (S.view === "settings" && ["blasts", "texting", "notify"].includes(S.setTab))) schedule();
     if (openLeadId && S.leadTab === "messages") refreshLeadModal();
     // the editor follows changes made on another device: Pause on the phone shows as paused here, and a save here
     // doesn't undo it
@@ -7632,7 +7663,7 @@ function ibGo(id, leadId) {
 // with "Reply STOP to opt out." Blasts only send 8 AM to 8 PM Eastern (Florida's limits), and none in vacation mode.
 const TX_ON = () => STANDALONE && !!window.GIC;
 // 3: appointment reminders and re-clean texts (autotext.js). Texting works with 2; only the automatic texts need 3.
-const TEXT_SENDER_VERSION = 3, TEXT_SENDER_MIN = 2;
+const TEXT_SENDER_VERSION = 4, TEXT_SENDER_MIN = 2;
 const TX_STOP_LINE = "Reply STOP to opt out.";
 const TX_MAX = 1500; // characters in one text (Quo takes 1,600)
 S.texts = []; S.textBlasts = []; S.textRuns = {}; S.textSender = null; S.textOut = {}; S.textKey = null; S.textRulesOk = null;
@@ -8083,7 +8114,7 @@ if (TX_ON()) {
       <label class="f">Service<select id="tx-provider" aria-label="Texting service"><option value="quo" selected>Quo (formerly OpenPhone)</option></select></label>
       <p class="note">Texts go out from your Quo business number, and the answers come back into Email & Texts. A small script in your own Google account does the sending once a minute, so it keeps going when the CRM is closed and your Quo key stays off your crew's logins. Quo charges about 1¢ a text on top of your plan. Set it up once, on a computer.</p>
       ${st !== "none" ? `<p class="note">${s.number ? `Texting from <b>${esc(fmtPhone(s.number))}</b>. ` : ""}Last check ${esc(fmtWhen(new Date(s.lastRun)))}.${s.sentToday ? ` ${plural(s.sentToday, "text")} sent today.` : ""}${s.lastError ? ` <span class="pill due">Problem</span> ${esc(s.lastError)}` : ""}</p>${txBackfilling() ? `<p class="note">${esc(txBackfillNote())}</p>` : ""}` : ""}
-      ${st !== "none" && st !== "old" && (+s.version || 0) < TEXT_SENDER_VERSION ? `<div class="banner info">There's new code for the texting script. It adds appointment reminders and re-clean texts (Settings > Follow-ups), which stay off until you turn them on there. Texting keeps working with the code you have now. To get it, do steps 4 and 5 again: Google asks once more, now also to read your calendar (for the reminders).</div>` : ""}
+      ${st !== "none" && st !== "old" && (+s.version || 0) < TEXT_SENDER_VERSION ? `<div class="banner info">There's new code for the texting script. It adds notifications on your phone (Settings > Notifications), plus appointment reminders and re-clean texts (Settings > Follow-ups), which stay off until you turn them on there. Texting keeps working with the code you have now. To get it, do steps 4 and 5 again: Google asks once more, now also to read your calendar (for the reminders) and to send notifications.</div>` : ""}
       ${step(1, `Get your Quo API key${done(k ? k.has : null)}`, `<p class="note">In Quo on a computer, open Settings, then <b>API</b>, then <b>Generate API key</b> (only the Quo account owner or an admin sees it). Name it CRM, copy it, and paste it here. Quo also has to finish your US carrier registration (10DLC) before texts can go out this way. That's under Settings in Quo too.</p>
         <div class="row"><input type="password" id="tx-key" placeholder="${k && k.has ? `Saved key ending in ${esc(k.last4)}` : "Paste the API key"}" autocomplete="off" spellcheck="false" style="flex:1 1 240px" aria-label="Quo API key"><button class="btn primary" data-act="tx-key-save">Save key</button>${k && k.has ? `<button class="btn ghost" data-act="tx-key-del">Remove</button>` : ""}</div>`)}
       ${step(2, `Update your database rules${done(S.textRulesOk)}`, `<p class="note">${S.textRulesOk ? "Your rules are up to date: only you can read the key or start text blasts." : `Open the <a href="https://console.firebase.google.com/project/${esc(pid)}/firestore/rules" target="_blank" rel="noopener">Firebase rules page</a>, select everything there, paste the new rules over it, and tap Publish. The key can't be saved until this is done. (The same rules cover email blasts and the links in invoice texts.)`}</p>${S.textRulesOk ? "" : `<div class="row"><button class="btn" data-act="tx-copy-rules">Copy the rules</button></div>`}`)}
@@ -8669,7 +8700,7 @@ function textSender(PROJECT, VERSION, fsKit) {
     }
     const doc = { kind: "text", phone: p, dir: dir, body: body, at: at, status: dir === "in" ? "received" : statusOf(m.status) || "sent", providerId: m.id, unread: dir === "in" && !first, via: "quo", leadId: "" };
     if (m.media && m.media.length) doc.media = m.media.length;
-    F.create("texts/q-" + m.id, doc);
+    if (F.create("texts/q-" + m.id, doc) && dir === "in" && !first && ctx.news) ctx.news.push({ p: p, body: body, media: doc.media || 0 });
   }
   // STOP and START (and the like) turn texts to the number off and on. Only a text newer than the number's last change
   // counts, so an old STOP seen again doesn't undo a later START, and the owner's own choice in the CRM stands.
@@ -8897,6 +8928,68 @@ function textSender(PROJECT, VERSION, fsKit) {
   }
 
   // ---- each run ----
+  // Notifications on the owner's phone (Settings > Notifications, private/push): new texts and closed deals (a lead's
+  // won = { at, who }, set by the CRM), and a test when asked. Sent through Firebase Cloud Messaging; a device whose
+  // notifications are gone (the app was removed) comes off the list. A problem here never stops the texting.
+  const FCM = "https://fcm.googleapis.com/v1/projects/" + PROJECT + "/messages:send";
+  function pushes(st, now, ctx) {
+    try {
+      const p = F.get("private/push"), devs = p && p.kind === "push" ? Object.keys(p.devices || {}).filter(id => p.devices[id] && p.devices[id].token) : [];
+      const since = st.wonAt || new Date(now.getTime() - 2 * 60000).toISOString();
+      if (!devs.length) { st.wonAt = now.toISOString(); st.pushErr = ""; return; }
+      const send = (kind, title, body, link) => (kind && p[kind] === false) ? 0 : pushOut(st, p, devs, title, body, link);
+      if (ctx.news && ctx.news.length) {
+        const names = {};
+        ctx.news.forEach(n => { if (!(n.p in names)) names[n.p] = whoIs(n.p); send("texts", "Text from " + names[n.p], n.body || (n.media ? "Sent a picture" : "(no text)"), "./?open=text&p=" + encodeURIComponent(n.p)); });
+      }
+      const seen = prop("won", {}), cut = now.getTime() - DAY; let top = since;
+      F.query("leads", [["won.at", "GREATER_THAN", new Date(Date.parse(since) - 10 * 60000).toISOString()]], 50, ["name", "company", "stage", "won", "value", "services"])
+        .sort((a, b) => String(a.won.at).localeCompare(String(b.won.at))).forEach(l => {
+          const k = l.id + "|" + l.won.at; if (String(l.won.at) > top) top = String(l.won.at);
+          if (seen[k]) return; seen[k] = now.getTime();
+          if (["scheduled", "completed", "paid"].indexOf(l.stage) < 0) return;
+          const amt = +l.value > 0 ? "$" + Math.round(+l.value).toLocaleString("en-US") : "", what = [].concat(l.services || []).filter(x => typeof x === "string").slice(0, 2).join(", ");
+          send("deals", (l.won.who ? l.won.who + " closed a deal" : "A deal closed"), [l.name || l.company || "A customer", what, amt].filter(Boolean).join(" · "), "./?open=lead&id=" + encodeURIComponent(l.id));
+        });
+      Object.keys(seen).forEach(k => { if (seen[k] < cut) delete seen[k]; }); setProp("won", seen);
+      st.wonAt = top > now.toISOString() ? now.toISOString() : top;
+      if (p.test && p.test.at && p.test.at !== st.pushTest) {
+        st.pushTest = p.test.at; st.pushErr = "";
+        const n = pushOut(st, p, devs, "Test notification", "Notifications from your CRM are working.", "./?open=notify");
+        F.patch("private/push", { tested: { at: now.toISOString(), for: p.test.at, sent: n, err: n ? "" : st.pushErr || "" } }, ["tested"]);
+      }
+    } catch (err) { st.pushErr = String((err && err.message) || err).slice(0, 200); }
+  }
+  // the name on the lead with this number (written the usual ways), else the number
+  function whoIs(p) {
+    const d = digits(p).replace(/^1(?=\d{10}$)/, ""); if (d.length !== 10) return p;
+    const a = d.slice(0, 3), b = d.slice(3, 6), c = d.slice(6), fm = "(" + a + ") " + b + "-" + c;
+    try {
+      const l = F.query("leads", [["phone", "IN", [d, "1" + d, "+1" + d, a + "-" + b + "-" + c, fm, "(" + a + ")" + b + "-" + c, a + "." + b + "." + c, a + " " + b + " " + c, "+1 " + a + "-" + b + "-" + c, "+1 " + fm, "1-" + a + "-" + b + "-" + c, "+1 " + a + " " + b + " " + c]]], 5, ["name", "company"])
+        .find(x => x.name || x.company);
+      return l ? String(l.name || l.company) : fm;
+    } catch (e) { return fm; }
+  }
+  // one notification to each device: how many it reached
+  function pushOut(st, p, devs, title, body, link) {
+    let n = 0;
+    devs.forEach(id => {
+      const msg = { message: { token: p.devices[id].token, data: { title: String(title), body: String(body).slice(0, 300), link: String(link || "./") }, webpush: { headers: { Urgency: "high", TTL: "86400" }, notification: { title: String(title), body: String(body).slice(0, 300) } } } };
+      const opts = { method: "post", contentType: "application/json", payload: JSON.stringify(msg), headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken(), "X-Goog-User-Project": PROJECT }, muteHttpExceptions: true };
+      let r = null, code = 0, txt = "";
+      for (let i = 0; i < 3; i++) {
+        try { r = UrlFetchApp.fetch(FCM, opts); code = r.getResponseCode(); txt = r.getContentText() || ""; } catch (e) { code = 0; txt = String(e && e.message || e); }
+        if (code === 403 && opts.headers["X-Goog-User-Project"] && /USER_PROJECT_DENIED|serviceusage/i.test(txt)) { delete opts.headers["X-Goog-User-Project"]; i--; continue; }
+        if (code === 429 || code >= 500 || code === 0) { if (i < 2) Utilities.sleep(1000 * (i + 1)); continue; }
+        break;
+      }
+      if (code >= 200 && code < 300) { n++; st.pushErr = ""; return; }
+      if (code === 404 || /UNREGISTERED|registration-token-not-registered|not a valid FCM registration token/i.test(txt)) { try { F.patch("private/push", {}, ["devices." + id]); } catch (e) {} return; }
+      let m = ""; try { const j = JSON.parse(txt); m = (j.error && j.error.message) || ""; } catch (e) { m = txt; }
+      st.pushErr = (code === 401 || code === 403 ? "Google didn't allow it. Do steps 4 and 5 in Settings > Texting again. " : "") + String(m || ("error " + code)).slice(0, 160);
+    });
+    return n;
+  }
   function tick(force) {
     const lock = LockService.getScriptLock(); if (!lock.tryLock(force ? 30000 : 1000)) return "busy";
     const now = new Date(), t = when(now);
@@ -8914,7 +9007,9 @@ function textSender(PROJECT, VERSION, fsKit) {
       if (held(st, now, cfg)) st.lastError = st.hold.msg; else delete st.hold;
       let out = null, blk = null; const ctx = { out: () => out || (out = ((F.get("settings/blast-textout") || {}).out) || {}), block: () => blk || (blk = ((F.get("settings/blast-textblock") || {}).nums) || {}) };
       sendQueued(cfg, st, now, ctx);
+      ctx.news = [];
       sync(cfg, st, now, ctx);
+      pushes(st, now, ctx);
       if (!st.backfilled) { backfill(cfg, st, now, ctx); if (st.backfilled) st.backfilledPn = cfg.pn; }
       pollDelivery(cfg, now);
       blasts(cfg, st, now, ctx);
@@ -8932,8 +9027,8 @@ function textSender(PROJECT, VERSION, fsKit) {
   }
   // what the CRM shows in Settings > Texting: saved when something changed, and every 10 minutes
   function checkIn(st, now, force) {
-    const doc = { kind: "textsender", version: VERSION, scriptId: scriptId(), account: me(), lastRun: now.toISOString(), lastSync: st.lastSync || "", number: st.number || "", phoneNumberId: st.pn || "", lastError: st.lastError || "", autoError: st.autoErr || "", lastErrorAt: st.lastError ? st.lastErrorAt || now.toISOString() : "", limitUntil: st.limitUntil || "", limitMsg: st.limitUntil ? st.limitMsg || "" : "", vacation: !!st.vacation, sentToday: st.sentToday || 0, day: st.day || "", backfilled: st.backfilled || "", backfillDone: st.bf ? st.bf.done || 0 : 0, backfillTotal: st.bf ? st.bf.total || 0 : 0 };
-    const sig = JSON.stringify([doc.version, doc.number, doc.lastError, doc.autoError, doc.limitUntil, doc.vacation, doc.sentToday, doc.backfilled, doc.backfillDone]), ci = prop("ci", {});
+    const doc = { kind: "textsender", version: VERSION, scriptId: scriptId(), account: me(), lastRun: now.toISOString(), lastSync: st.lastSync || "", number: st.number || "", phoneNumberId: st.pn || "", lastError: st.lastError || "", autoError: st.autoErr || "", pushError: st.pushErr || "", lastErrorAt: st.lastError ? st.lastErrorAt || now.toISOString() : "", limitUntil: st.limitUntil || "", limitMsg: st.limitUntil ? st.limitMsg || "" : "", vacation: !!st.vacation, sentToday: st.sentToday || 0, day: st.day || "", backfilled: st.backfilled || "", backfillDone: st.bf ? st.bf.done || 0 : 0, backfillTotal: st.bf ? st.bf.total || 0 : 0 };
+    const sig = JSON.stringify([doc.version, doc.number, doc.lastError, doc.autoError, doc.pushError, doc.limitUntil, doc.vacation, doc.sentToday, doc.backfilled, doc.backfillDone]), ci = prop("ci", {});
     if (!force && ci.sig === sig && now.getTime() - (ci.at || 0) < 10 * 60000) return;
     F.put("settings/blast-textsender", doc);
     setProp("ci", { sig: sig, at: now.getTime() });
@@ -9035,7 +9130,7 @@ ${autoPlan.toString()}
 ${fsKit.toString()}
 `;
 const TEXT_MANIFEST = JSON.stringify({ timeZone: "America/New_York", runtimeVersion: "V8", exceptionLogging: "STACKDRIVER",
-  oauthScopes: ["https://www.googleapis.com/auth/datastore", "https://www.googleapis.com/auth/script.external_request", "https://www.googleapis.com/auth/script.scriptapp", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/calendar.readonly"] }, null, 2);
+  oauthScopes: ["https://www.googleapis.com/auth/datastore", "https://www.googleapis.com/auth/script.external_request", "https://www.googleapis.com/auth/script.scriptapp", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/calendar.readonly", "https://www.googleapis.com/auth/firebase.messaging"] }, null, 2);
 // ---------- AUTOMATIC TEXTS (elias, 2026-10-29): appointment reminders and re-clean texts ----------
 // Both are off until elias turns them on (settings/blast-autotext, which only the owner can change). The texting script
 // (version 3) sends them from the business number, 8 AM to 8 PM:
@@ -9402,6 +9497,115 @@ async function tiDropLinks(q, sk) {
   if (!q || !q.id) return; tiGone.add(q.id);
   const keys = new Set([sk, (tiLive(q) || q).shareId, q.shareId, tiKeys[q.id]].filter(Boolean));
   for (const k of keys) await delDoc("shared", k).catch(() => {});
+}
+
+// ---------- NOTIFICATIONS (elias, 2026-10-30) ----------
+// A notification on the owner's phone when a customer texts and when a deal closes ("EL closed a deal"). The texting
+// script sends them once a minute through Firebase Cloud Messaging, so they come with the CRM closed. Settings >
+// Notifications turns them on per device and picks which ones come. It's all in private/push (owner only):
+// { kind: "push", texts, deals, devices: { id: { token, name, at } }, test: { at }, tested: { at, for, sent, err } }.
+// An iPhone gets them only in the CRM opened from its home screen icon (iOS 16.4 or later).
+S.push = null; S.pushUI = { busy: false, msg: "", bad: false };
+// who closed a deal, as the crew picker writes it: the owner is EL; a crew login by its name (initials for a full name)
+function dealWho() {
+  const me = (window.GIC && window.GIC.me && window.GIC.me()) || null; if (!me) return "";
+  if (me.isOwner) return CREW[0];
+  const n = String(me.name || "").trim(), w = n.split(/\s+/).filter(Boolean);
+  return n.length <= 3 ? n.toUpperCase() : w.length > 1 ? (w[0][0] + w[w.length - 1][0]).toUpperCase() : n;
+}
+const PUSH_VERSION = 4;
+const pushDevId = () => { try { let id = localStorage.getItem("gic-push-id"); if (!id) { id = "d" + Math.random().toString(36).slice(2, 12).replace(/[^a-z0-9]/g, ""); localStorage.setItem("gic-push-id", id); } return id; } catch (e) { return "d-nostore"; } };
+const pushDevName = () => { const u = navigator.userAgent; return /iPhone/.test(u) ? "iPhone" : /iPad/.test(u) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1) ? "iPad" : /Android/.test(u) ? "Android phone" : /Mac/.test(u) ? "Mac" : /Windows/.test(u) ? "Windows computer" : "Computer"; };
+const pushIsOwner = () => !!(window.GIC && window.GIC.me && (window.GIC.me() || {}).isOwner);
+const pushHere = () => { const d = ((S.push || {}).devices || {})[pushDevId()]; return d && d.token ? d : null; };
+let pushUnsub = null;
+function pushListen() {
+  if (pushUnsub || !S.db || !pushIsOwner()) return;
+  pushUnsub = S.db.doc("private/push").onSnapshot(d => { S.push = d.exists ? d.data() || {} : {}; pushRefresh(); if (S.view === "settings" && S.setTab === "notify") schedule(); }, () => {});
+}
+// the token can change now and then: this device's entry follows it (only while it's on here)
+let pushRefreshed = false;
+async function pushRefresh() {
+  if (pushRefreshed || !pushHere() || window.GIC.push.where() !== "ok" || window.GIC.push.permission() !== "granted") return; pushRefreshed = true;
+  try { const t = await window.GIC.push.token(); const d = pushHere(); if (t && d && t !== d.token) await S.db.doc("private/push").update({ devices: { [pushDevId()]: Object.assign({}, d, { token: t, at: new Date().toISOString() }) } }); } catch (e) {}
+}
+async function pushSave(fn) {
+  const d = await S.db.doc("private/push").get(); const cur = d.exists ? d.data() || {} : {};
+  const next = Object.assign({ kind: "push", texts: true, deals: true, devices: {} }, cur); next.devices = Object.assign({}, next.devices || {});
+  fn(next); await S.db.doc("private/push").set(next); S.push = next;
+}
+const pushSays = (msg, bad) => { S.pushUI = { busy: false, msg, bad: !!bad }; schedule(); };
+const pushErrText = (e) => {
+  const c = String((e && e.code) || ""), m = String((e && e.message) || "");
+  if (c === "denied" || /permission-blocked|permission-default/.test(c + m)) return "Notifications weren't allowed. On iPhone: Settings > Notifications > GIC CRM > Allow Notifications, then try again here.";
+  if (c === "unsupported") return m;
+  return "Couldn't turn on notifications here" + (c || m ? " (" + (c || m).slice(0, 120) + ")" : "") + ". Check your internet connection and try again.";
+};
+const pushRow = (k, label, note) => { const on = !S.push || S.push[k] !== false; return `<div class="row spread auto-sw"><span><b>${label}</b> <span class="pill ${on ? "s-scheduled" : "s-lost"}">${on ? "On" : "Off"}</span><br><span class="note">${note}</span></span><button class="switch" role="switch" data-act="push-kind" data-k="${k}" aria-checked="${on}" aria-label="${esc(label)}"><span class="knob" aria-hidden="true"></span></button></div>`; };
+if (TX_ON()) {
+  SET_TABS.splice(SET_TABS.length - 1, 0, ["notify", "Notifications"]);
+  window.addEventListener("gic-signed-in", () => { setTimeout(pushListen, 0); setTimeout(pushListen, 2000); });
+  SET_EXTRA.notify = () => {
+    if (!pushIsOwner()) return `<section class="panel"><p class="note">Only the owner gets notifications.</p></section>`;
+    pushListen();
+    const P = window.GIC.push, where = P.where(), perm = P.permission(), here = pushHere(), s = S.textSender || {}, ui = S.pushUI;
+    const devs = Object.entries((S.push || {}).devices || {}).filter(([, d]) => d && d.token).sort((a, b) => String(a[1].at || "").localeCompare(String(b[1].at || "")));
+    const ver = +s.version || 0, t = (S.push || {}).test, td = (S.push || {}).tested;
+    const script = !s.lastRun ? `<div class="banner warn">Notifications are sent by your texting script, so texting has to be set up first (Settings > Texting).</div>`
+      : ver < PUSH_VERSION ? `<div class="banner warn">One more step on a computer: notifications are sent by your texting script, so it needs the new code. In Settings > Texting, do steps 4 and 5 again. Google asks once more, now also to send notifications. Texting keeps working the same, and reminders and re-clean texts stay off.</div>`
+      : s.pushError ? `<div class="banner bad">Notifications couldn't be sent: ${esc(s.pushError)}</div>` : "";
+    let device;
+    if (where === "home") device = `<div class="banner info">On iPhone, notifications only come to the CRM opened from its home screen icon. In Safari, tap Share, then <b>Add to Home Screen</b>. Open the CRM from that icon and come back here.</div>`;
+    else if (where === "old") device = `<div class="banner warn">This iPhone needs iOS 16.4 or later for notifications. Update it in Settings > General > Software Update.</div>`;
+    else if (where === "no") device = `<p class="note">This browser can't get notifications from the CRM. Use the CRM on your iPhone, opened from its home screen icon.</p>`;
+    else if (here && perm === "granted") device = `<p class="note"><span class="pill s-scheduled">On</span> This ${esc(here.name || "device")} gets notifications.</p><div class="row"><button class="btn" data-act="push-test"${ver < PUSH_VERSION ? " disabled" : ""}>Send a test notification</button><button class="btn ghost" data-act="push-off">Turn off here</button></div>`;
+    else if (perm === "denied") device = `<div class="banner warn">Notifications are blocked for the CRM on this device. On iPhone: Settings > Notifications > GIC CRM > Allow Notifications. Then come back and tap Turn on.</div><div class="row"><button class="btn primary" data-act="push-on">Turn on notifications here</button></div>`;
+    else device = `<p class="note"><span class="pill s-lost">Off</span> This ${esc(pushDevName())} doesn't get notifications yet.</p><div class="row"><button class="btn primary" data-act="push-on"${ui.busy ? " disabled" : ""}>Turn on notifications here</button></div>`;
+    const testNote = t && t.at ? (td && td.for === t.at ? (td.err ? `Test couldn't be sent: ${esc(td.err)}` : td.sent ? `Test sent to ${plural(td.sent, "device")} ${esc(fmtWhen(new Date(td.at)))}.` : "Test wasn't sent: no device has notifications on.") : "Test notification on its way. The texting script sends it within a minute.") : "";
+    return `<section class="panel"><div class="panel-h"><h2>Notifications</h2><span class="pill ${devs.length ? "s-scheduled" : "s-lost"}">${devs.length ? plural(devs.length, "device") : "Off"}</span></div>
+      <p class="note">Get a notification on your phone, even with the CRM closed. They come within about a minute.</p>
+      ${script}
+      ${pushRow("texts", "New texts", "When a customer texts your business number: who it is and what they wrote.")}
+      ${pushRow("deals", "Closed deals", "When a lead moves to Won / Scheduled: who closed it (EL, AL or TL), the customer and the amount.")}
+      <h3>This device</h3>${device}
+      ${ui.msg ? `<div class="banner ${ui.bad ? "bad" : "good"}" role="status">${esc(ui.msg)}</div>` : ""}${testNote ? `<p class="note" role="status">${testNote}</p>` : ""}
+      ${devs.length ? `<h3>Getting notifications</h3><div class="list">${devs.map(([id, d]) => `<div class="item static flow"><div class="main-col"><span class="t">${esc(d.name || "Device")}${id === pushDevId() ? " (this one)" : ""}</span><span class="s">Since ${esc(fmtD(d.at || "", { month: "short", day: "numeric", year: "numeric" }))}</span></div><div class="r"><button class="btn sm ghost" data-act="push-rm" data-id="${esc(id)}">Remove</button></div></div>`).join("")}</div>` : ""}
+    </section>`;
+  };
+  Object.assign(EXTRA_ACTS, {
+    "push-on": (t) => {
+      const ask = window.GIC.push.enable(); // first thing in the tap: an iPhone only asks from one
+      t.disabled = true; S.pushUI = { busy: true, msg: "", bad: false };
+      ask.then(tok => pushSave(x => { x.devices[pushDevId()] = { token: tok, name: pushDevName(), at: new Date().toISOString() }; }))
+        .then(() => { pushRefreshed = true; pushSays("Notifications are on for this " + pushDevName() + "."); }, e => pushSays(pushErrText(e), true));
+    },
+    "push-off": async () => {
+      try { await pushSave(x => { delete x.devices[pushDevId()]; }); await window.GIC.push.disable(); pushSays("Notifications are off for this " + pushDevName() + "."); } catch (e) { pushSays("Couldn't turn them off. Check your internet connection and try again.", true); }
+    },
+    "push-rm": async (t) => {
+      const id = t.dataset.id;
+      try { await pushSave(x => { delete x.devices[id]; }); if (id === pushDevId()) await window.GIC.push.disable(); pushSays("That device won't get notifications anymore."); } catch (e) { pushSays("Couldn't remove it. Check your internet connection and try again.", true); }
+    },
+    "push-kind": async (t) => {
+      const k = t.dataset.k, on = !(S.push && S.push[k] === false);
+      try { await pushSave(x => { x[k] = !on; }); toast(`${k === "texts" ? "New texts" : "Closed deals"}: notifications ${on ? "off" : "on"}`); schedule(); } catch (e) { toast("Couldn't save. Check your internet connection and try again."); }
+    },
+    "push-test": async () => {
+      try { await pushSave(x => { x.test = { at: new Date().toISOString(), by: S.myId || "" }; }); S.pushUI = { busy: false, msg: "", bad: false }; schedule(); } catch (e) { pushSays("Couldn't ask for a test. Check your internet connection and try again.", true); }
+    }
+  });
+}
+// Tapping a notification opens the CRM on it: ?open=text&p=+1727... (that conversation), ?open=lead&id=... (that
+// lead) or ?open=notify (Settings > Notifications). The open CRM gets it from sw.js; a new one has it in its address.
+function pushOpen(q) {
+  const what = q.get("open"); if (!what) return;
+  if (what === "text" && q.get("p")) txOpen(q.get("p"));
+  else if (what === "lead" && q.get("id")) { const id = q.get("id"); if (S.dataReady && leadById(id)) openLead(id); else { S.pendingOpen = id; S.pendingOpenTab = null; } }
+  else if (what === "notify") { S.view = "settings"; S.setTab = "notify"; closeModal(); render(); }
+}
+if (TX_ON()) {
+  try { const q = new URLSearchParams(location.search); if (q.get("open")) { history.replaceState(null, "", location.pathname + location.hash); setTimeout(() => pushOpen(q), 0); } } catch (e) {}
+  if ("serviceWorker" in navigator) navigator.serviceWorker.addEventListener("message", (e) => { const u = e.data && e.data.gicOpen; if (u) { try { pushOpen(new URL(u).searchParams); } catch (err) {} } });
 }
 
 // ---------- CSV export ----------

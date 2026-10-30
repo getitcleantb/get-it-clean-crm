@@ -1,7 +1,7 @@
 // Keeps the CRM opening fast and working with a weak signal. The site's own files are fetched fresh when online
 // (so updates show on the next open) and come from this cache when offline. Your data isn't cached here;
 // Firebase keeps its own copy on the device.
-const CACHE = "gic-crm-b3c7756c13b4";
+const CACHE = "gic-crm-ee6f4514c31a";
 const SHELL = ["./", "./index.html", "./fb.js", "./config.js", "./manifest.webmanifest", "./icons/icon-192.png", "./icons/apple-touch-icon.png"];
 const CDN = /^https:\/\/(cdnjs\.cloudflare\.com|fonts\.googleapis\.com|fonts\.gstatic\.com)\//;
 self.addEventListener("install", (e) => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())); });
@@ -16,4 +16,21 @@ self.addEventListener("fetch", (e) => {
     // PDF and font libraries: use the saved copy, refresh it in the background
     e.respondWith(caches.open(CACHE).then(c => c.match(req).then(hit => { const net = fetch(req).then(res => { if (res.ok || res.type === "opaque") c.put(req, res.clone()); return res; }).catch(() => hit); return hit || net; })));
   }
+});
+// Notifications (Settings > Notifications): a new text or a closed deal, sent by the texting script through Firebase
+// Cloud Messaging. Every push shows one (an iPhone stops delivering them to a site that doesn't). Tapping it opens the
+// CRM on that conversation or lead: the open CRM if there is one, a new window if not.
+self.addEventListener("push", (e) => {
+  let p = {}; try { p = e.data ? e.data.json() : {}; } catch (err) { p = {}; }
+  const n = p.notification || {}, d = p.data || {};
+  e.waitUntil(self.registration.showNotification(String(d.title || n.title || "Get It Clean CRM"), { body: String(d.body || n.body || ""), icon: "icons/icon-192.png", data: { link: String(d.link || "./") } }));
+});
+self.addEventListener("notificationclick", (e) => {
+  e.notification.close();
+  const scope = self.registration.scope, url = new URL((e.notification.data && e.notification.data.link) || "./", scope).href;
+  e.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(cs => {
+    const c = cs.find(x => x.url.startsWith(scope));
+    if (c) { c.postMessage({ gicOpen: url }); return c.focus(); }
+    return self.clients.openWindow(url);
+  }));
 });
