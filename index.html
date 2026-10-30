@@ -1919,7 +1919,7 @@ VIEWS.today = () => {
   return `
   ${pageHead(`${greeting()}, Elias`, new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }), `<button class="btn hide-mob" data-act="new-lead">+ New lead</button><button class="btn primary" data-act="new-quote">+ New quote</button>`)}
   ${noDbBanner()}
-  ${vacIsOn() ? `<div class="banner warn spread"><span>Vacation mode is on: no email blasts, text blasts or drip messages are going out. (The HOA follow-up emails Claude sends still go unless you ask Claude to pause them.)</span><button class="btn sm" data-nav="email">Turn it off</button></div>` : ""}
+  ${vacIsOn() ? `<div class="banner warn spread"><span>Vacation mode is on: no email blasts, text blasts, reminders, re-clean texts or drip messages are going out. (The HOA follow-up emails Claude sends still go unless you ask Claude to pause them.)</span><button class="btn sm" data-nav="email">Turn it off</button></div>` : ""}
   ${kpiStrip([["Paid this month", money(k.monthRev, k.cts), `${money(k.ytdRev, k.cts)} this year`], ["Jobs accepted", money(k.accV), `${plural(k.acc.length, "job")} waiting for completion`], ["Open quotes", money(k.openQv, k.cts), `${plural(k.openQ.length, "quote")} out`], ["Jobs completed", money(k.owedV, k.cts), `${[k.owedInv.length ? plural(k.owedInv.length, "invoice") : "", k.owedJobs.length || !k.owedInv.length ? plural(k.owedJobs.length, "job") : ""].filter(Boolean).join(", ")} waiting on payment`]])}
   <div class="today-grid">
     <div class="col-stack">
@@ -5813,7 +5813,7 @@ function vacRowHTML() {
   if (!BL_ON()) return "";
   const on = vacOn(), own = canEditBlast(), since = on && S.vacation.at ? fmtD(ymd(new Date(S.vacation.at)), { weekday: "short", month: "short", day: "numeric" }) : "";
   const sw = `<button class="switch" role="switch" data-act="vac-toggle" aria-checked="${on}" aria-label="Vacation mode"${own && !vacBusy ? "" : " disabled"}><span class="knob" aria-hidden="true"></span></button>`;
-  return `<div class="vac${on ? " on" : ""}" role="group" aria-label="Vacation mode"><div class="vac-t"><b>Vacation mode${on ? ` is on${since ? ` since ${esc(since)}` : ""}` : ""}</b><span class="note">${on ? "No email blasts, text blasts or drip messages go out. Emails and texts you send yourself still go." : "Turn it on before you go away: every email blast, text blast and drip message stops until you turn it off."} ${VAC_HOA}${own ? "" : " Only Elias can change it."}</span></div>${sw}</div>`;
+  return `<div class="vac${on ? " on" : ""}" role="group" aria-label="Vacation mode"><div class="vac-t"><b>Vacation mode${on ? ` is on${since ? ` since ${esc(since)}` : ""}` : ""}</b><span class="note">${on ? "No email blasts, text blasts, drip messages, appointment reminders or re-clean texts go out. Emails and texts you send yourself still go." : "Your off switch for automatic messages: every email blast, text blast, drip message, appointment reminder and re-clean text stops until you turn it off."} ${VAC_HOA}${own ? "" : " Only Elias can change it."}</span></div>${sw}</div>`;
 }
 // whether the database rules that keep blasts owner-only are published (an old set doesn't let anyone read rulesv).
 // Checked again on Settings > Email blasts and before Start, so publishing them shows without a reload.
@@ -8797,8 +8797,10 @@ function textSender(PROJECT, VERSION, fsKit) {
     const sw = F.get("settings/blast-autotext");
     if (!sw || sw.kind !== "autotext" || (sw.reminders !== true && sw.reclean !== true)) { st.autoErr = ""; return; }
     const main = F.get("settings/main") || {}; st.autoErr = "";
+    // vacation mode (Email & Texts) stops these too
+    const vac = F.get("settings/blast-pause"); if (vac && vac.kind === "pause" && vac.on === true) return;
     if (sw.reminders === true && main.reminders) reminders(cfg, st, now, ctx, main.reminders);
-    if (sw.reclean === true && main.reclean) { const vac = F.get("settings/blast-pause"); if (!(vac && vac.kind === "pause" && vac.on === true)) reclean(cfg, st, now, ctx, main.reclean, sw); }
+    if (sw.reclean === true && main.reclean) reclean(cfg, st, now, ctx, main.reclean, sw);
   }
   // the business calendar from an hour ago to 3 days out, as Google has it (a booking can be dragged there): the CRM's
   // bookings (their event ids are the job's id in hex) → their Eastern start. null when the calendar can't be read.
@@ -9044,6 +9046,7 @@ const TEXT_MANIFEST = JSON.stringify({ timeZone: "America/New_York", runtimeVers
 //   re-clean: from a customer's latest paid job, 6 months later for window cleaning and 10 months for other jobs (at
 //     10 AM), then every 3 weeks until they reply, text STOP, book again or are marked do not contact. Only the ones that
 //     come due after it's turned on; each ends with the STOP line.
+// Vacation mode (settings/blast-pause) stops both, like every blast and drip (elias, 2026-10-29: one off switch).
 // The wording lives with the other messages in settings/main (reminders, reclean): Settings > Follow-ups.
 
 // what the CRM and the texting script both work out (the script gets a copy of this function's code)
@@ -9127,7 +9130,7 @@ function autoTopHTML() {
   const own = canEditBlast(), sv = S.textSender || {}, err = sv.autoError ? `<div class="banner warn">${esc(sv.autoError)}</div>` : "";
   const ready = autoReady() ? "" : `<p class="note">To send these by themselves, the texting script needs its new code first: Settings > Texting, steps 4 and 5. Until then they can't be turned on.</p>`;
   return `<div class="panel-h"><h2>Automatic texts</h2></div>
-    <p class="note">These go out by themselves from your business number, between 8 AM and 8 PM, only while they're on. ${own ? "Read the texts below first. Nothing goes out until you turn it on here." : "Only Elias can turn them on."}</p>
+    <p class="note">These go out by themselves from your business number, between 8 AM and 8 PM, only while they're on. Vacation mode at the top of Email & Texts stops them too, along with every blast. ${own ? "Read the texts below first. Nothing goes out until you turn it on here." : "Only Elias can turn them on."}</p>
     ${autoSwitch("reminders", "Appointment reminders")}${autoSwitch("reclean", "Re-clean texts")}${ready}${err}`;
 }
 function autoTopRefresh() { const el = $("#auto-top"); if (el && S.view === "settings" && S.setTab === "drips") el.innerHTML = autoTopHTML(); }
