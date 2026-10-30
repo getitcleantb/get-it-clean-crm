@@ -7965,7 +7965,7 @@ function textBlastsHTML() {
 // the blast being edited
 let TB = null; const TBP = { pick: new Set(), q: "", confirm: "", saving: false };
 const TB_START = "Hi {first}, it's Elias with Get It Clean Tampa Bay. ";
-function newTextBlast() { return { id: "", kind: "textblast", name: "", status: "draft", body: TB_START, recipients: [], perHour: 20, start: "10:00", end: "18:00", days: [1, 2, 3, 4, 5, 6], startDate: today() }; }
+function newTextBlast() { return { id: "", kind: "textblast", name: "", status: "draft", body: TB_START, recipients: [], svc: {}, perHour: 20, start: "10:00", end: "18:00", days: [1, 2, 3, 4, 5, 6], startDate: today() }; }
 // why a lead can't be picked: no US number, an outreach contact, do not contact, a wrong number, one you contact
 // yourself, a number that texted STOP (or may have asked to stop), or Kylemont. Every contact with the same number counts:
 // a do not contact on one of them keeps the number out.
@@ -7982,16 +7982,45 @@ function tbWhy(l) {
   return "";
 }
 const tbPickable = (l) => !tbWhy(l);
+// Services (elias, 2026-10-30): a blast can take in only people with some services and leave out people with others
+// ("only window cleaning, not driveways"). A person's services are the ones on their jobs, accepted estimates and
+// invoices, and their Services wanted, named as on the Money tab. TB.svc = { "Window cleaning": "in", Driveway: "out" }.
+const TB_SVC = [["Paver sealing", /seal/i]].concat(SVC_TAGS.map(([n, re]) => [n === "Windows" ? "Window cleaning" : n, re]));
+const tbTags = (x) => { const t = String(x || "").trim(); if (!t) return []; const hit = TB_SVC.filter(([, re]) => re.test(t)).map(([n]) => n); return hit.length ? hit : [t.charAt(0).toUpperCase() + t.slice(1)]; };
+let tbTagCache = null;
+function tbTagMap() {
+  if (tbTagCache && tbTagCache.l === S.leads && tbTagCache.j === S.jobs && tbTagCache.q === S.quotes) return tbTagCache.m;
+  const m = {}, add = (id, x) => { if (!id) return; const set = m[id] || (m[id] = new Set()); tbTags(x).forEach(t => set.add(t)); };
+  S.leads.forEach(l => (l.services || []).forEach(x => add(l.id, x)));
+  S.jobs.forEach(j => { if (j.kind === "job" && j.status !== "canceled" && j.service) add(j.leadId, j.service); });
+  S.quotes.forEach(q => { if (q.status === "accepted" || isInvoice(q)) (q.items || []).forEach(it => add(q.leadId, it.service)); });
+  tbTagCache = { l: S.leads, j: S.jobs, q: S.quotes, m }; return m;
+}
+const tbSvcOn = () => { const sv = (TB && TB.svc) || {}; return { ins: Object.keys(sv).filter(k => sv[k] === "in"), outs: Object.keys(sv).filter(k => sv[k] === "out") }; };
+function tbSvcOk(l) {
+  const { ins, outs } = tbSvcOn(); if (!ins.length && !outs.length) return true;
+  const t = tbTagMap()[l.id] || new Set();
+  return (!ins.length || ins.some(k => t.has(k))) && !outs.some(k => t.has(k));
+}
+const tbSvcNote = () => { const { ins, outs } = tbSvcOn(); return [ins.length ? "only " + ins.join(" or ") : "", outs.length ? "not " + outs.join(" or ") : ""].filter(Boolean).join(", "); };
+function tbSvcHTML() {
+  const m = tbTagMap(), n = {}, sv = TB.svc || {};
+  leadsOnly().filter(l => leadPhone(l) && !isKylemont(l)).forEach(l => (m[l.id] || []).forEach(t => { n[t] = (n[t] || 0) + 1; }));
+  const names = [...new Set(Object.keys(n).sort((a, b) => n[b] - n[a] || a.localeCompare(b)).concat(Object.keys(sv)))];
+  if (!names.length) return "";
+  return `<div class="note">Services: tap one once to include only people who had or want it, again to exclude them, again to clear.</div>
+    <div class="row" style="flex-wrap:wrap;margin-top:6px">${names.map(x => { const st = sv[x] || ""; return `<button class="btn sm${st ? "" : " ghost"}" data-act="tb-svc" data-s="${esc(x)}" aria-pressed="${!!st}">${st === "in" ? `<span class="pill s-scheduled">Include</span> ` : st === "out" ? `<span class="pill over">Exclude</span> ` : ""}${esc(x)} <span class="note">${n[x] || 0}</span></button>`; }).join("")}</div>`;
+}
 function tbRecipients(ids) {
   const seen = new Set(), out = [];
   // leads: everyone with the number, so the script checks each of them again before it sends
-  ids.map(id => leadById(id)).filter(l => l && tbPickable(l)).forEach(l => { const p = leadPhone(l), k = pkey(p); if (seen.has(k)) return; seen.add(k); out.push({ k, phone: p, leadId: l.id, leads: [...new Set([l.id].concat(txLeadsFor(p).map(x => x.id)))].slice(0, 10), first: firstName(l), place: place(l) }); });
+  ids.map(id => leadById(id)).filter(l => l && tbPickable(l) && tbSvcOk(l)).forEach(l => { const p = leadPhone(l), k = pkey(p); if (seen.has(k)) return; seen.add(k); out.push({ k, phone: p, leadId: l.id, leads: [...new Set([l.id].concat(txLeadsFor(p).map(x => x.id)))].slice(0, 10), first: firstName(l), place: place(l) }); });
   return out;
 }
 const tbLive = () => !!(TB && TB.id && TB.status && TB.status !== "draft");
 function openTextBlast(b) {
   if (!TX_ON()) return;
-  TB = JSON.parse(JSON.stringify(b || newTextBlast())); if (!Array.isArray(TB.days)) TB.days = [1, 2, 3, 4, 5, 6];
+  TB = JSON.parse(JSON.stringify(b || newTextBlast())); if (!Array.isArray(TB.days)) TB.days = [1, 2, 3, 4, 5, 6]; if (!TB.svc || typeof TB.svc !== "object") TB.svc = {};
   TBP.pick = new Set((TB.recipients || []).map(r => r.leadId)); TBP.q = ""; TBP.confirm = ""; TBP.saving = false; S.dirty = false;
   showModal(tbHTML(), true); tbRefresh();
 }
@@ -8006,6 +8035,7 @@ function tbHTML() {
     <div class="tm-msgs short"><div class="tm-b out"><div class="tm-txt" id="tb-prev"></div><div class="tm-meta" id="tb-parts"></div></div></div>
     <section class="panel flush"><div class="panel-h"><h2>Who gets it</h2><span class="pill" id="tb-count"></span></div>
       ${own && !live ? `<div class="pad row"><button class="btn sm" data-act="tb-quick" data-k="cust">Past customers</button><button class="btn sm" data-act="tb-quick" data-k="open">Open leads</button><button class="btn sm" data-act="tb-quick" data-k="lost">Lost leads</button><button class="btn sm" data-act="tb-quick" data-k="all">Everyone</button><button class="btn sm ghost" data-act="tb-quick" data-k="none">Clear</button></div>
+      <div class="pad" style="padding-top:0" id="tb-svc"></div>
       <div class="pad" style="padding-top:0"><input type="search" id="tb-q" placeholder="Search to pick someone…" value="${esc(TBP.q)}" aria-label="Search leads"></div>` : ""}
       <div id="tb-who"></div></section>
     <section class="panel"><div class="panel-h"><h2>When</h2></div><div class="form">
@@ -8029,7 +8059,7 @@ function tbRead() {
 }
 function tbCandidates() {
   const q = TBP.q.trim().toLowerCase(), qd = digits(q);
-  return leadsOnly().filter(l => leadPhone(l) && !isKylemont(l)).filter(l => !q || TBP.pick.has(l.id) || [l.name, l.company, l.city].join(" ").toLowerCase().includes(q) || (qd.length >= 3 && digits(l.phone).includes(qd)))
+  return leadsOnly().filter(l => leadPhone(l) && !isKylemont(l) && tbSvcOk(l)).filter(l => !q || TBP.pick.has(l.id) || [l.name, l.company, l.city].join(" ").toLowerCase().includes(q) || (qd.length >= 3 && digits(l.phone).includes(qd)))
     .sort((a, b) => (TBP.pick.has(b.id) - TBP.pick.has(a.id)) || leadName(a).localeCompare(leadName(b)));
 }
 const hm = (s) => { const m = /^(\d\d):(\d\d)/.exec(String(s || "")); return m ? +m[1] * 60 + +m[2] : 0; };
@@ -8043,10 +8073,11 @@ function tbRefresh() {
   const pv = $("#tb-prev"); if (pv) pv.textContent = tbFill(TB.body, first);
   const pp = $("#tb-parts"); if (pp) { const p = smsParts(tbFill(TB.body, first)), all = rs.reduce((a, r) => a + smsParts(tbFill(TB.body, r)).parts, 0); pp.textContent = `${p.n} characters · counts as ${plural(p.parts, "text")}${rs.length > 1 ? " for the first one" : ""}${rs.length ? ` · about ${money(all * 0.01, true)} for all ${rs.length}` : ""}${p.plain ? "" : " · an emoji or curly quote makes each text shorter"}`; }
   const ct = $("#tb-count"); if (ct) ct.textContent = plural(rs.length, "number");
+  const sb = $("#tb-svc"); if (sb) sb.innerHTML = tbSvcHTML();
   const who = $("#tb-who");
   if (who) {
-    if (live || !own) { const done = txRun(TB).done || {}; who.innerHTML = rs.length ? `<div class="list tb-list">${rs.slice(0, 400).map(r => { const d = String(done[r.k] || ""), l = leadById(r.leadId); return `<div class="item static"><div class="main-col"><span class="t">${esc(l ? leadName(l) : r.first)}</span><span class="s">${esc(fmtPhone(r.phone))}</span></div><div class="r">${d === "sent" ? '<span class="pill s-scheduled">Sent</span>' : d === "failed" ? `<span class="pill over">Didn't go</span>` : d.startsWith("skipped") ? `<span class="pill">Skipped${d.length > 8 ? ": " + esc(d.slice(8)) : ""}</span>` : '<span class="note">Waiting</span>'}</div></div>`; }).join("")}${rs.length > 400 ? `<div class="item static note">And ${rs.length - 400} more.</div>` : ""}</div>` : `<div class="pad note">Nobody picked.</div>`; }
-    else { const cand = tbCandidates(); who.innerHTML = `<div class="list tb-list">${cand.slice(0, 300).map(l => { const why = tbWhy(l); return `<label class="item static"><input type="checkbox" data-tb-pick="${esc(l.id)}" ${TBP.pick.has(l.id) && !why ? "checked" : ""} ${why ? "disabled" : ""}><div class="main-col"><span class="t">${esc(leadName(l))}</span><span class="s">${esc([fmtPhone(leadPhone(l)), STAGE_LABEL[l.stage] || "", l.city].filter(Boolean).join(" · "))}</span></div>${why ? `<div class="r"><span class="pill">${esc(why)}</span></div>` : ""}</label>`; }).join("")}${cand.length > 300 ? `<div class="item static note">${cand.length - 300} more. Search to find them.</div>` : ""}${!cand.length ? `<div class="pad note">No leads with a phone number match.</div>` : ""}</div>`; }
+    if (live || !own) { const done = txRun(TB).done || {}, sn = tbSvcNote(); who.innerHTML = (sn ? `<p class="pad note">Services: ${esc(sn)}.</p>` : "") + (rs.length ? `<div class="list tb-list">${rs.slice(0, 400).map(r => { const d = String(done[r.k] || ""), l = leadById(r.leadId); return `<div class="item static"><div class="main-col"><span class="t">${esc(l ? leadName(l) : r.first)}</span><span class="s">${esc(fmtPhone(r.phone))}</span></div><div class="r">${d === "sent" ? '<span class="pill s-scheduled">Sent</span>' : d === "failed" ? `<span class="pill over">Didn't go</span>` : d.startsWith("skipped") ? `<span class="pill">Skipped${d.length > 8 ? ": " + esc(d.slice(8)) : ""}</span>` : '<span class="note">Waiting</span>'}</div></div>`; }).join("")}${rs.length > 400 ? `<div class="item static note">And ${rs.length - 400} more.</div>` : ""}</div>` : `<div class="pad note">Nobody picked.</div>`); }
+    else { const cand = tbCandidates(); who.innerHTML = `<div class="list tb-list">${cand.slice(0, 300).map(l => { const why = tbWhy(l); return `<label class="item static"><input type="checkbox" data-tb-pick="${esc(l.id)}" ${TBP.pick.has(l.id) && !why ? "checked" : ""} ${why ? "disabled" : ""}><div class="main-col"><span class="t">${esc(leadName(l))}</span><span class="s">${esc([fmtPhone(leadPhone(l)), STAGE_LABEL[l.stage] || "", l.city, [...(tbTagMap()[l.id] || [])].join(", ")].filter(Boolean).join(" · "))}</span></div>${why ? `<div class="r"><span class="pill">${esc(why)}</span></div>` : ""}</label>`; }).join("")}${cand.length > 300 ? `<div class="item static note">${cand.length - 300} more. Search to find them.</div>` : ""}${!cand.length ? `<div class="pad note">${tbSvcNote() ? "Nobody with a phone number matches these services." : "No leads with a phone number match."}</div>` : ""}</div>`; }
   }
   const wh = $("#tb-when"); if (wh) { const hrs = Math.max(0, hm(TB.end) - hm(TB.start)) / 60, perDay = Math.max(1, Math.floor((TB.perHour || 20) * hrs)), days = Math.ceil(rs.length / perDay); wh.textContent = rs.length && hrs ? `About ${perDay} a day, so ${rs.length === 1 ? "it takes" : `${rs.length} numbers take`} about ${plural(Math.max(1, days), "sending day")}. Times are Eastern.` : "Times are Eastern."; }
   const prog = $("#tb-progress"); if (prog) { const n = txNums(TB); prog.innerHTML = TB.id && TB.status !== "draft" ? `<p class="note">${n.sent} sent${n.failed ? `, ${n.failed} didn't go` : ""}${n.skipped ? `, ${n.skipped} skipped` : ""}, ${n.left} waiting.${TB.status === "paused" && TB.vacationPaused ? " Paused while vacation mode is on." : ""}</p>` : ""; }
@@ -8078,7 +8109,7 @@ async function tbSave(extra) {
   const cur = isNew ? null : S.textBlasts.find(b => b.id === id);
   if (!isNew && !cur) { toast("This blast was deleted on another device."); return false; }
   if (cur && (cur.status === "stopped" || cur.status === "finished")) { toast(cur.status === "finished" ? "This blast has finished." : "This blast was stopped on another device."); return false; }
-  const doc = { kind: "textblast", name: d.name, perHour: d.perHour, start: d.start, end: d.end, days: d.days.slice().sort(), startDate: d.startDate, updatedAt: now };
+  const doc = { kind: "textblast", name: d.name, svc: d.svc || {}, perHour: d.perHour, start: d.start, end: d.end, days: d.days.slice().sort(), startDate: d.startDate, updatedAt: now };
   // the text and who gets it are fixed once it starts (its progress is kept by number)
   if (!cur || cur.status === "draft") { doc.body = d.body.replace(/\s+$/, ""); doc.recipients = tbRecipients([...TBP.pick]); }
   if (isNew) { doc.createdAt = now; doc.status = "draft"; }
@@ -8188,7 +8219,13 @@ Object.assign(EXTRA_ACTS, {
   "tb-open": (t) => { const b = S.textBlasts.find(x => x.id === t.dataset.id); if (b) openTextBlast(b); },
   "tb-quick": (t) => {
     const k = t.dataset.k, f = { cust: l => ["paid", "completed"].includes(l.stage), open: l => OPEN_STAGES.includes(l.stage) && !["paid", "completed"].includes(l.stage), lost: l => l.stage === "lost", all: () => true }[k];
-    tbRead(); if (k === "none") TBP.pick.clear(); else if (f) leadsOnly().filter(l => tbPickable(l) && f(l)).forEach(l => TBP.pick.add(l.id));
+    tbRead(); if (k === "none") TBP.pick.clear(); else if (f) leadsOnly().filter(l => tbPickable(l) && tbSvcOk(l) && f(l)).forEach(l => TBP.pick.add(l.id));
+    S.dirty = true; tbRefresh();
+  },
+  "tb-svc": (t) => {
+    if (tbLive() || !canEditBlast()) return;
+    tbRead(); const k = t.dataset.s, cur = (TB.svc || {})[k] || "", next = cur === "" ? "in" : cur === "in" ? "out" : "";
+    TB.svc = Object.assign({}, TB.svc || {}); if (next) TB.svc[k] = next; else delete TB.svc[k];
     S.dirty = true; tbRefresh();
   },
   "tb-save": async () => { try { if (await tbSave()) toast(tbLive() ? "Saved. The next texts use these times." : "Saved. Nothing goes out until you tap Start."); } catch (e) {} },
