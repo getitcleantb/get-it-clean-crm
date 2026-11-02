@@ -7699,7 +7699,7 @@ function ibGo(id, leadId) {
 // with "Reply STOP to opt out." Blasts only send 8 AM to 8 PM Eastern (Florida's limits), and none in vacation mode.
 const TX_ON = () => STANDALONE && !!window.GIC;
 // 3: appointment reminders and re-clean texts (autotext.js). Texting works with 2; only the automatic texts need 3.
-const TEXT_SENDER_VERSION = 11, TEXT_SENDER_MIN = 2;
+const TEXT_SENDER_VERSION = 12, TEXT_SENDER_MIN = 2;
 const TX_STOP_LINE = "Reply STOP to opt out.";
 const TX_MAX = 1500; // characters in one text (Quo takes 1,600)
 S.texts = []; S.textBlasts = []; S.textRuns = {}; S.textSender = null; S.textOut = {}; S.textKey = null; S.textRulesOk = null;
@@ -9023,8 +9023,8 @@ function textSender(PROJECT, VERSION, fsKit) {
         const names = {};
         ctx.news.forEach(n => { if (!(n.p in names)) names[n.p] = whoIs(n.p); send("texts", "Text from " + names[n.p], n.body || (n.media ? "Sent a picture" : "(no text)"), "./?open=text&p=" + encodeURIComponent(n.p)); });
       }
-      const seen = prop("won", {}), cut = now.getTime() - DAY; let top = since;
-      F.query("leads", [["won.at", "GREATER_THAN", new Date(Date.parse(since) - 10 * 60000).toISOString()]], 50, ["name", "company", "stage", "won", "value", "services"])
+      const seen = prop("won", {}), low = new Date(Date.parse(since) - 10 * 60000).toISOString(); let top = since;
+      F.query("leads", [["won.at", "GREATER_THAN", low]], 50, ["name", "company", "stage", "won", "value", "services"])
         .sort((a, b) => String(a.won.at).localeCompare(String(b.won.at))).forEach(l => {
           const k = l.id + "|" + l.won.at; if (String(l.won.at) > top) top = String(l.won.at);
           if (seen[k]) return; seen[k] = now.getTime();
@@ -9032,7 +9032,8 @@ function textSender(PROJECT, VERSION, fsKit) {
           const amt = +l.value > 0 ? "$" + Math.round(+l.value).toLocaleString("en-US") : "", what = [].concat(l.services || []).filter(x => typeof x === "string").slice(0, 2).join(", ");
           send("deals", (l.won.who ? l.won.who + " closed a deal" : "A deal closed"), [l.name || l.company || "A customer", what, amt].filter(Boolean).join(" · "), "./?open=lead&id=" + encodeURIComponent(l.id));
         });
-      Object.keys(seen).forEach(k => { if (seen[k] < cut) delete seen[k]; }); setProp("won", seen);
+      // a deal is remembered for as long as the search can still find it, so the newest one isn't sent again a day later
+      Object.keys(seen).forEach(k => { if (k.slice(k.indexOf("|") + 1) <= low) delete seen[k]; }); setProp("won", seen);
       st.wonAt = top > now.toISOString() ? now.toISOString() : top;
       if (p.test && p.test.at && p.test.at !== st.pushTest) {
         st.pushTest = p.test.at; st.pushErr = "";
