@@ -1933,7 +1933,7 @@ function kpiData() {
   // the same estimates the Quotes tab counts as Accepted: said yes, job not paid yet
   const acc = acceptedWaiting(), accV = sum(acc, q => q.total);
   // estimates only: an invoice is for a job already won, not a quote (as on the Quotes tab)
-  const openQ = S.quotes.filter(q => !isInvoice(q) && (q.status === "sent" || q.status === "draft"));
+  const openQ = S.quotes.filter(q => !isInvoice(q) && q.status === "sent"); // only estimates sent out, the same as Out for decision on Quotes; drafts stay out
   const openQv = sum(openQ, q => q.total);
   // waiting on payment (elias, 2026-10-25, in place of New leads waiting on first contact): invoices sent and not marked
   // paid, by their totals ("I sent an invoice to Ken and John ... I would like that invoice, the total to pop up"), and
