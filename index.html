@@ -2780,11 +2780,11 @@ VIEWS.quotes = () => {
   const ests = qs.filter(q => !isInvoice(q)); // invoices are for jobs already won, so they stay out of the estimate numbers
   const sent = ests.filter(q => q.status === "sent"), acc = ests.filter(q => q.status === "accepted"), dec = ests.filter(q => q.status === "declined");
   // Accepted counts the ones still waiting on the job, the same as Today; the close rate counts every yes
-  const wait = acceptedWaiting(), jobPaid = new Set(acc.filter(q => !wait.includes(q)).map(q => q.id));
+  const em = estimateJobs(), wait = acceptedWaiting(), jobPaid = new Set(acc.filter(q => estimateState(q, em) === "paid").map(q => q.id)), owed = acc.filter(q => estimateState(q, em) === "done").length;
   const decided = acc.length + dec.length;
   return `${pageHead("Quotes", "Estimates and invoices on your Get It Clean template", `<button class="btn primary" data-act="new-quote">+ New quote</button>`)}
   ${noDbBanner()}
-  ${kpiStrip([["Out for decision", money(sum(sent, q => q.total)), plural(sent.length, "quote") + " sent"], ["Accepted", money(sum(wait, q => q.total)), `${plural(wait.length, "quote")} waiting for completion${jobPaid.size ? ` · ${jobPaid.size} paid` : ""}`], ["Close rate", decided ? Math.round(acc.length / decided * 100) + "%" : "–", decided ? `${acc.length} of ${decided} decided` : "Shows once quotes are decided"], ["Average estimate", ests.length ? money(sum(ests, q => q.total) / ests.length) : "–", plural(ests.length, "estimate") + (qs.length > ests.length ? ` · ${plural(qs.length - ests.length, "invoice")}` : "")]])}
+  ${kpiStrip([["Out for decision", money(sum(sent, q => q.total)), plural(sent.length, "quote") + " sent"], ["Accepted", money(sum(wait, q => q.total)), `${plural(wait.length, "quote")} waiting for completion${owed ? ` · ${owed} waiting on payment` : ""}${jobPaid.size ? ` · ${jobPaid.size} paid` : ""}`], ["Close rate", decided ? Math.round(acc.length / decided * 100) + "%" : "–", decided ? `${acc.length} of ${decided} decided` : "Shows once quotes are decided"], ["Average estimate", ests.length ? money(sum(ests, q => q.total) / ests.length) : "–", plural(ests.length, "estimate") + (qs.length > ests.length ? ` · ${plural(qs.length - ests.length, "invoice")}` : "")]])}
   <section class="panel flush">${qs.length ? `<div class="list">${qs.map(q => quoteRow(q, jobPaid)).join("")}</div>` : `<div class="empty">No quotes yet. “+ New quote” builds one on your estimate template, with your price book filling in the prices.</div>`}</section>`;
 };
 let QD = null; // quote draft
@@ -3508,8 +3508,17 @@ async function tieJobHere(jobId) {
   if (S.book && !S.book.saving) { S.book = null; $("#modal .sheet").innerHTML = quoteEditorHTML(); renderItems(); updatePreview(); S.dirty = false; } else syncQuoteChrome();
   schedule();
 }
-// accepted estimates whose job isn't paid yet: the Accepted number on the Quotes tab and the Jobs accepted card on Today
-function acceptedWaiting() { const m = estimateJobs(); return S.quotes.filter(q => !isInvoice(q) && q.status === "accepted" && !(m.get(q.id) && m.get(q.id).status === "paid")); }
+// where an accepted estimate's work is: "paid" (its job or an invoice for it is paid), "done" (its job is done or an
+// invoice for it is sent, so it's waiting on payment under Jobs completed on Today) or "" (still to do). An invoice is for
+// it when it was made from it or is its job's (elias, 2026-11-02: Ken / John's invoice was out and the estimate still
+// showed under Jobs accepted).
+function estimateState(q, m) {
+  const j = m.get(q.id), inv = S.quotes.filter(x => isInvoice(x) && (x.fromQuote === q.id || (j && x.jobId === j.id)));
+  if ((j && j.status === "paid") || inv.some(x => x.status === "paid")) return "paid";
+  return (j && j.status === "completed") || inv.some(x => x.status === "sent") ? "done" : "";
+}
+// accepted estimates whose job isn't done or invoiced yet: the Accepted number on the Quotes tab and the Jobs accepted card on Today
+function acceptedWaiting() { const m = estimateJobs(); return S.quotes.filter(q => !isInvoice(q) && q.status === "accepted" && !estimateState(q, m)); }
 function startBooking() {
   if (isInvoice(QD)) return;
   const l = leadById(QD.leadId);
