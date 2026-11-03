@@ -9471,19 +9471,19 @@ async function autoSave(k, on) {
 //                  (a fingerprint of what the copy shows, so one changed elsewhere catches up when it's opened), and
 //                  shareLead: who it was made for, the lead or "~" and the Bill To name (put on someone else, the old
 //                  link stops and they get a new one)
+// Nov 3 (elias): "When I ... click text invoice, it gives a link to the GitHub Get It Clean Tampa Bay CRM. I don't want
+// that. I want it to be just an image of the invoice." Quo's API still can't attach a picture, so Text invoice now makes a
+// picture of the invoice and hands it over on the device: on a phone, Send in Quo copies it and opens Quo's composer on
+// their number with the message (paste, then Send), and Share picture opens the share sheet; on a computer, Copy picture
+// or Download picture. No link is made anymore. Invoices texted before keep their link, which still opens (i.html) and
+// still follows saved changes (tiResync).
 const TI_MAX = 900000; // a Firestore document holds 1 MB
-let TI = null; // the text box: { q (the editor copy it's for), qid, key, ready, err, body, sig }
-// a key per invoice until it's saved on it, links being made (true, then the box for it), deleted invoices, and saves
-// made while a link was being made
-const tiKeys = {}, tiBusy = {}, tiGone = new Set(), tiAgain = new Set();
+let TI = null; // the text box: { q (the editor copy it's for), qid, ready, err, body, sig, file (the picture), url (to show it) }
+// keys of links from before (none are made now), pictures being made, and deleted invoices
+const tiKeys = {}, tiBusy = {}, tiGone = new Set();
 ["ti-body", "ti-phone"].forEach(id => LIVE_IDS.add(id)); // (typing a text isn't an unsaved change to the invoice)
-// (never ending in "-": a phone's link finder can leave that off, and the link wouldn't open)
-const tiKey = () => { let k; do { const b = crypto.getRandomValues(new Uint8Array(24)); k = btoa(String.fromCharCode(...b)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); } while (k.endsWith("-")); return k; };
-// the view-only page, next to the CRM's own (https://getitcleantb.github.io/get-it-clean-crm/i.html#k=...)
-const tiLink = (k) => new URL("i.html#k=" + k, location.href.split("#")[0].split("?")[0].replace(/[^/]*$/, "")).href;
 // who it goes to: the number on their lead (not one marked wrong), else one typed in Bill To
 const tiPhone = (q, l) => (l && !l.phoneBad && leadPhone(l)) || phonesOf((q.billTo || []).join(" ")).find(p => !(l && l.phoneBad && p === leadPhone(l))) || "";
-const tiSmsNum = (p) => digits(p).replace(/^1(?=\d{10}$)/, ""); // as a Messages link: ten digits, as on a lead
 // what the copy shows: if any of it changes after the box opens, the box asks to start again
 // (the same for the editor's copy and the saved one, whatever order the database gives their fields in)
 const tiSig = (q) => JSON.stringify([q.leadId || "", q.docType || "", q.number || "", q.date || "", (q.billTo || []).map(String), (q.items || []).filter(isLine).map(i => [String(i.service || ""), String(i.description || ""), String(i.sqft || ""), String(i.price ?? ""), String(i.qty ?? "")]), q.notes || ""]);
@@ -9503,12 +9503,10 @@ function tiSame(was, q) {
   const l = leadById(q.leadId);
   return !!l && [l.name, l.company].some(n => n && "~" + tiNorm(n) === was);
 }
-const tiRulesMsg = () => txOwner() ? "Your database rules need an update before invoice links work: open Settings > Texting, step 2, copy the rules and publish them. Then try again."
-  : "Elias needs to update the database rules (Settings > Texting, step 2) before invoice links work.";
 const TI_CHANGED = "The invoice changed. Tap Text invoice again to text the new one.";
-function tiBody(q, l, link) {
+function tiBody(q, l) {
   const first = (l && String(l.name || "").trim().split(/\s+/)[0]) || "there", tot = money(quoteTotals(q).total, true);
-  return `Hi ${first}, this is ${BUSINESS.owner} with ${BUSINESS.name}. Here's your ${q.status === "paid" ? "paid invoice" : "invoice"} for ${tot}: ${link}\n\nThank you for your business!`;
+  return `Hi ${first}, this is ${BUSINESS.owner} with ${BUSINESS.name}. Here's your ${q.status === "paid" ? "paid invoice" : "invoice"} for ${tot}.\n\nThank you for your business!`;
 }
 // a picture of the invoice small enough to keep (the same one Picture (to text) makes, a little lighter)
 async function tiPicture(q) {
@@ -9543,88 +9541,87 @@ async function tiCurrentKey(snap) {
 }
 // the box is out of date: something on the invoice changed since it opened (saved or not)
 function tiStale() { readQuoteHeader(); return S.dirty || tiSig(QD) !== TI.sig; }
-function tiDrop(msg) { TI = null; tiRefresh(); if (msg) toast(msg, 6000); }
+function tiDrop(msg) { if (TI && TI.url) URL.revokeObjectURL(TI.url); TI = null; tiRefresh(); if (msg) toast(msg, 6000); }
+const tiTouch = () => { try { return matchMedia("(pointer: coarse)").matches; } catch (e) { return false; } };
+const tiCanShare = () => { try { return !!(TI && TI.file && navigator.canShare && navigator.canShare({ files: [TI.file] })); } catch (e) { return false; } };
+// Quo's composer on their number, from the Quo number, with the message (Quo's own link for its phone app)
+const tiQuoLink = (to) => { const from = S.textSender && S.textSender.number; return `openphone://message?number=${encodeURIComponent(e164(to))}${from ? `&from=${encodeURIComponent(from)}` : ""}&text=${encodeURIComponent(TI ? TI.body : "")}`; };
 function tiGoHTML(phone) {
   const to = e164(phone), bl = to ? txBlocked(to) : "";
   if (!to) return `<p class="note">Type their cell number to text it.</p>`;
   if (bl) return `<p class="note">${esc(bl)} Don't text them from your phone either.</p>`;
-  return txCanSend() ? `<button class="btn primary" data-act="ti-send">Send text</button>`
-    : `<a class="btn primary" id="ti-sms" href="${esc(`sms:${tiSmsNum(to)}?&body=${encodeURIComponent(TI ? TI.body : "")}`)}">Open in Messages</a>`;
+  return tiTouch() ? `<a class="btn primary" id="ti-quo" href="${esc(tiQuoLink(to))}">Send in Quo</a>${tiCanShare() ? `<button class="btn" data-act="ti-share">Share picture</button>` : ""}`
+    : `<button class="btn primary" data-act="ti-copy">Copy picture</button><button class="btn" data-act="ti-dl">Download picture</button>`;
 }
 function tiBoxHTML() {
   if (!TI || !QD || TI.q !== QD) return "";
   const l = leadById(QD.leadId), ph = tiPhone(QD, l);
   const head = `<div class="row spread"><b>Text the invoice</b><button class="btn sm ghost" data-act="ti-close">Cancel</button></div>`;
   if (TI.err) return `<div class="panel stack ti-box">${head}<p class="note">${esc(TI.err)}</p></div>`;
-  if (!TI.ready) return `<div class="panel stack ti-box">${head}<p class="note">Getting the invoice link ready…</p></div>`;
+  if (!TI.ready) return `<div class="panel stack ti-box">${head}<p class="note">Making the picture of the invoice…</p></div>`;
   const where = ph ? (l && !l.phoneBad && leadPhone(l) === ph ? `The number on ${esc(leadName(l))}'s lead.` : "The number in Bill To.") + (l && l.phoneBad ? ` The one on ${esc(leadName(l))}'s lead is marked wrong.` : "")
     : l && l.phoneBad ? `The number on ${esc(leadName(l))}'s lead is marked wrong. Type the right one.` : `No cell number on ${l ? esc(leadName(l)) + "'s lead" : "this invoice"}. Type theirs.`;
+  const how = tiTouch() ? `Send in Quo copies the picture and opens Quo with this message to their number. Tap the message box, tap Paste to add the picture, then Send.${tiCanShare() ? " Share picture sends it another way (Messages, or Save Image to your photos)." : ""}`
+    : "Copy picture, then paste it into their conversation in Quo with the message. Or download it and attach it there.";
   return `<div class="panel stack ti-box">${head}
     <label class="f">To<input type="tel" id="ti-phone" value="${esc(ph ? fmtPhone(ph) : "")}" placeholder="Their cell number"></label>
     <p class="note">${where}</p>
-    <label class="f">Message<textarea id="ti-body" rows="5">${esc(TI.body)}</textarea></label>
-    <p class="note" id="ti-parts">${esc(partsNote(TI.body))}. The link opens a view-only copy of this invoice.</p>
+    <label class="f">Message<textarea id="ti-body" rows="4">${esc(TI.body)}</textarea></label>
+    <img id="ti-pic" src="${esc(TI.url)}" alt="Picture of invoice ${esc(QD.number || "")}" style="width:100%;max-width:440px;border:1px solid var(--line);border-radius:8px">
+    <p class="note">The picture of the invoice goes with the message. No link.</p>
     <div class="row" id="ti-go">${tiGoHTML(ph)}</div>
-    ${txCanSend() ? "" : `<p class="note">${esc(txWhyNot() || "Texting isn't set up yet.")} Open in Messages puts this text in your phone's Messages app to send from your own number.</p>`}
+    <p class="note" id="ti-how">${esc(how)}</p>
   </div>`;
 }
 function tiRefresh() { const b = $("#q-text"); if (b) b.innerHTML = tiBoxHTML(); }
 // the editor's status can be behind (paid on another device meanwhile)
 function tiSyncStatus() { const live = QD && tiLive(QD); if (live && live.status && live.status !== QD.status) { QD.status = live.status; syncQuoteChrome(); } }
-// a tap while its link is being made: the box for it comes back (after Cancel), and fills in when the link is ready
-function tiBusyTap(qid) {
-  const b = tiBusy[qid]; if (!b) return false;
-  if (b !== true && b.q === QD && TI !== b) { TI = b; tiRefresh(); } else toast("Still getting the invoice link ready.");
-  return true;
-}
 EXTRA_ACTS["ti-open"] = async (t) => {
   readQuoteHeader();
   const l0 = leadById(QD.leadId); if (l0 && l0.dnc) { toast(`${leadName(l0)} is marked do not contact`); return; }
-  if (QD.id && tiBusyTap(QD.id)) return;
+  if (QD.id && tiBusy[QD.id]) { toast("Still making the picture of the invoice."); return; }
   t.disabled = true;
   try {
-    // saved first: a customer typed under Customer is added (or matched), and the copy is of what's saved
+    // saved first: a customer typed under Customer is added (or matched), and the picture is of what's saved
     const q = QD;
     if (!(await saveQuote(true)) || q !== QD || !q.id || !isInvoice(q)) return;
     if (S.dirty) { toast("The invoice changed while it was saving. Tap Text invoice again."); return; }
     const qid = q.id, l = leadById(q.leadId);
     if (l && l.dnc) { toast(`${leadName(l)} is marked do not contact`); return; }
-    if (tiBusyTap(qid)) return;
+    if (tiBusy[qid]) return;
     tiBusy[qid] = true;
     try {
-      tiSyncStatus();
-      const snap = tiSnap(q), key = (await tiCurrentKey(snap)) || tiKeys[qid] || (tiKeys[qid] = tiKey());
-      if (q !== QD) return; // (the editor was closed meanwhile)
-      const mine = TI = tiBusy[qid] = { q, qid, key, ready: false, err: "", body: tiBody(snap, l, tiLink(key)), sig: tiSig(snap) }; tiRefresh();
-      // the rules that let the link open (Settings > Texting, step 2), checked first so nothing is uploaded for nothing
-      if (S.textRulesOk !== true) await txRulesCheck();
-      try { if (S.textRulesOk === false) throw new Error("rules"); await tiPublish(snap, key); mine.ready = true; }
-      catch (e) { mine.err = e.message === "rules" ? tiRulesMsg() : e.message === "save" ? "Couldn't get the link ready. Check your signal and try again." : e.message === "gone" ? "This invoice was deleted." : e.message; }
-      if (TI === mine) { tiRefresh(); const f = $("#ti-body"); if (f && mine.ready) f.focus(); }
-    } finally {
-      delete tiBusy[qid];
-      // saved again while the link was being made: the copy catches up (and the box, made for the old one, closes)
-      if (tiAgain.delete(qid) && !tiGone.has(qid)) await tiResync(QD && QD.id === qid ? QD : q);
-    }
+      tiSyncStatus(); if (TI) tiDrop();
+      const snap = tiSnap(q), mine = TI = { q, qid, ready: false, err: "", body: tiBody(snap, l), sig: tiSig(snap), file: null, url: "" }; tiRefresh();
+      try {
+        const c = await renderCanvas(2, snap), blob = await new Promise((res, rej) => c.toBlob(b => b ? res(b) : rej(new Error("Couldn't make the picture of the invoice. Try again.")), "image/png"));
+        mine.file = new File([blob], `Get It Clean invoice ${snap.number || ""}.png`.replace(/ \.png$/, ".png"), { type: "image/png" }); mine.url = URL.createObjectURL(blob); mine.ready = true;
+      } catch (e) { mine.err = (e && e.message) || "Couldn't make the picture of the invoice. Try again."; }
+      if (TI === mine) tiRefresh(); else if (mine.url) URL.revokeObjectURL(mine.url);
+    } finally { delete tiBusy[qid]; }
   } finally { t.disabled = false; }
 };
 EXTRA_ACTS["ti-close"] = () => tiDrop();
-EXTRA_ACTS["ti-send"] = async (t) => {
-  if (!TI || !TI.ready || !QD || TI.q !== QD) return;
-  // the invoice changed after the link was made (a price, the customer...): start again so the link shows what's saved
-  if (tiStale()) { tiDrop(TI_CHANGED); return; }
-  const ph = e164(($("#ti-phone") || {}).value), body = String(($("#ti-body") || {}).value || "").trim(), l = leadById(QD.leadId);
-  if (!ph) { toast("Type their cell number"); const b = $("#ti-phone"); if (b) b.focus(); return; }
-  const q = QD, qid = q.id; if (txSending.has(qid)) return; txSending.add(qid); t.disabled = true;
-  try {
-    const id = await txQueue(ph, body, { lead: l && leadPhone(l) === ph ? l : null }); if (!id) return;
-    if (TI && TI.q === q) tiDrop();
-    // a texted invoice is Sent (unless it's further along already): from the editor if it's still open on it
-    if (QD === q && $("#modal #q-lead")) { tiSyncStatus(); if ((QD.status || "draft") === "draft") await quoteStatus("sent"); } else await tiMarkSent(qid);
-    const sl = QD === q ? $("#modal #q-status-line") : null; if (sl) sl.textContent = `Text to ${fmtPhone(ph)} is on its way. It shows under Email & Texts > Texts.`;
-    toast("Invoice text queued");
-  } finally { txSending.delete(qid); t.disabled = false; }
+// sent from the phone (Quo opened with it, or shared): the invoice is Sent (unless it's further along already)
+async function tiSent(msg) {
+  const q = TI && TI.q; if (!q) return;
+  if (QD === q && $("#modal #q-lead")) { tiSyncStatus(); if ((QD.status || "draft") === "draft") await quoteStatus("sent"); } else await tiMarkSent(q.id);
+  const sl = QD === q ? $("#modal #q-status-line") : null; if (sl) sl.textContent = msg;
+}
+// checked before anything leaves: the box is for the invoice as it's saved now
+const tiOk = () => { if (!TI || !TI.ready || !QD || TI.q !== QD) return false; if (tiStale()) { tiDrop(TI_CHANGED); return false; } return true; };
+EXTRA_ACTS["ti-share"] = async () => {
+  if (!tiOk()) return;
+  try { await navigator.share({ files: [TI.file], text: TI.body }); }
+  catch (er) { if (er && er.name === "AbortError") return; toast("Couldn't open the share sheet. Use Send in Quo instead."); return; }
+  await tiSent("Shared. If you picked Save Image, attach it to the message in Quo.");
 };
+EXTRA_ACTS["ti-copy"] = async () => {
+  if (!tiOk()) return;
+  try { await navigator.clipboard.write([new ClipboardItem({ "image/png": TI.file })]); toast("Picture copied. Paste it into their conversation in Quo, with the message.", 6000); }
+  catch (er) { toast("Couldn't copy the picture here. Use Download picture instead."); }
+};
+EXTRA_ACTS["ti-dl"] = async () => { if (!tiOk()) return; await saveFile(TI.file.name, TI.file); };
 // the editor was closed while the text was saving: marked Sent from what's saved, as the Sent button does
 async function tiMarkSent(qid) {
   const q = S.quotes.find(x => x.id === qid); if (!q || (q.status || "draft") !== "draft") return;
@@ -9633,16 +9630,18 @@ async function tiMarkSent(qid) {
   const upd = { activity: activity(l, "quote", `Invoice ${q.number} sent`), updatedAt: now }; if (isOutreach(l)) Object.assign(upd, PROMOTE());
   await saveDoc("leads", l.id, upd, true);
 }
-// Open in Messages: the same check as Send text, before the phone opens Messages (so it runs first, and at once)
+// Send in Quo: the picture is copied in the tap itself (a phone only allows it then), and Quo opens as the link's own tap
 document.addEventListener("click", (e) => {
-  const a = e.target && e.target.closest && e.target.closest("#ti-sms"); if (!a) return;
-  if (!TI || !TI.ready || !QD || TI.q !== QD) { e.preventDefault(); return; }
-  if (tiStale()) { e.preventDefault(); tiDrop(TI_CHANGED); }
+  const a = e.target && e.target.closest && e.target.closest("#ti-quo"); if (!a) return;
+  if (!tiOk()) { e.preventDefault(); return; }
+  try { navigator.clipboard.write([new ClipboardItem({ "image/png": TI.file })]).catch(() => toast("Couldn't copy the picture. Use Share picture instead.", 6000)); }
+  catch (er) { toast("Couldn't copy the picture. Use Share picture instead.", 6000); }
+  tiSent("Quo opened with the message. Tap the message box, tap Paste to add the picture, then Send.");
 }, true);
-// what's typed: the Messages link, the button and the character count follow
+// what's typed: the Quo link and the buttons follow
 document.addEventListener("input", (e) => {
   if (!TI || !e.target || !["ti-body", "ti-phone"].includes(e.target.id)) return;
-  if (e.target.id === "ti-body") { TI.body = e.target.value; const p = $("#ti-parts"); if (p) p.textContent = partsNote(TI.body) + ". The link opens a view-only copy of this invoice."; const a = $("#ti-sms"); if (a) a.href = `sms:${tiSmsNum(($("#ti-phone") || {}).value)}?&body=${encodeURIComponent(TI.body)}`; }
+  if (e.target.id === "ti-body") { TI.body = e.target.value; const a = $("#ti-quo"); if (a) a.href = tiQuoLink(($("#ti-phone") || {}).value); }
   else { const g = $("#ti-go"); if (g) g.innerHTML = tiGoHTML(e.target.value); }
 });
 // a different customer or type: the box is for what was there, so it closes
@@ -9651,7 +9650,6 @@ document.addEventListener("change", (e) => { if (TI && e.target && ["q-lead", "q
 // link), put on someone else the old link stops, and a box opened before the change closes
 async function tiResync(q) {
   if (!q || !q.id || q !== QD || !isInvoice(q) || !STANDALONE || S.dirty) return;
-  if (tiBusy[q.id]) { tiAgain.add(q.id); return; } // (done once the link being made is ready)
   if (TI && TI.q === q && tiSig(q) !== TI.sig) tiDrop(TI_CHANGED);
   try { const snap = tiSnap(q), key = await tiCurrentKey(snap); if (key) await tiPublish(snap, key); } catch (e) {}
 }
