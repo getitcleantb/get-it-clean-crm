@@ -9475,7 +9475,7 @@ function pcParse(text) {
     if (iso) date = iso[0];
     else if (dm) { let y = +dm[3]; if (y < 100) y += 2000; const mo = Math.min(12, Math.max(1, +dm[1])), last = new Date(y, mo, 0).getDate(); date = `${y}-${String(mo).padStart(2, "0")}-${String(Math.min(last, Math.max(1, +dm[2]))).padStart(2, "0")}`; }
     let name = line.slice(0, m.index).replace(/\b\d{1,4}[\/-]\d{1,2}[\/-]\d{2,4}\b/g, "").replace(/[\t,;|]+/g, " ").replace(/\s+/g, " ").trim();
-    if (/^(unknown|n\/?a|none|-+|\?+)$/i.test(name)) name = "";
+    if (/^(\(?no name\)?|unknown|n\/?a|none|-+|\?+)$/i.test(name)) name = "";
     const first = name.split(" ")[0] || "";
     out.push({ k: pkey(phone), phone, name, first: first ? first.charAt(0).toUpperCase() + first.slice(1) : "", date });
   });
