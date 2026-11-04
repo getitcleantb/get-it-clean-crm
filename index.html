@@ -7708,7 +7708,7 @@ function ibGo(id, leadId) {
 // with "Reply STOP to opt out." Blasts only send 8 AM to 8 PM Eastern (Florida's limits), and none in vacation mode.
 const TX_ON = () => STANDALONE && !!window.GIC;
 // 3: appointment reminders and re-clean texts (autotext.js). Texting works with 2; only the automatic texts need 3.
-const TEXT_SENDER_VERSION = 12, TEXT_SENDER_MIN = 2;
+const TEXT_SENDER_VERSION = 13, TEXT_SENDER_MIN = 2;
 const TX_STOP_LINE = "Reply STOP to opt out.";
 const TX_MAX = 1500; // characters in one text (Quo takes 1,600)
 S.texts = []; S.textBlasts = []; S.textRuns = {}; S.textSender = null; S.textOut = {}; S.textKey = null; S.textRulesOk = null;
@@ -7734,6 +7734,10 @@ function txOnSettings(docs) {
   const o = docs.find(d => d.id === "blast-textout" && d.kind === "textout"); S.textOut = (o && o.out) || {};
   const bk = docs.find(d => d.id === "blast-textblock" && d.kind === "textblock"); S.textBlock = bk ? bk.nums || {} : null;
   S.autoText = docs.find(d => d.id === "blast-autotext" && d.kind === "autotext") || null; if (typeof autoTopRefresh === "function") autoTopRefresh();
+  S.textCrm = bk ? bk.crm || {} : null;
+  S.pastClients = docs.find(d => d.id === "blast-pastclients" && d.kind === "textseq") || null;
+  S.pastRun = docs.find(d => d.id === "blast-pastclientsrun" && d.kind === "textseqrun") || null;
+  if (typeof pcRefresh === "function" && typeof PCD !== "undefined" && PCD && $("#modal #pc-acts")) pcRefresh();
   // everyone on it done: finished (the script marks it; this is in case its last run didn't)
   if (canEditBlast() && S.db) S.textBlasts.filter(b => ["running", "paused"].includes(b.status) && !txFinishing.has(b.id) && txRun(b).finishedAt && txNums(b).total && !txNums(b).left).forEach(b => {
     txFinishing.add(b.id); saveDoc("settings", b.id, { status: "finished", vacationPaused: false, finishedAt: txRun(b).finishedAt, updatedAt: new Date().toISOString() }, true).catch(() => {}).finally(() => setTimeout(() => txFinishing.delete(b.id), 5000));
@@ -7755,9 +7759,11 @@ S.txBlockSync = () => {
   if (!TX_ON() || !txOwner() || !S.db) return;
   clearTimeout(txBlockTimer);
   txBlockTimer = setTimeout(() => {
-    const nums = txBlockMap(), key = (m) => JSON.stringify(Object.keys(m || {}).sort().map(k => [k, m[k]]));
-    if (S.textBlock && key(S.textBlock) === key(nums)) return;
-    saveDoc("settings", "blast-textblock", { kind: "textblock", nums, updatedAt: new Date().toISOString() }).then(() => { S.textBlock = nums; }).catch(() => {});
+    // crm: every number on a contact, so the past clients texts (pastclients.js) never go to someone in the CRM
+    const nums = txBlockMap(), crm = {}, key = (m) => JSON.stringify(Object.keys(m || {}).sort().map(k => [k, m[k]]));
+    txLeadIndex().forEach((ls, p) => { if (ls.length) crm[pkey(p)] = 1; });
+    if (S.textBlock && key(S.textBlock) === key(nums) && S.textCrm && key(S.textCrm) === key(crm)) return;
+    saveDoc("settings", "blast-textblock", { kind: "textblock", nums, crm, updatedAt: new Date().toISOString() }).then(() => { S.textBlock = nums; S.textCrm = crm; }).catch(() => {});
   }, 3000);
 };
 function txListen(db) {
@@ -7830,7 +7836,7 @@ function txConvs() {
 function txIsUnread(t, all) { if (t.dir !== "in" || !t.unread) return false; const p = e164(t.phone), at = String(t.at || ""); return !(all || S.texts).some(o => o.dir === "out" && String(o.at || "") > at && e164(o.phone) === p && o.status !== "cancelled"); }
 // conversations with texts nobody has read yet
 const txUnread = () => { if (!TX_ON()) return 0; const s = new Set(); S.texts.forEach(t => { if (txIsUnread(t)) s.add(e164(t.phone)); }); s.delete(""); return s.size; };
-const txWho = (phone) => { const ls = txLeadsFor(phone); return ls.length ? leadName(ls[0]) + (ls.length > 1 ? ` +${ls.length - 1}` : "") : fmtPhone(phone); };
+const txWho = (phone) => { const ls = txLeadsFor(phone); return ls.length ? leadName(ls[0]) + (ls.length > 1 ? ` +${ls.length - 1}` : "") : (typeof pcName === "function" && pcName(phone)) || fmtPhone(phone); };
 // an open conversation marks what they sent as read (on every device)
 const txReading = new Set();
 function txMarkRead() {
@@ -8002,7 +8008,7 @@ function textBlastsHTML() {
   const rows = S.textBlasts.map(b => { const [st, cls] = txBlastState(b), n = txNums(b);
     const sub = [plural(n.total, "number"), n.sent ? `${n.sent} sent` : "", n.failed ? `${n.failed} didn't go` : "", n.skipped ? `${n.skipped} skipped` : "", `${b.perHour || 20} an hour`].filter(Boolean).join(" · ");
     return `<button class="item flow" data-act="tb-open" data-id="${esc(b.id)}"><div class="main-col"><span class="t">${esc(b.name || "Untitled text blast")}</span><span class="s" style="white-space:normal">${esc(sub)}</span></div><div class="r"><span class="pill ${cls}">${esc(st)}</span></div></button>`; }).join("");
-  return `<section class="panel flush"><div class="panel-h"><h2>Text blasts</h2>${own ? `<button class="btn primary" data-act="tb-new">+ New text blast</button>` : ""}</div>
+  return (typeof pcPanelHTML === "function" ? pcPanelHTML() : "") + `<section class="panel flush"><div class="panel-h"><h2>Text blasts</h2>${own ? `<button class="btn primary" data-act="tb-new">+ New text blast</button>` : ""}</div>
     ${rows ? `<div class="list">${rows}</div>` : `<div class="pad note">Write one text, pick who gets it, and it goes out a few at a time from your business number. Nothing goes out until you tap Start.</div>`}
     ${own ? `<div class="pad row"><span class="note">Your messages:</span><button class="btn sm" data-nav="settings" data-tx-set="texts">Text templates</button><button class="btn sm" data-nav="settings" data-tx-set="drips">Follow-up messages</button></div>` : ""}
     <p class="pad note">Only text people who are your customers or asked you about a job: marketing texts need their OK. Every blast text ends with “${esc(TX_STOP_LINE)}”, and anyone who texts STOP never gets another one. Blasts send between 8 AM and 8 PM, as Florida's rules allow.</p></section>`;
@@ -8190,7 +8196,7 @@ if (TX_ON()) {
       <label class="f">Service<select id="tx-provider" aria-label="Texting service"><option value="quo" selected>Quo (formerly OpenPhone)</option></select></label>
       <p class="note">Texts go out from your Quo business number, and the answers come back into Email & Texts. A small script in your own Google account does the sending once a minute, so it keeps going when the CRM is closed and your Quo key stays off your crew's logins. Quo charges about 1¢ a text on top of your plan. Set it up once, on a computer.</p>
       ${st !== "none" ? `<p class="note">${s.number ? `Texting from <b>${esc(fmtPhone(s.number))}</b>. ` : ""}Last check ${esc(fmtWhen(new Date(s.lastRun)))}.${s.sentToday ? ` ${plural(s.sentToday, "text")} sent today.` : ""}${s.lastError ? ` <span class="pill due">Problem</span> ${esc(s.lastError)}` : ""}</p>${txBackfilling() ? `<p class="note">${esc(txBackfillNote())}</p>` : ""}` : ""}
-      ${st !== "none" && st !== "old" && (+s.version || 0) < TEXT_SENDER_VERSION ? `<div class="banner info">There's new code for the texting script. It adds re-clean texts by service and the two job reminders (Settings > Follow-ups), which stay off until you turn them on there, plus notifications on your phone (Settings > Notifications). Texting keeps working with the code you have now. To get it, do steps 4 and 5 again, and allow it if Google asks.</div>` : ""}
+      ${st !== "none" && st !== "old" && (+s.version || 0) < TEXT_SENDER_VERSION ? `<div class="banner info">There's new code for the texting script. It adds the past clients texts (Email & Texts > Texts > Blasts), re-clean texts by service and the two job reminders (Settings > Follow-ups), which stay off until you turn them on there, plus notifications on your phone (Settings > Notifications). Texting keeps working with the code you have now. To get it, do steps 4 and 5 again, and allow it if Google asks.</div>` : ""}
       ${step(1, `Get your Quo API key${done(k ? k.has : null)}`, `<p class="note">In Quo on a computer, open Settings, then <b>API</b>, then <b>Generate API key</b> (only the Quo account owner or an admin sees it). Name it CRM, copy it, and paste it here. Quo also has to finish your US carrier registration (10DLC) before texts can go out this way. That's under Settings in Quo too.</p>
         <div class="row"><input type="password" id="tx-key" placeholder="${k && k.has ? `Saved key ending in ${esc(k.last4)}` : "Paste the API key"}" autocomplete="off" spellcheck="false" style="flex:1 1 240px" aria-label="Quo API key"><button class="btn primary" data-act="tx-key-save">Save key</button>${k && k.has ? `<button class="btn ghost" data-act="tx-key-del">Remove</button>` : ""}</div>`)}
       ${step(2, `Update your database rules${done(S.textRulesOk)}`, `<p class="note">${S.textRulesOk ? "Your rules are up to date: only you can read the key or start text blasts." : `Open the <a href="https://console.firebase.google.com/project/${esc(pid)}/firestore/rules" target="_blank" rel="noopener">Firebase rules page</a>, select everything there, paste the new rules over it, and tap Publish. The key can't be saved until this is done. (The same rules cover email blasts and the links in invoice texts.)`}</p>${S.textRulesOk ? "" : `<div class="row"><button class="btn" data-act="tx-copy-rules">Copy the rules</button></div>`}`)}
@@ -8567,6 +8573,9 @@ function textSender(PROJECT, VERSION, fsKit) {
   const pkey = (e) => "p" + digits(e);
   const kylemont = (l) => /kylemont/i.test([l.name, l.company, l.email, l.area, l.address].join(" "));
   const withStop = (s) => { s = String(s || "").replace(/\s+$/, ""); return /reply\s+stop\b[^\n]*$/i.test(s) ? s : s + "\n\n" + STOP_LINE; };
+  // past clients (pastclients.js): {hi} "Hi Steve," or Good morning / afternoon / evening (Eastern) with no name, {when}
+  // "back in 2021" or "a little while back" with no date, {first}
+  const pcFillIn = (body, x, at) => { const h = when(at || new Date()).h, y = /^\d{4}/.exec(String((x && x.date) || "")); return withStop(String(body || "").replace(/\{hi\}/g, x && x.first ? "Hi " + x.first + "," : h < 12 ? "Good morning," : h < 17 ? "Good afternoon," : "Good evening,").replace(/\{first\}/g, (x && x.first) || "there").replace(/\{when\}/g, y ? "back in " + y[0] : "a little while back")); };
   const fillIn = (body, r) => withStop(String(body || "").replace(/\{first\}/g, (r && r.first) || "there").replace(/\{place\}/g, (r && r.place) || "your property"));
   const when = (t) => { const a = Utilities.formatDate(t, TZ, "yyyy-MM-dd H m u").split(" "); return { day: a[0], h: +a[1], mi: +a[2], dow: (+a[3]) % 7 }; };
   const hm = (s) => { const m = /^(\d\d):(\d\d)/.exec(String(s || "")); return m ? +m[1] * 60 + +m[2] : 0; };
@@ -8896,6 +8905,73 @@ function textSender(PROJECT, VERSION, fsKit) {
     }
   }
 
+  // ---- past clients (version 13): a first text and follow-ups to people from the old customer sheet, who aren't in the
+  // CRM. settings/blast-pastclients holds the people and the texts; settings/blast-pastclientsrun what each one got
+  // (done[k] = { n: texts sent, at: when the last one went, stop: why nothing more goes }). Only while the owner has it
+  // running, inside its hours and days, one text per run at its pace. Anyone who has texted the business number, texted
+  // STOP (or may have asked to), or is in the CRM gets nothing more.
+  const PC = "settings/blast-pastclients", PCRUN = "settings/blast-pastclientsrun";
+  // the number is on a CRM contact: the owner's CRM keeps the list (settings/blast-textblock crm), and the usual ways of
+  // writing it are looked up too, for a contact added since
+  function pcInCrm(x, ctx) {
+    if (ctx.crm()[x.k]) return true;
+    const d = digits(x.phone).replace(/^1(?=\d{10}$)/, ""); if (d.length !== 10) return false;
+    const a = d.slice(0, 3), b = d.slice(3, 6), c = d.slice(6), fm = "(" + a + ") " + b + "-" + c;
+    return F.query("leads", [["phone", "IN", [d, "1" + d, "+1" + d, a + "-" + b + "-" + c, fm, "(" + a + ")" + b + "-" + c, a + "." + b + "." + c, a + " " + b + " " + c, "+1 " + a + "-" + b + "-" + c, "+1 " + fm, "1-" + a + "-" + b + "-" + c, "+1 " + a + " " + b + " " + c]]], 1, ["name"]).length > 0;
+  }
+  function pcStopWhy(x, ctx) {
+    const o = ctx.out()[x.k];
+    if (isOff(o)) return outWhy(o) === "owner" ? "texts turned off" : "texted STOP";
+    if (outWhy(o) === "review") return "may have asked to stop";
+    if (F.query("texts", [["phone", "EQUAL", x.phone]], 50).some(m => m.dir === "in")) return "replied";
+    if (pcInCrm(x, ctx)) return "in the CRM";
+    return "";
+  }
+  function pastClients(cfg, st, now, ctx) {
+    const t = when(now), mins = t.h * 60 + t.mi;
+    if (mins < 8 * 60 || mins >= 20 * 60) return;
+    if (!st.backfilled || held(st, now, cfg) || limited(st, now)) return;
+    const c = F.get(PC);
+    if (!c || c.kind !== "textseq" || c.status !== "running" || c.stoppedAt) return;
+    const vac = F.get("settings/blast-pause"); if (vac && vac.kind === "pause" && vac.on === true) { st.vacation = true; return; }
+    const inWindow = (d) => { const w = when(d), m = w.h * 60 + w.mi, s = Math.max(8 * 60, hm(c.start || "10:00")), e = Math.min(20 * 60, hm(c.end || "18:00")); return (c.days || []).indexOf(w.dow) >= 0 && String(c.startDate || "") <= w.day && m >= s && m < e; };
+    if (!inWindow(now)) return;
+    const steps = (c.steps || []).filter(s => s && String(s.body || "").trim());
+    if (!steps.length) return;
+    let run = F.get(PCRUN);
+    if (!run) { F.create(PCRUN, { kind: "textseqrun", done: {}, sent: 0, failed: 0, lastAt: "" }); run = F.get(PCRUN); if (!run) return; }
+    const done = run.done || {}, pace = 3600000 / Math.max(1, Math.min(60, +c.perHour || 20));
+    if (run.lastAt && now.getTime() - Date.parse(run.lastAt) < pace - 20000) return;
+    const save = (x, v, extra) => { done[x.k] = v; F.patch(PCRUN, Object.assign({ done: { [x.k]: v } }, extra || {}), ["done." + x.k].concat(Object.keys(extra || {}))); };
+    let checks = 0;
+    for (const x of (c.people || [])) {
+      if (!x || !x.k || !x.phone || x.off) continue;
+      const s = done[x.k] || {}, n = +s.n || 0;
+      if (s.stop || n >= steps.length) continue;
+      // the next one is due this many days after the last
+      if (n > 0 && now.getTime() - Date.parse(s.at || 0) < Math.max(1, +steps[n].days || 7) * DAY) continue;
+      if (checks >= 25) break; checks++;
+      const why = pcStopWhy(x, ctx);
+      if (why) { save(x, { n: n, at: s.at || "", stop: why, stopAt: now.toISOString() }); continue; }
+      if (!inWindow(new Date())) break;
+      // made with its own id first, so each text can only ever go once
+      const id = "texts/pc" + (n + 1) + "-" + digits(x.phone), body = pcFillIn(steps[n].body, x, new Date());
+      if (!F.create(id, { kind: "text", phone: x.phone, dir: "out", body: body, at: new Date().toISOString(), status: "sending", claimedAt: new Date().toISOString(), campaignId: "blast-pastclients", step: n + 1, leadId: "", unread: false, by: "blast" })) {
+        const ex = F.get(id); save(x, { n: n + 1, at: (ex && ex.at) || now.toISOString(), failed: !!(ex && ex.status === "failed") }); continue;
+      }
+      const res = sendOne(cfg, x.phone, body);
+      if (res.retry) { F.del(id); return; }
+      if (res.failed && res.kind !== "recipient") { F.del(id); stopFor(st, res, now, cfg); return; }
+      F.patch(id, res.fields);
+      if (res.failed && res.optout) markOut(ctx, x.k, { at: now.toISOString(), why: "stop", from: "quo" });
+      if (res.ok) st.sentToday = (st.sentToday || 0) + 1;
+      run.lastAt = now.toISOString();
+      if (res.failed) { run.failed = (run.failed || 0) + 1; save(x, { n: n, at: s.at || "", stop: "didn't go: " + String(res.msg || "").slice(0, 80), stopAt: run.lastAt }, { failed: run.failed, lastAt: run.lastAt }); }
+      else { run.sent = (run.sent || 0) + 1; save(x, { n: n + 1, at: run.lastAt }, { sent: run.sent, lastAt: run.lastAt }); }
+      break;
+    }
+  }
+
   // ---- automatic texts (version 3): appointment reminders and re-clean texts, only while they're turned on ----
   const p2 = (n) => String(n).padStart(2, "0");
   // Eastern wall time, "YYYY-MM-DDTHH:MM", and minutes between two of them
@@ -9058,7 +9134,10 @@ function textSender(PROJECT, VERSION, fsKit) {
     try {
       const l = F.query("leads", [["phone", "IN", [d, "1" + d, "+1" + d, a + "-" + b + "-" + c, fm, "(" + a + ")" + b + "-" + c, a + "." + b + "." + c, a + " " + b + " " + c, "+1 " + a + "-" + b + "-" + c, "+1 " + fm, "1-" + a + "-" + b + "-" + c, "+1 " + a + " " + b + " " + c]]], 5, ["name", "company"])
         .find(x => x.name || x.company);
-      return l ? String(l.name || l.company) : fm;
+      if (l) return String(l.name || l.company);
+      // someone on the past clients list
+      const pc = ((F.get(PC) || {}).people || []).find(x => x && digits(x.phone).slice(-10) === d);
+      return pc ? (pc.first ? pc.first + " (past client)" : "Past client " + fm) : fm;
     } catch (e) { return fm; }
   }
   // one notification to each device: how many it reached
@@ -9096,7 +9175,7 @@ function textSender(PROJECT, VERSION, fsKit) {
       st.number = cfg.number; st.pn = cfg.pn;
       if (st.backfilled && st.backfilledPn && st.backfilledPn !== cfg.pn) { st.backfilled = ""; delete st.bf; }
       if (held(st, now, cfg)) st.lastError = st.hold.msg; else delete st.hold;
-      let out = null, blk = null; const ctx = { out: () => out || (out = ((F.get("settings/blast-textout") || {}).out) || {}), block: () => blk || (blk = ((F.get("settings/blast-textblock") || {}).nums) || {}) };
+      let out = null, blk = null, tb = null; const tbDoc = () => tb || (tb = F.get("settings/blast-textblock") || {}); const ctx = { out: () => out || (out = ((F.get("settings/blast-textout") || {}).out) || {}), block: () => blk || (blk = tbDoc().nums || {}), crm: () => tbDoc().crm || {} };
       sendQueued(cfg, st, now, ctx);
       ctx.news = [];
       sync(cfg, st, now, ctx);
@@ -9104,6 +9183,7 @@ function textSender(PROJECT, VERSION, fsKit) {
       if (!st.backfilled) { backfill(cfg, st, now, ctx); if (st.backfilled) st.backfilledPn = cfg.pn; }
       pollDelivery(cfg, now);
       blasts(cfg, st, now, ctx);
+      pastClients(cfg, st, now, ctx);
       autoTexts(cfg, st, now, ctx);
       if (held(st, now, cfg)) st.lastError = st.hold.msg;
       checkIn(st, now, force);
@@ -9222,6 +9302,234 @@ ${fsKit.toString()}
 `;
 const TEXT_MANIFEST = JSON.stringify({ timeZone: "America/New_York", runtimeVersion: "V8", exceptionLogging: "STACKDRIVER",
   oauthScopes: ["https://www.googleapis.com/auth/datastore", "https://www.googleapis.com/auth/script.external_request", "https://www.googleapis.com/auth/script.scriptapp", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/calendar.readonly", "https://www.googleapis.com/auth/firebase.messaging"] }, null, 2);
+
+// ---------- past clients (elias, 2026-11-04) ----------
+// A first text and follow-ups to the past customers from elias's old customer sheet who aren't in the CRM, kept apart
+// from leads so the CRM's own blasts and drips never reach them. settings/blast-pastclients (owner only): the people
+// [{k, phone, first, name, date, off}], the texts [{body, days}] (days: after the one before), the hours and pace, and
+// status draft / running / paused / stopped. The texting script (version 13, pastClients in texts.js) sends them and
+// keeps what each one got in settings/blast-pastclientsrun. Anyone who texts back (even "thanks"), texts STOP or is in
+// the CRM gets nothing more. Nothing goes out until elias taps Start.
+const PC_ID = "blast-pastclients", PC_RUN = "blast-pastclientsrun", PC_MIN_SCRIPT = 13;
+const PC_TEXTS = [
+  { days: 0, body: "{hi} this is Elias with Get It Clean Tampa Bay. We pressure washed your house {when} and we're running some specials. This month we're giving all of our previous clients 10% off anything they'd like to get done: house, driveway, roof, pool cage or windows. Want me to come out and take a look?" },
+  { days: 4, body: "{hi} it's Elias with Get It Clean again. Just making sure you saw this: our previous clients get 10% off anything they'd like done this month. Want me to swing by for a free estimate?" },
+  { days: 7, body: "{hi} Elias with Get It Clean Tampa Bay. The 10% off for previous clients ends with the month, and I still have a few openings. Just reply here and I'll get you on the schedule." },
+  { days: 30, body: "{hi} it's Elias with Get It Clean Tampa Bay. Happy holidays! Whenever you need your house, driveway or windows cleaned, just text me here and I'll take care of you." }
+];
+// {hi}: "Hi Steve," or, with no name, Good morning / afternoon / evening by when it goes (Eastern). {when}: "back in 2021"
+// from their last job's year, or "a little while back" with no date. {first}: the first name, or "there". The texting
+// script fills them the same way (pcFillIn in texts.js).
+const PC_WORDS = ["{hi}", "{first}", "{when}"];
+function pcHi(first, at) { if (first) return `Hi ${first},`; const h = +new Date(at || Date.now()).toLocaleString("en-US", { timeZone: "America/New_York", hour: "numeric", hour12: false }) % 24; return h < 12 ? "Good morning," : h < 17 ? "Good afternoon," : "Good evening,"; }
+const pcWhen = (date) => { const y = /^\d{4}/.exec(String(date || "")); return y ? "back in " + y[0] : "a little while back"; };
+let PCD = null; const PCP = { confirm: "", saving: false, q: "" };
+const pcNew = () => ({ kind: "textseq", name: "Past clients", status: "draft", people: [], steps: PC_TEXTS.map(s => Object.assign({}, s)), perHour: 20, start: "10:00", end: "18:00", days: [1, 2, 3, 4, 5, 6], startDate: today() });
+const pcDone = () => (S.pastRun && S.pastRun.done) || {};
+const pcInCrm = (x) => txLeadsFor(x.phone).length > 0;
+const pcStopLabel = (w) => ({ replied: "Answered", "texted STOP": "Texted STOP", "texts turned off": "Texts off", "may have asked to stop": "May have asked to stop", "in the CRM": "In the CRM" })[w] || (String(w).startsWith("didn't go") ? "Didn't go" : w);
+// where one person is: [label, pill class]
+function pcWhere(x, c) {
+  const s = pcDone()[x.k] || {}, n = +s.n || 0, N = (c.steps || []).length;
+  if (x.off) return ["Taken off", ""];
+  if (s.stop) return [pcStopLabel(s.stop) + (n ? ` after ${n}` : ""), s.stop === "replied" ? "s-scheduled" : ""];
+  if (pcInCrm(x)) return ["In the CRM", ""];
+  if (n >= N && N) return [`All ${N} sent`, "s-new"];
+  if (n) return [`${n} of ${N} sent`, "s-new"];
+  return ["Waiting", ""];
+}
+function pcCounts(c) {
+  const d = pcDone(), on = (c.people || []).filter(x => !x.off);
+  return { people: on.length, reached: on.filter(x => (+(d[x.k] || {}).n || 0) > 0).length, texts: on.reduce((a, x) => a + (+(d[x.k] || {}).n || 0), 0),
+    answered: on.filter(x => (d[x.k] || {}).stop === "replied").length, stopped: on.filter(x => /STOP|stop|off/.test((d[x.k] || {}).stop || "")).length };
+}
+function pcStatus(c) {
+  if (!c) return ["Not set up", ""];
+  if (c.status === "running") return vacOn() ? ["Paused for vacation", "due"] : (+(S.textSender || {}).version || 0) < PC_MIN_SCRIPT ? ["Needs the new texting script", "due"] : ["Running", "s-scheduled"];
+  return { paused: ["Paused", "due"], stopped: ["Stopped", "s-lost"] }[c.status] || ["Not started", ""];
+}
+// the panel on Email & Texts > Texts > Blasts
+function pcPanelHTML() {
+  if (!canEditBlast()) return "";
+  const c = S.pastClients, [st, cls] = pcStatus(c), n = c ? pcCounts(c) : null;
+  return `<section class="panel"><div class="panel-h"><h2>Past clients</h2><span class="pill ${cls}">${esc(st)}</span></div>
+    <p class="note">${c ? esc([plural(n.people, "person", "people"), plural((c.steps || []).length, "text") + " each", n.texts ? plural(n.texts, "text") + " sent" : "", n.answered ? n.answered + " answered" : ""].filter(Boolean).join(" · ")) : "A first text and follow-ups to your past customers who aren't in the CRM. Your CRM blasts never go to them, and these never go to anyone in the CRM."}</p>
+    <div class="row"><button class="btn${c ? "" : " primary"}" data-act="pc-open">${c ? "Open" : "Set it up"}</button></div></section>`;
+}
+function pcOpen() {
+  if (!TX_ON() || !canEditBlast()) return;
+  PCD = JSON.parse(JSON.stringify(S.pastClients || pcNew()));
+  if (!Array.isArray(PCD.steps) || !PCD.steps.length) PCD.steps = PC_TEXTS.map(s => Object.assign({}, s));
+  if (!Array.isArray(PCD.people)) PCD.people = []; if (!Array.isArray(PCD.days)) PCD.days = [1, 2, 3, 4, 5, 6];
+  PCP.confirm = ""; PCP.saving = false; PCP.q = ""; S.dirty = false;
+  showModal(pcHTML(), true); pcRefresh();
+}
+const pcLocked = () => !!(PCD && PCD.status === "stopped");
+// a text step nobody has had yet can still be taken out
+const pcStepUsed = (i) => Object.values(pcDone()).some(s => (+(s && s.n) || 0) > i);
+function pcStepsHTML() {
+  const ro = pcLocked() ? "disabled" : "";
+  return PCD.steps.map((s, i) => `<div class="tpl stack"><div class="spread"><b>Text ${i + 1}</b>${!ro && i && i === PCD.steps.length - 1 && !pcStepUsed(i) ? `<button class="btn sm ghost" data-act="pc-del-step">Take it out</button>` : ""}</div>
+    ${i ? `<label class="f">Days after text ${i}<input type="number" id="pc-days-${i}" min="1" max="120" step="1" value="${esc(s.days || 7)}" ${ro}></label>` : `<span class="note">Goes out first, from the first day below.</span>`}
+    <textarea id="pc-body-${i}" rows="4" maxlength="${TX_MAX}" aria-label="Text ${i + 1}" ${ro}>${esc(s.body)}</textarea>
+    <div class="note" id="pc-prev-${i}"></div></div>`).join("") + (!ro && PCD.steps.length < 8 ? `<button class="btn sm" data-act="pc-add-step">+ Add a follow-up</button>` : "");
+}
+function pcHTML() {
+  const ro = pcLocked() ? "disabled" : "";
+  return `<div class="sh"><div class="sh-t"><h2>Past clients</h2><span class="pill" id="pc-pill"></span></div><button class="x" data-close="1" aria-label="Close">×</button></div>
+  <div class="sb stack">
+    <p class="note">Texts your past customers from your business number, one at a time, then the follow-ups on the days you pick. Anyone who texts back (even “thanks”), texts STOP, or is in the CRM gets nothing more, and what they wrote shows in Texts. Nothing goes out until you tap Start.</p>
+    <section class="panel"><div class="panel-h"><h2>The texts</h2></div><div class="stack" id="pc-steps">${pcStepsHTML()}</div>
+      <p class="note">{hi} becomes “Hi Steve,” or, with no name, “Good morning,” “Good afternoon,” or “Good evening,” by when it goes. {when} becomes “back in 2021” from their last job, or “a little while back” with no date. {first} is the first name (or “there”). “${esc(TX_STOP_LINE)}” goes at the end of every one. You can change a text that hasn't gone out yet at any time.</p></section>
+    <section class="panel flush"><div class="panel-h"><h2>Who gets them</h2><span class="pill" id="pc-count"></span></div>
+      <div class="pad"><input type="search" id="pc-q" placeholder="Search a name or number…" value="${esc(PCP.q)}" aria-label="Search past clients"></div>
+      <div id="pc-who"></div>
+      ${ro ? "" : `<div class="pad stack"><label class="f">Add people<textarea id="pc-add" rows="3" placeholder="Paste from your spreadsheet, one person a line: name, phone, last service date"></textarea></label><div class="row"><button class="btn sm" data-act="pc-add">Add them</button></div></div>`}</section>
+    <section class="panel"><div class="panel-h"><h2>When</h2></div><div class="form">
+      <label class="f">Texts an hour<input type="number" id="pc-rate" min="1" max="60" step="1" value="${esc(PCD.perHour || 20)}" ${ro}></label>
+      <label class="f">First day<input type="date" id="pc-date" value="${esc(PCD.startDate || today())}" ${ro}></label>
+      <label class="f">From<input type="time" id="pc-start" min="08:00" max="20:00" value="${esc(PCD.start || "10:00")}" ${ro}></label>
+      <label class="f">Until<input type="time" id="pc-end" min="08:00" max="20:00" value="${esc(PCD.end || "18:00")}" ${ro}></label>
+      <div class="f full"><span>Days</span><div class="svc-pick" role="group" aria-label="Days">${TB_DAYS.map(([d, t]) => `<label><input type="checkbox" data-pc-day="${d}" ${PCD.days.includes(d) ? "checked" : ""} ${ro}> ${t}</label>`).join("")}</div></div>
+    </div><p class="note" id="pc-when"></p></section>
+    ${ro ? "" : `<section class="panel"><div class="panel-h"><h2>Send yourself a test</h2></div><div class="row"><select id="pc-test-n" aria-label="Which text">${PCD.steps.map((s, i) => `<option value="${i}">Text ${i + 1}</option>`).join("")}</select><input type="tel" id="pc-test" placeholder="Your cell number" value="${esc(S.tx.test)}" aria-label="Number for the test" style="flex:1 1 160px"><button class="btn" data-act="pc-test"${txCanSend() ? "" : " disabled"}>Send test</button></div><p class="note">${txCanSend() ? "Only to this number, filled in as if it were for the first person on the list." : esc(txWhyNot())}</p></section>`}
+    <div id="pc-acts"></div>
+  </div>`;
+}
+function pcRead() {
+  if (!PCD || !$("#pc-acts") || pcLocked()) return;
+  const v = (id) => { const el = $("#" + id); return el ? el.value : null; };
+  PCD.steps.forEach((s, i) => { const b = v("pc-body-" + i); if (b != null) s.body = b; if (i) { const d = v("pc-days-" + i); if (d != null) s.days = Math.max(1, Math.min(120, Math.round(+d || 7))); } else s.days = 0; });
+  PCD.perHour = Math.max(1, Math.min(60, Math.round(+v("pc-rate") || 20))); PCD.startDate = v("pc-date") || today(); PCD.start = v("pc-start") || "10:00"; PCD.end = v("pc-end") || "18:00";
+  PCD.days = [...document.querySelectorAll("[data-pc-day]")].filter(i => i.checked).map(i => +i.dataset.pcDay);
+}
+const pcFill = (body, x) => txWithStop(String(body || "").replace(/\{hi\}/g, pcHi(x && x.first)).replace(/\{first\}/g, (x && x.first) || "there").replace(/\{when\}/g, pcWhen(x && x.date)));
+const pcFirstUp = () => PCD.people.find(x => !x.off && !pcInCrm(x));
+function pcRefresh() {
+  if (!PCD || !$("#modal #pc-acts")) return;
+  const saved = S.pastClients; if (saved) ["status", "startedAt", "stoppedAt"].forEach(k => { if (saved[k] !== undefined) PCD[k] = saved[k]; });
+  const [st, cls] = PCD.id || saved ? pcStatus(PCD) : ["New", ""], pill = $("#pc-pill"); if (pill) { pill.textContent = st; pill.className = "pill " + cls; }
+  const f = pcFirstUp();
+  PCD.steps.forEach((s, i) => { const el = $("#pc-prev-" + i); if (!el) return; const p = smsParts(pcFill(s.body, f)); el.textContent = `${p.n} characters with the STOP line · counts as ${plural(p.parts, "text")}${p.plain ? "" : " · an emoji or curly quote makes each text shorter"}`; });
+  const on = PCD.people.filter(x => !x.off), ct = $("#pc-count"); if (ct) ct.textContent = plural(on.length, "person", "people");
+  const who = $("#pc-who");
+  if (who) {
+    const q = PCP.q.trim().toLowerCase(), qd = digits(q), ro = pcLocked();
+    const list = PCD.people.filter(x => !q || String(x.name || "").toLowerCase().includes(q) || (qd.length >= 3 && digits(x.phone).includes(qd)));
+    who.innerHTML = list.length ? `<div class="list tb-list">${list.slice(0, 400).map(x => { const [w, c] = pcWhere(x, PCD); return `<div class="item static"><div class="main-col"><span class="t">${esc(x.name || "No name")}</span><span class="s">${esc([fmtPhone(x.phone), x.date ? "last job " + fmtDateShort(x.date) : ""].filter(Boolean).join(" · "))}</span></div><div class="r"><span class="pill ${c}">${esc(w)}</span>${ro ? "" : `<button class="btn sm ghost" data-act="pc-off" data-k="${esc(x.k)}" aria-label="${x.off ? "Put back" : "Take off"} ${esc(x.name || fmtPhone(x.phone))}">${x.off ? "Put back" : "×"}</button>`}</div></div>`; }).join("")}${list.length > 400 ? `<div class="item static note">And ${list.length - 400} more. Search to find them.</div>` : ""}</div>`
+      : `<div class="pad note">${PCD.people.length ? "Nobody matches." : "Nobody on the list yet. Paste them below."}</div>`;
+  }
+  const wh = $("#pc-when"); if (wh) { const hrs = Math.max(0, hm(PCD.end) - hm(PCD.start)) / 60, perDay = Math.max(1, Math.floor((PCD.perHour || 20) * hrs)), n = on.length;
+    let at = 0; const lines = PCD.steps.map((s, i) => { at += i ? +s.days || 7 : 0; return i ? `text ${i + 1} ${plural(at, "day")} after the first` : ""; }).filter(Boolean);
+    wh.textContent = n && hrs ? `About ${perDay} a day, so the first text takes about ${plural(Math.max(1, Math.ceil(n / perDay)), "sending day")}. For each person: ${lines.join(", ")}. Times are Eastern.` : "Times are Eastern."; }
+  const acts = $("#pc-acts"); if (!acts) return;
+  const c = PCP.confirm, s = PCD.status || "draft";
+  if (c === "start") acts.innerHTML = `<div class="banner warn stack"><label class="check"><input type="checkbox" id="pc-consent"> Everyone on this list is a past customer of ${esc(BUSINESS.name)} and OK getting texts from us.</label><div class="row"><button class="btn primary" data-act="pc-start-yes">Start texting ${plural(on.filter(x => !pcInCrm(x)).length, "person", "people")}</button><button class="btn" data-act="pc-no">Not yet</button></div></div>`;
+  else if (c === "stop") acts.innerHTML = `<div class="banner warn spread"><span>Stop it for good? Nobody gets another text from it.</span><span class="row"><button class="btn danger" data-act="pc-stop-yes">Stop it</button><button class="btn" data-act="pc-no">Keep it</button></span></div>`;
+  else acts.innerHTML = `<div class="row">${s !== "stopped" ? `<button class="btn" data-act="pc-save"${PCP.saving ? " disabled" : ""}>Save</button>` : ""}${s === "draft" ? `<button class="btn primary" data-act="pc-start">Start</button>` : ""}${s === "running" ? `<button class="btn" data-act="pc-pause">Pause</button>` : ""}${s === "paused" ? `<button class="btn primary" data-act="pc-resume">Resume</button>` : ""}${s === "running" || s === "paused" ? `<button class="btn ghost" data-act="pc-stop">Stop</button>` : ""}</div>`;
+}
+const fmtDateShort = (d) => { const m = /^(\d{4})-(\d\d)-(\d\d)/.exec(String(d || "")); return m ? `${+m[2]}/${+m[3]}/${m[1]}` : String(d || ""); };
+function pcProblem(starting) {
+  for (let i = 0; i < PCD.steps.length; i++) {
+    const b = String(PCD.steps[i].body || "").trim(); if (!b) return `Write text ${i + 1}, or take it out.`;
+    const odd = (b.match(/\{[a-z]+\}/gi) || []).find(x => !PC_WORDS.includes(x));
+    if (odd) return `${odd} in text ${i + 1} can't be filled in for each person. Only {hi}, {first} and {when} can. Take it out or write it out.`;
+    if (pcFill(b, { first: "Christopher", date: "2021-01-01" }).length > TX_MAX) return `Text ${i + 1} is too long.`;
+  }
+  if (!PCD.days.length) return "Pick at least one day.";
+  if (!(PCD.start >= "08:00" && PCD.end <= "20:00" && PCD.start < PCD.end)) return "Texts can go between 8 AM and 8 PM. Pick a start and an end in that window.";
+  if (starting) {
+    if (!PCD.people.some(x => !x.off && !pcInCrm(x))) return "Add the people to text first.";
+    if (txState() === "ok" && (+(S.textSender || {}).version || 0) < PC_MIN_SCRIPT) return "Update the texting script first: Settings > Texting, steps 4 and 5. The code you have now can't send these.";
+  }
+  return "";
+}
+async function pcSave(extra) {
+  if (PCP.saving) return false;
+  pcRead(); const bad = pcProblem(extra && extra.status === "running"); if (bad) { toast(bad, 6000); return false; }
+  const cur = S.pastClients, now = new Date().toISOString();
+  if (cur && cur.status === "stopped") { toast("This was stopped on another device."); return false; }
+  const doc = { kind: "textseq", name: "Past clients", people: PCD.people, steps: PCD.steps.map((s, i) => ({ body: String(s.body || "").replace(/\s+$/, ""), days: i ? s.days : 0 })), perHour: PCD.perHour, start: PCD.start, end: PCD.end, days: PCD.days.slice().sort(), startDate: PCD.startDate, updatedAt: now };
+  if (!cur) { doc.createdAt = now; doc.status = "draft"; }
+  Object.assign(doc, extra || {});
+  if (doc.status === "running" && !(cur && cur.startedAt)) doc.startedAt = now;
+  PCP.saving = true; pcRefresh();
+  try { await saveDoc("settings", PC_ID, doc, !!cur); PCD.id = PC_ID; Object.assign(PCD, doc); S.pastClients = Object.assign({}, cur || {}, doc, { id: PC_ID }); S.dirty = false; return true; }
+  finally { PCP.saving = false; pcRefresh(); }
+}
+async function pcSetStatus(status, extra, msg) {
+  const cur = S.pastClients; if (!cur) return;
+  if (cur.status === "stopped") { toast("This was stopped on another device."); return; }
+  await saveDoc("settings", PC_ID, Object.assign({ status, updatedAt: new Date().toISOString() }, extra || {}), true);
+  PCD.status = status; S.pastClients = Object.assign({}, cur, { status }, extra || {}); toast(msg, 4500); pcRefresh();
+}
+// pasted lines: a name, a phone number and maybe a date (as a spreadsheet copies them: tabs, or commas)
+function pcParse(text) {
+  const out = [];
+  String(text || "").split(/\r?\n/).forEach(line => {
+    const m = /(?<![\d+])(?:\+?1[\s.-]*)?\(?[2-9]\d{2}\)?[\s.-]*\d{3}[\s.-]*\d{4}(?!\d)/.exec(line); if (!m) return;
+    const phone = e164(m[0]); if (!phone) return;
+    const rest = line.slice(0, m.index) + " " + line.slice(m.index + m[0].length);
+    const dm = /\b(\d{1,2})[\/-](\d{1,2})[\/-](\d{4}|\d{2})\b/.exec(rest) || null, iso = /\b(\d{4})-(\d\d)-(\d\d)\b/.exec(rest);
+    let date = "";
+    if (iso) date = iso[0];
+    else if (dm) { let y = +dm[3]; if (y < 100) y += 2000; const mo = Math.min(12, Math.max(1, +dm[1])), last = new Date(y, mo, 0).getDate(); date = `${y}-${String(mo).padStart(2, "0")}-${String(Math.min(last, Math.max(1, +dm[2]))).padStart(2, "0")}`; }
+    let name = line.slice(0, m.index).replace(/\b\d{1,4}[\/-]\d{1,2}[\/-]\d{2,4}\b/g, "").replace(/[\t,;|]+/g, " ").replace(/\s+/g, " ").trim();
+    if (/^(unknown|n\/?a|none|-+|\?+)$/i.test(name)) name = "";
+    const first = name.split(" ")[0] || "";
+    out.push({ k: pkey(phone), phone, name, first: first ? first.charAt(0).toUpperCase() + first.slice(1) : "", date });
+  });
+  return out;
+}
+EXTRA_ACTS["pc-open"] = () => pcOpen();
+EXTRA_ACTS["pc-add-step"] = () => { if (!PCD || pcLocked() || PCD.steps.length >= 8) return; pcRead(); PCD.steps.push({ days: 14, body: "{hi} it's Elias with Get It Clean Tampa Bay. " }); S.dirty = true; $("#pc-steps").innerHTML = pcStepsHTML(); pcRefresh(); };
+EXTRA_ACTS["pc-del-step"] = () => { if (!PCD || pcLocked() || PCD.steps.length < 2 || pcStepUsed(PCD.steps.length - 1)) return; pcRead(); PCD.steps.pop(); S.dirty = true; $("#pc-steps").innerHTML = pcStepsHTML(); pcRefresh(); };
+EXTRA_ACTS["pc-off"] = (t) => { if (!PCD || pcLocked()) return; pcRead(); const x = PCD.people.find(y => y.k === t.dataset.k); if (!x) return; if (x.off) delete x.off; else x.off = true; S.dirty = true; pcRefresh(); };
+EXTRA_ACTS["pc-add"] = () => {
+  if (!PCD || pcLocked()) return; pcRead();
+  const box = $("#pc-add"), got = pcParse(box ? box.value : ""); if (!got.length) { toast("No phone numbers found. Paste one person a line: name, phone, last service date."); return; }
+  const have = new Set(PCD.people.map(x => x.k)); let added = 0, dup = 0, crm = 0;
+  got.forEach(x => { if (have.has(x.k)) { dup++; return; } if (pcInCrm(x)) { crm++; return; } have.add(x.k); PCD.people.push(x); added++; });
+  PCD.people.sort((a, b) => (!a.date - !b.date) || String(a.date).localeCompare(String(b.date)));
+  if (box) box.value = ""; S.dirty = S.dirty || added > 0;
+  toast([added ? `${plural(added, "person", "people")} added. Tap Save to keep them.` : "Nobody new added.", dup ? `${dup} already on the list.` : "", crm ? `${crm} in the CRM, so left off.` : ""].filter(Boolean).join(" "), 6000); pcRefresh();
+};
+EXTRA_ACTS["pc-save"] = async () => { try { if (await pcSave()) toast(PCD.status === "draft" ? "Saved. Nothing goes out until you tap Start." : "Saved. The next texts use these changes."); } catch (e) {} };
+EXTRA_ACTS["pc-start"] = () => { if (vacOn()) { toast(VAC_BLOCK, 6000); return; } pcRead(); const bad = pcProblem(true); if (bad) { toast(bad, 6000); return; } PCP.confirm = "start"; pcRefresh(); };
+EXTRA_ACTS["pc-start-yes"] = async () => {
+  if (vacOn()) { PCP.confirm = ""; toast(VAC_BLOCK, 6000); pcRefresh(); return; }
+  const c = $("#pc-consent"); if (!c || !c.checked) { toast("Tick the box to say everyone on the list is a past customer who's OK getting texts from you.", 6000); return; }
+  if (S.pastClients && S.pastClients.status && S.pastClients.status !== "draft") { PCP.confirm = ""; toast("It was already started on another device."); pcRefresh(); return; }
+  PCP.confirm = "";
+  try { if (await pcSave({ status: "running", consent: true, consentAt: new Date().toISOString() })) toast("Started. Texts go out in the hours and days you picked.", 6000); } catch (e) {}
+  pcRefresh();
+};
+EXTRA_ACTS["pc-no"] = () => { PCP.confirm = ""; pcRefresh(); };
+EXTRA_ACTS["pc-pause"] = () => pcSetStatus("paused", null, "Paused. No more texts go out until you resume.").catch(() => {});
+EXTRA_ACTS["pc-resume"] = () => { if (vacOn()) { toast(VAC_BLOCK, 6000); return; } return pcSetStatus("running", null, "Resumed").catch(() => {}); };
+EXTRA_ACTS["pc-stop"] = () => { PCP.confirm = "stop"; pcRefresh(); };
+EXTRA_ACTS["pc-stop-yes"] = async () => { PCP.confirm = ""; try { await pcSetStatus("stopped", { stoppedAt: new Date().toISOString() }, "Stopped. Nobody gets another text from it."); } catch (e) {} };
+EXTRA_ACTS["pc-test"] = async (t) => {
+  pcRead(); const n = $("#pc-test"), to = e164(n ? n.value : ""); if (!to) { toast("Type your cell number for the test."); return; }
+  const sel = $("#pc-test-n"), s = PCD.steps[+(sel ? sel.value : 0)] || PCD.steps[0]; S.tx.test = n.value;
+  t.disabled = true; try { if (await txQueue(to, pcFill(s.body, pcFirstUp()), { test: true })) toast(`Test text going to ${fmtPhone(to)}`); } catch (e) {} finally { t.disabled = false; }
+};
+["pc-q", "pc-test", "pc-test-n", "pc-add"].forEach(id => LIVE_IDS.add(id));
+document.addEventListener("input", (e) => {
+  if (!PCD || !e.target.closest || !e.target.closest("#modal") || !$("#modal #pc-acts")) return;
+  const id = e.target.id || "";
+  if (id === "pc-q") { PCP.q = e.target.value; pcRefresh(); return; }
+  if (/^pc-(body|days)-\d+$/.test(id) || ["pc-rate", "pc-date", "pc-start", "pc-end"].includes(id)) { S.dirty = true; pcRead(); pcRefresh(); }
+});
+document.addEventListener("click", (e) => {
+  const t = e.target.closest && e.target.closest("[data-pc-day]"); if (!t || !PCD) return;
+  S.dirty = true; setTimeout(() => { pcRead(); pcRefresh(); }, 0);
+}, true);
+// the name for a number that's on the list (Texts, notifications)
+function pcName(phone) {
+  const p = e164(phone), x = p && S.pastClients && (S.pastClients.people || []).find(y => y.phone === p);
+  return x ? (x.first ? `${x.first} (past client)` : `Past client ${fmtPhone(p)}`) : "";
+}
 // ---------- AUTOMATIC TEXTS (elias, 2026-10-29): appointment reminders and re-clean texts ----------
 // Both are off until elias turns them on (settings/blast-autotext, which only the owner can change). The texting script
 // (version 6) sends them from the business number, 8 AM to 8 PM:
