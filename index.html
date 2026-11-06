@@ -9953,7 +9953,8 @@ function tiBoxHTML() {
     : tiTouch() ? `Send in Quo copies the picture and opens Quo with this message to their number. Tap the message box, tap Paste to add the picture, then Send.${tiCanShare() ? " Share picture sends it another way (Messages, or Save Image to your photos)." : ""}`
     : "Copy picture, then paste it into their conversation in Quo with the message. Or download it and attach it there.";
   // the owner, without the one-tap send yet: what it takes
-  const setup = tiDirect() || !txOwner() ? "" : !txCanSend() ? "To send it from here in one tap, connect texting in Settings > Texting." : !tiScriptOk() ? "To send it from here in one tap, update the texting script: Settings > Texting, steps 4 and 5, and allow it when Google asks." : "";
+  const setup = tiDirect() || !txOwner() ? "" : txState() === "none" ? "To send it from here in one tap, connect texting in Settings > Texting."
+    : txState() === "error" ? `Send invoice is off until texting works again. ${(S.textSender || {}).lastError || ""} (Settings > Texting)` : !txCanSend() ? `Send invoice is off for now. ${txWhyNot()}` : !tiScriptOk() ? "To send it from here in one tap, update the texting script: Settings > Texting, steps 4 and 5, and allow it when Google asks." : "";
   return `<div class="panel stack ti-box">${head}
     <label class="f">To<input type="tel" id="ti-phone" value="${esc(ph ? fmtPhone(ph) : "")}" placeholder="Their cell number"></label>
     <p class="note">${where}</p>
