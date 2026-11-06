@@ -7708,7 +7708,7 @@ function ibGo(id, leadId) {
 // with "Reply STOP to opt out." Blasts only send 8 AM to 8 PM Eastern (Florida's limits), and none in vacation mode.
 const TX_ON = () => STANDALONE && !!window.GIC;
 // 3: appointment reminders and re-clean texts (autotext.js). Texting works with 2; only the automatic texts need 3.
-const TEXT_SENDER_VERSION = 13, TEXT_SENDER_MIN = 2;
+const TEXT_SENDER_VERSION = 14, TEXT_SENDER_MIN = 2;
 const TX_STOP_LINE = "Reply STOP to opt out.";
 const TX_MAX = 1500; // characters in one text (Quo takes 1,600)
 S.texts = []; S.textBlasts = []; S.textRuns = {}; S.textSender = null; S.textOut = {}; S.textKey = null; S.textRulesOk = null;
@@ -7772,6 +7772,7 @@ function txListen(db) {
     S.texts = list;
     if (S.view === "email" || S.view === "today") schedule(); else renderNav();
     if (openLeadId && S.leadTab === "messages") refreshLeadModal();
+    if (typeof tiOnTexts === "function") tiOnTexts();
     txMarkRead();
   }, () => {});
   if (canEditBlast()) txKeyLoad();
@@ -7870,13 +7871,21 @@ async function txQueue(phone, body, extra) {
   extra = extra || {}; const to = e164(phone); body = String(body || "").replace(/\s+$/, "");
   if (!to) { toast("That isn't a US phone number."); return null; }
   if (!body.trim()) { toast("Type the text first."); return null; }
-  if (body.length > TX_MAX) { toast(`That text is too long. Keep it under ${TX_MAX} characters.`); return null; }
+  // (a picture's link goes on the end)
+  const room = extra.img || extra.imgUrl ? TX_MAX - 120 : TX_MAX;
+  if (body.length > room) { toast(`That text is too long. Keep it under ${room} characters.`); return null; }
   const bl = txBlocked(to); if (bl) { toast(bl, 6000); return null; }
   if (!txCanSend()) { toast(txWhyNot() || "Texting isn't set up yet.", 6000); return null; }
   const id = uid("text"), now = new Date().toISOString(), l = extra.lead || txLeadsFor(to).find(x => !x.dnc) || null;
   const doc = { kind: "text", phone: to, dir: "out", body, at: now, status: "queued", leadId: l ? l.id : "", by: S.myId || "", unread: false };
   if (extra.drip) doc.drip = extra.drip;
   if (extra.test) doc.test = true;
+  // a picture (Send invoice): the texting script saves it to the owner's Google Drive, shared to anyone with the link, and
+  // puts the link on the end of the text (Quo's API can't attach pictures). img is cleared once it's saved there.
+  if (extra.img) doc.img = extra.img;
+  if (extra.imgUrl) doc.imgUrl = extra.imgUrl;
+  if (extra.imgName) doc.imgName = extra.imgName;
+  if (extra.quoteId) doc.quoteId = extra.quoteId;
   // the contact's history (and New → Contacted) is updated by the texting script once the text has actually gone, so a
   // text that's called back, waits too long or is refused doesn't count. A drip text is logged by the drip itself.
   await saveDoc("texts", id, doc);
@@ -7886,7 +7895,7 @@ const TX_STATUS = { queued: ["Sending…", ""], sending: ["Sending…", ""], sen
 function txBubble(t) {
   const [st, cls] = (t.dir === "out" && TX_STATUS[t.status]) || ["", ""], blast = t.campaignId ? S.textBlasts.find(b => b.id === t.campaignId) : null;
   const meta = [fmtD(t.at, { month: "short", day: "numeric" }) + " " + fmtT(t.at), st, blast ? `Text blast: ${blast.name || "Untitled"}` : t.dir === "out" && t.via === "quo" ? "Sent from Quo" : "", t.media ? "Has a picture (open Quo to see it)" : ""].filter(Boolean).join(" · ");
-  const retry = t.status === "failed" && !t.retriedAs && !t.campaignId && !txBlocked(e164(t.phone)) && txCanSend() ? ` <button class="btn sm ghost" data-act="tm-retry" data-id="${esc(t.id)}">Send again</button>` : t.retriedAs ? " Sent again below." : "";
+  const retry = t.status === "failed" && !t.retriedAs && !t.campaignId && !(t.quoteId && (!t.imgUrl || !txOwner())) && !txBlocked(e164(t.phone)) && txCanSend() ? ` <button class="btn sm ghost" data-act="tm-retry" data-id="${esc(t.id)}">Send again</button>` : t.retriedAs ? " Sent again below." : "";
   // still waiting for the script: it can be called back
   const cancel = t.dir === "out" && t.status === "queued" && !t.campaignId && (txOwner() || t.by === S.myId) ? `<div class="tm-err"><button class="btn sm ghost" data-act="tm-cancel" data-id="${esc(t.id)}">Don't send it</button></div>` : "";
   return `<div class="tm-b ${t.dir === "in" ? "in" : "out"}${cls ? " " + cls : ""}"><div class="tm-txt">${esc(t.body || "")}</div><div class="tm-meta">${esc(meta)}</div>${t.dir === "out" && (t.status === "failed" || t.status === "unknown") ? `<div class="tm-err">${esc(t.error || "It didn't go out.")}${retry}</div>` : ""}${cancel}</div>`;
@@ -8196,7 +8205,7 @@ if (TX_ON()) {
       <label class="f">Service<select id="tx-provider" aria-label="Texting service"><option value="quo" selected>Quo (formerly OpenPhone)</option></select></label>
       <p class="note">Texts go out from your Quo business number, and the answers come back into Email & Texts. A small script in your own Google account does the sending once a minute, so it keeps going when the CRM is closed and your Quo key stays off your crew's logins. Quo charges about 1¢ a text on top of your plan. Set it up once, on a computer.</p>
       ${st !== "none" ? `<p class="note">${s.number ? `Texting from <b>${esc(fmtPhone(s.number))}</b>. ` : ""}Last check ${esc(fmtWhen(new Date(s.lastRun)))}.${s.sentToday ? ` ${plural(s.sentToday, "text")} sent today.` : ""}${s.lastError ? ` <span class="pill due">Problem</span> ${esc(s.lastError)}` : ""}</p>${txBackfilling() ? `<p class="note">${esc(txBackfillNote())}</p>` : ""}` : ""}
-      ${st !== "none" && st !== "old" && (+s.version || 0) < TEXT_SENDER_VERSION ? `<div class="banner info">There's new code for the texting script. It adds the past clients texts (Email & Texts > Texts > Blasts), re-clean texts by service and the two job reminders (Settings > Follow-ups), which stay off until you turn them on there, plus notifications on your phone (Settings > Notifications). Texting keeps working with the code you have now. To get it, do steps 4 and 5 again, and allow it if Google asks.</div>` : ""}
+      ${st !== "none" && st !== "old" && (+s.version || 0) < TEXT_SENDER_VERSION ? `<div class="banner info">There's new code for the texting script. It lets Send invoice (on an invoice, Text invoice) text the picture of the invoice in one tap: the picture is saved in your Google Drive and the text ends with its link. Texting keeps working with the code you have now. To get it, do steps 4 and 5 again, and allow it when Google asks to use Google Drive.</div>` : ""}
       ${step(1, `Get your Quo API key${done(k ? k.has : null)}`, `<p class="note">In Quo on a computer, open Settings, then <b>API</b>, then <b>Generate API key</b> (only the Quo account owner or an admin sees it). Name it CRM, copy it, and paste it here. Quo also has to finish your US carrier registration (10DLC) before texts can go out this way. That's under Settings in Quo too.</p>
         <div class="row"><input type="password" id="tx-key" placeholder="${k && k.has ? `Saved key ending in ${esc(k.last4)}` : "Paste the API key"}" autocomplete="off" spellcheck="false" style="flex:1 1 240px" aria-label="Quo API key"><button class="btn primary" data-act="tx-key-save">Save key</button>${k && k.has ? `<button class="btn ghost" data-act="tx-key-del">Remove</button>` : ""}</div>`)}
       ${step(2, `Update your database rules${done(S.textRulesOk)}`, `<p class="note">${S.textRulesOk ? "Your rules are up to date: only you can read the key or start text blasts." : `Open the <a href="https://console.firebase.google.com/project/${esc(pid)}/firestore/rules" target="_blank" rel="noopener">Firebase rules page</a>, select everything there, paste the new rules over it, and tap Publish. The key can't be saved until this is done. (The same rules cover email blasts and the links in invoice texts.)`}</p>${S.textRulesOk ? "" : `<div class="row"><button class="btn" data-act="tx-copy-rules">Copy the rules</button></div>`}`)}
@@ -8227,7 +8236,8 @@ Object.assign(EXTRA_ACTS, {
   "tm-retry": async (t) => {
     const x = S.texts.find(y => y.id === t.dataset.id); if (!x || x.retriedAs || txSending.has("re:" + x.id)) return;
     txSending.add("re:" + x.id); t.disabled = true;
-    try { const id = await txQueue(x.phone, x.body, x.leadId && leadById(x.leadId) ? { lead: leadById(x.leadId) } : {}); if (id) { toast("Sending it again"); await saveDoc("texts", x.id, { retriedAs: id }, true).catch(() => {}); } else t.disabled = false; }
+    try { const ex = x.leadId && leadById(x.leadId) ? { lead: leadById(x.leadId) } : {}; ["imgUrl", "imgName", "quoteId"].forEach(k => { if (x[k]) ex[k] = x[k]; });
+      const id = await txQueue(x.phone, x.body, ex); if (id) { toast("Sending it again"); await saveDoc("texts", x.id, { retriedAs: id }, true).catch(() => {}); } else t.disabled = false; }
     catch (e) { t.disabled = false; } finally { txSending.delete("re:" + x.id); }
   },
   "tm-cancel": async (t) => {
@@ -8671,8 +8681,19 @@ function textSender(PROJECT, VERSION, fsKit) {
     const docs = F.query("texts", [["status", "EQUAL", "queued"]], 30), srv = Date.parse(F.serverTime() || "") || now.getTime();
     docs.forEach(d => {
       const born = Math.min(Date.parse(d._c || "") || Infinity, Date.parse(d.at || "") || Infinity);
-      if (born < Infinity && srv - born > 30 * 60000) F.patch("texts/" + d.id, { status: "failed", error: "It waited too long to go out (no signal on the phone, or the texting script wasn't running), so it wasn't sent. Send it again if it's still needed." }, ["status", "error"], d._t);
+      if (born < Infinity && srv - born > 30 * 60000) F.patch("texts/" + d.id, { status: "failed", error: "It waited too long to go out (no signal on the phone, or the texting script wasn't running), so it wasn't sent. Send it again if it's still needed." }, ["status", "error", "img"], d._t);
     });
+  }
+  // a picture from Send invoice: saved in the owner's Google Drive (folder "Get It Clean invoices"), anyone with the link
+  // can view it, and the text carries that link (Quo's API sends words only)
+  const IMG_DIR = "Get It Clean invoices";
+  function saveImg(d) {
+    const m = /^data:image\/(jpeg|png);base64,([A-Za-z0-9+\/=]+)$/.exec(String(d.img || "")); if (!m) throw new Error("not a picture");
+    const it = DriveApp.getFoldersByName(IMG_DIR), dir = it.hasNext() ? it.next() : DriveApp.createFolder(IMG_DIR);
+    const name = String(d.imgName || "Invoice").replace(/[\\/:*?"<>|]+/g, " ").trim().slice(0, 90) || "Invoice";
+    const f = dir.createFile(Utilities.newBlob(Utilities.base64Decode(m[2]), "image/" + m[1], name));
+    f.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    return "https://drive.google.com/file/d/" + f.getId() + "/view";
   }
   function sendQueued(cfg, st, now, ctx) {
     const docs = F.query("texts", [["status", "EQUAL", "queued"]], 12).sort((a, b) => String(a.at || "").localeCompare(String(b.at || "")));
@@ -8684,7 +8705,8 @@ function textSender(PROJECT, VERSION, fsKit) {
       const at = now.toISOString();
       if (!F.patch("texts/" + d.id, { status: "sending", claimedAt: at }, null, d._t)) { const x = F.get("texts/" + d.id); if (!x || x.status !== "sending" || x.claimedAt !== at) continue; }
       n++;
-      const fail = (error) => F.patch("texts/" + d.id, { status: "failed", error: error });
+      // (a picture that doesn't go isn't kept: the document stays small)
+      const fail = (error) => F.patch("texts/" + d.id, { status: "failed", error: error }, d.img ? ["status", "error", "img"] : null);
       const to = e164(d.phone);
       if (!to) { fail("That isn't a US phone number."); continue; }
       // only plain texts typed in the CRM go out this way (blast texts are sent by the blast)
@@ -8704,8 +8726,24 @@ function textSender(PROJECT, VERSION, fsKit) {
         if (st.crew.n >= 40) { fail("Too many texts from crew logins this hour, so it wasn't sent. Try again later."); continue; }
         st.crew.n++;
       }
-      const res = sendOne(cfg, to, String(d.body || ""));
+      let body = String(d.body || "");
+      if (d.img || d.imgUrl) {
+        // pictures only from the owner's login (crew can't save one anyway)
+        if (!cfg.owner || d.by !== cfg.owner) { fail("Only the owner's login can text a picture."); continue; }
+        let url = String(d.imgUrl || "");
+        if (!url) {
+          try { url = saveImg(d); }
+          catch (e) { console.log("Saving the picture to Google Drive: " + e); fail("The texting script couldn't save the picture to your Google Drive, so it wasn't sent. Update the texting script (Settings > Texting, steps 4 and 5) and allow it to use Google Drive when Google asks, then tap Send invoice again."); continue; }
+          // saved first, so a send that has to wait uses the same picture
+          F.patch("texts/" + d.id, { imgUrl: url }, ["imgUrl", "img"]);
+        }
+        body = body.replace(/\s+$/, "") + "\n" + url;
+        if (body.length > MAX) { fail("Too long for one text."); continue; }
+      }
+      const res = sendOne(cfg, to, body);
       if (res.retry) { F.patch("texts/" + d.id, { status: "queued" }); break; }
+      // (sent, it shows with the link it went with)
+      if (res.ok && body !== String(d.body || "")) res.fields.body = body;
       F.patch("texts/" + d.id, res.fields);
       if (res.ok) { st.sentToday = (st.sentToday || 0) + 1; if (d.leadId && !d.drip && !d.test) logSent(d, l, now); }
       else if (res.failed && res.optout) markOut(ctx, pkey(to), { at: now.toISOString(), why: "stop", from: "quo" });
@@ -9301,7 +9339,7 @@ ${autoPlan.toString()}
 ${fsKit.toString()}
 `;
 const TEXT_MANIFEST = JSON.stringify({ timeZone: "America/New_York", runtimeVersion: "V8", exceptionLogging: "STACKDRIVER",
-  oauthScopes: ["https://www.googleapis.com/auth/datastore", "https://www.googleapis.com/auth/script.external_request", "https://www.googleapis.com/auth/script.scriptapp", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/calendar.readonly", "https://www.googleapis.com/auth/firebase.messaging"] }, null, 2);
+  oauthScopes: ["https://www.googleapis.com/auth/datastore", "https://www.googleapis.com/auth/script.external_request", "https://www.googleapis.com/auth/script.scriptapp", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/calendar.readonly", "https://www.googleapis.com/auth/firebase.messaging", "https://www.googleapis.com/auth/drive"] }, null, 2);
 
 // ---------- past clients (elias, 2026-11-04) ----------
 // A first text and follow-ups to the past customers from elias's old customer sheet who aren't in the CRM, kept apart
@@ -9790,6 +9828,11 @@ async function autoSave(k, on) {
 // their number with the message (paste, then Send), and Share picture opens the share sheet; on a computer, Copy picture
 // or Download picture. No link is made anymore. Invoices texted before keep their link, which still opens (i.html) and
 // still follows saved changes (tiResync).
+// Nov 6 (elias): "I literally just want to click send invoice and it sends to the customer with a pre-built message."
+// On the owner's login, with texting connected and the texting script at version 14, the box has Send invoice: the
+// text is queued with a picture of the invoice (img), the texting script saves the picture in the owner's Google Drive
+// (anyone with the link can view it) and sends the message with that link on the end, from the Quo number, and the
+// invoice is marked Sent. The box shows how the text is doing. Send in Quo / Share / Copy / Download stay as other ways.
 const TI_MAX = 900000; // a Firestore document holds 1 MB
 let TI = null; // the text box: { q (the editor copy it's for), qid, ready, err, body, sig, file (the picture), url (to show it) }
 // keys of links from before (none are made now), pictures being made, and deleted invoices
@@ -9819,7 +9862,7 @@ function tiSame(was, q) {
 const TI_CHANGED = "The invoice changed. Tap Text invoice again to text the new one.";
 function tiBody(q, l) {
   const first = (l && String(l.name || "").trim().split(/\s+/)[0]) || "there", tot = money(quoteTotals(q).total, true);
-  return `Hi ${first}, this is ${BUSINESS.owner} with ${BUSINESS.name}. Here's your ${q.status === "paid" ? "paid invoice" : "invoice"} for ${tot}.\n\nThank you for your business!`;
+  return `Hi ${first}, this is ${BUSINESS.owner} with ${BUSINESS.name}. Thank you for your business! Here's your ${q.status === "paid" ? "paid invoice" : "invoice"} for ${tot}:`;
 }
 // a picture of the invoice small enough to keep (the same one Picture (to text) makes, a little lighter)
 async function tiPicture(q) {
@@ -9859,13 +9902,45 @@ const tiTouch = () => { try { return matchMedia("(pointer: coarse)").matches; } 
 const tiCanShare = () => { try { return !!(TI && TI.file && navigator.canShare && navigator.canShare({ files: [TI.file] })); } catch (e) { return false; } };
 // Quo's composer on their number, from the Quo number, with the message (Quo's own link for its phone app)
 const tiQuoLink = (to) => { const from = S.textSender && S.textSender.number; return `openphone://message?number=${encodeURIComponent(e164(to))}${from ? `&from=${encodeURIComponent(from)}` : ""}&text=${encodeURIComponent(TI ? TI.body : "")}`; };
+// Send invoice: the owner's login, texting on, and a texting script that can send a picture's link (version 14)
+const TI_PIC_VERSION = 14;
+const tiScriptOk = () => (+((S.textSender || {}).version) || 0) >= TI_PIC_VERSION;
+const tiDirect = () => txOwner() && txCanSend() && tiScriptOk();
+const tiSentText = () => (TI && TI.sentId && S.texts.find(y => y.id === TI.sentId)) || null;
+const tiSentState = () => !TI || !TI.sentId ? "" : (tiSentText() || { status: "queued" }).status;
 function tiGoHTML(phone) {
   const to = e164(phone), bl = to ? txBlocked(to) : "";
   if (!to) return `<p class="note">Type their cell number to text it.</p>`;
   if (bl) return `<p class="note">${esc(bl)} Don't text them from your phone either.</p>`;
-  return tiTouch() ? `<a class="btn primary" id="ti-quo" href="${esc(tiQuoLink(to))}">Send in Quo</a>${tiCanShare() ? `<button class="btn" data-act="ti-share">Share picture</button>` : ""}`
-    : `<button class="btn primary" data-act="ti-copy">Copy picture</button><button class="btn" data-act="ti-dl">Download picture</button>`;
+  const direct = tiDirect(), st = tiSentState();
+  // sent (or on its way): no second button, the line under it says how it's doing
+  if (direct && st && st !== "failed" && st !== "cancelled") return "";
+  const pr = direct ? "" : " primary";
+  const other = tiTouch() ? `<a class="btn${pr}" id="ti-quo" href="${esc(tiQuoLink(to))}">Send in Quo</a>${tiCanShare() ? `<button class="btn" data-act="ti-share">Share picture</button>` : ""}`
+    : `<button class="btn${pr}" data-act="ti-copy">Copy picture</button><button class="btn" data-act="ti-dl">Download picture</button>`;
+  return direct ? `<button class="btn primary" data-act="ti-send"${TI && TI.sending ? " disabled" : ""}>${st ? "Send it again" : "Send invoice"}</button>${other}` : other;
 }
+// how the text from Send invoice is doing
+function tiStNote() {
+  if (!TI) return "";
+  if (TI.sending && !TI.sentId) return "Getting the picture ready…";
+  if (!TI.sentId) return "";
+  const x = tiSentText(), st = tiSentState(), who = fmtPhone(TI.sentTo);
+  if (st === "sent") return `Sent to ${who} from your Quo number.`;
+  if (st === "delivered") return `Delivered to ${who}.`;
+  if (st === "failed") return `It didn't go. ${(x && x.error) || ""}`.trim();
+  if (st === "unknown") return (x && x.error) || "Check the conversation in Quo.";
+  if (st === "cancelled") return "Canceled, so it didn't go.";
+  return `Sending to ${who}…`;
+}
+function tiPaint() {
+  if (!TI || !QD || TI.q !== QD) return;
+  const g = $("#ti-go"), n = $("#ti-st");
+  if (g) g.innerHTML = tiGoHTML(($("#ti-phone") || {}).value || "");
+  if (n) { const st = tiSentState(); n.textContent = tiStNote(); n.className = "note" + (st === "failed" || st === "cancelled" ? " bad" : st === "sent" || st === "delivered" ? " good" : ""); }
+}
+// the texts list changed: the box follows the one it sent
+function tiOnTexts() { if (TI && TI.sentId) tiPaint(); }
 function tiBoxHTML() {
   if (!TI || !QD || TI.q !== QD) return "";
   const l = leadById(QD.leadId), ph = tiPhone(QD, l);
@@ -9874,16 +9949,21 @@ function tiBoxHTML() {
   if (!TI.ready) return `<div class="panel stack ti-box">${head}<p class="note">Making the picture of the invoice…</p></div>`;
   const where = ph ? (l && !l.phoneBad && leadPhone(l) === ph ? `The number on ${esc(leadName(l))}'s lead.` : "The number in Bill To.") + (l && l.phoneBad ? ` The one on ${esc(leadName(l))}'s lead is marked wrong.` : "")
     : l && l.phoneBad ? `The number on ${esc(leadName(l))}'s lead is marked wrong. Type the right one.` : `No cell number on ${l ? esc(leadName(l)) + "'s lead" : "this invoice"}. Type theirs.`;
-  const how = tiTouch() ? `Send in Quo copies the picture and opens Quo with this message to their number. Tap the message box, tap Paste to add the picture, then Send.${tiCanShare() ? " Share picture sends it another way (Messages, or Save Image to your photos)." : ""}`
+  const how = tiDirect() ? `Send invoice texts this message from your Quo number. The text ends with a link that opens this picture (it's saved in your Google Drive, not the CRM). The invoice is marked Sent.`
+    : tiTouch() ? `Send in Quo copies the picture and opens Quo with this message to their number. Tap the message box, tap Paste to add the picture, then Send.${tiCanShare() ? " Share picture sends it another way (Messages, or Save Image to your photos)." : ""}`
     : "Copy picture, then paste it into their conversation in Quo with the message. Or download it and attach it there.";
+  // the owner, without the one-tap send yet: what it takes
+  const setup = tiDirect() || !txOwner() ? "" : !txCanSend() ? "To send it from here in one tap, connect texting in Settings > Texting." : !tiScriptOk() ? "To send it from here in one tap, update the texting script: Settings > Texting, steps 4 and 5, and allow it when Google asks." : "";
   return `<div class="panel stack ti-box">${head}
     <label class="f">To<input type="tel" id="ti-phone" value="${esc(ph ? fmtPhone(ph) : "")}" placeholder="Their cell number"></label>
     <p class="note">${where}</p>
     <label class="f">Message<textarea id="ti-body" rows="4">${esc(TI.body)}</textarea></label>
     <img id="ti-pic" src="${esc(TI.url)}" alt="Picture of invoice ${esc(QD.number || "")}" style="width:100%;max-width:440px;border:1px solid var(--line);border-radius:8px">
-    <p class="note">The picture of the invoice goes with the message. No link.</p>
+    <p class="note">${tiDirect() ? "The text ends with a link to this picture. It doesn't open the CRM." : "The picture of the invoice goes with the message. No link."}</p>
     <div class="row" id="ti-go">${tiGoHTML(ph)}</div>
-    <p class="note" id="ti-how">${esc(how)}</p>
+    <p class="note" id="ti-st">${esc(tiStNote())}</p>
+    <p class="note" id="ti-how">${esc(how)}</p>${setup ? `
+    <p class="note">${esc(setup)}</p>` : ""}
   </div>`;
 }
 function tiRefresh() { const b = $("#q-text"); if (b) b.innerHTML = tiBoxHTML(); }
@@ -9935,6 +10015,24 @@ EXTRA_ACTS["ti-copy"] = async () => {
   catch (er) { toast("Couldn't copy the picture here. Use Download picture instead."); }
 };
 EXTRA_ACTS["ti-dl"] = async () => { if (!tiOk()) return; await saveFile(TI.file.name, TI.file); };
+// Send invoice: queued with the picture; the texting script puts it in Google Drive and sends the message with its link
+EXTRA_ACTS["ti-send"] = async () => {
+  if (!tiOk() || !tiDirect() || TI.sending) return;
+  const mine = TI, to = e164(($("#ti-phone") || {}).value || "");
+  if (!to) { toast("Type their cell number first."); return; }
+  if (txBlocked(to)) { toast(txBlocked(to), 6000); return; }
+  mine.sending = true; tiPaint();
+  try {
+    const snap = tiSnap(mine.q), img = await tiPicture(snap);
+    if (TI !== mine || !tiOk()) return;
+    const l = leadById(snap.leadId);
+    const id = await txQueue(to, mine.body, { lead: l && !l.dnc ? l : undefined, img, imgName: `Get It Clean invoice ${snap.number || ""}`.trim() + ".jpg", quoteId: snap.id });
+    if (!id) return;
+    mine.sentId = id; mine.sentTo = to; mine.sending = false; tiPaint();
+    await tiSent(`Invoice texted to ${fmtPhone(to)}.`);
+  } catch (e) { toast((e && e.message) || "Couldn't send it. Try again.", 6000); }
+  finally { mine.sending = false; if (TI === mine) tiPaint(); }
+};
 // the editor was closed while the text was saving: marked Sent from what's saved, as the Sent button does
 async function tiMarkSent(qid) {
   const q = S.quotes.find(x => x.id === qid); if (!q || (q.status || "draft") !== "draft") return;
