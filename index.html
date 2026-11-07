@@ -1562,7 +1562,15 @@ html.gated, html.gated body { overflow: hidden; }
     hideGate(); readyResolve(); fire("gic-signed-in", { email, isOwner });
   });
 
-  if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost") && (CFG.emulator ? CFG.sw === true : CFG.sw !== false)) navigator.serviceWorker.register("sw.js").catch(() => {});
+  // a phone keeps the CRM open for days, so it checks for a newer version whenever it comes back to the screen (and every
+  // half hour): one put up meanwhile takes over, and the page is told (gic-update) so it can reload
+  if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost") && (CFG.emulator ? CFG.sw === true : CFG.sw !== false)) navigator.serviceWorker.register("sw.js").then(reg => {
+    const had = !!navigator.serviceWorker.controller; let told = false;
+    navigator.serviceWorker.addEventListener("controllerchange", () => { if (had && !told) { told = true; fire("gic-update", {}); } });
+    const check = () => { reg.update().catch(() => {}); };
+    document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") check(); });
+    setInterval(check, 30 * 60000);
+  }).catch(() => {});
 })();
 
 </script>
@@ -5528,6 +5536,14 @@ if (STANDALONE && window.GIC) {
   // the line under the menu says when changes are still waiting for a signal
   window.addEventListener("gic-sync", (e) => { const d = e.detail || {}; S.syncNote = d.pending ? `${plural(d.pending, "change")} waiting to sync` : !d.online ? "Offline · changes sync when you're back online" : ""; schedule(); });
   window.addEventListener("gic-write-failed", (e) => { toast((e.detail || {}).code === "revoked" ? "A change couldn't be saved: your login doesn't have access anymore." : "A change made while offline couldn't be saved. Check that it's still there.", 7000); });
+  // a newer CRM went up while this one stayed open (a phone keeps it for days; shim.js checks when it's back on screen):
+  // it reloads right away when nothing is open, being typed or waiting to save, else a toast offers it
+  window.addEventListener("gic-update", () => {
+    const a = document.activeElement, m = $("#modal"), G = window.GIC;
+    const busy = S.dirty || (m && m.innerHTML.trim()) || (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && a.value) || (G && typeof G.pendingWrites === "function" && G.pendingWrites() > 0) || S.syncNote;
+    if (!busy) { location.reload(); return; }
+    toast("There's a newer version of the CRM.", 20000, { label: "Reload", fn: () => location.reload() });
+  });
 }
 
 // ---------- STANDALONE WEBSITE: Angi leads ----------
@@ -7728,7 +7744,7 @@ function ibGo(id, leadId) {
 // with "Reply STOP to opt out." Blasts only send 8 AM to 8 PM Eastern (Florida's limits), and none in vacation mode.
 const TX_ON = () => STANDALONE && !!window.GIC;
 // 3: appointment reminders and re-clean texts (autotext.js). Texting works with 2; only the automatic texts need 3.
-const TEXT_SENDER_VERSION = 15, TEXT_SENDER_MIN = 2;
+const TEXT_SENDER_VERSION = 16, TEXT_SENDER_MIN = 2;
 const TX_STOP_LINE = "Reply STOP to opt out.";
 const TX_MAX = 1500; // characters in one text (Quo takes 1,600)
 S.texts = []; S.textBlasts = []; S.textRuns = {}; S.textSender = null; S.textOut = {}; S.textKey = null; S.textRulesOk = null;
@@ -7792,6 +7808,7 @@ function txListen(db) {
     S.texts = list;
     if (S.view === "email" || S.view === "today") schedule(); else renderNav();
     if (openLeadId && S.leadTab === "messages") refreshLeadModal();
+    if (typeof tiOnTexts === "function") tiOnTexts();
     txMarkRead();
   }, () => {});
   if (canEditBlast()) txKeyLoad();
@@ -8216,7 +8233,7 @@ if (TX_ON()) {
       <label class="f">Service<select id="tx-provider" aria-label="Texting service"><option value="quo" selected>Quo (formerly OpenPhone)</option></select></label>
       <p class="note">Texts go out from your Quo business number, and the answers come back into Email & Texts. A small script in your own Google account does the sending once a minute, so it keeps going when the CRM is closed and your Quo key stays off your crew's logins. Quo charges about 1¢ a text on top of your plan. Set it up once, on a computer.</p>
       ${st !== "none" ? `<p class="note">${s.number ? `Texting from <b>${esc(fmtPhone(s.number))}</b>. ` : ""}Last check ${esc(fmtWhen(new Date(s.lastRun)))}.${s.sentToday ? ` ${plural(s.sentToday, "text")} sent today.` : ""}${s.lastError ? ` <span class="pill due">Problem</span> ${esc(s.lastError)}` : ""}</p>${txBackfilling() ? `<p class="note">${esc(txBackfillNote())}</p>` : ""}` : ""}
-      ${st !== "none" && st !== "old" && (+s.version || 0) < TEXT_SENDER_VERSION ? `<div class="banner info">There's new code for the texting script. It gets the invoice picture ready so that on your phone, Text invoice > Send invoice opens Quo with the message and the picture attached. Texting keeps working with the code you have now. To get it, do steps 4 and 5 again, and allow it when Google asks.</div>` : ""}
+      ${st !== "none" && st !== "old" && (+s.version || 0) < TEXT_SENDER_VERSION ? `<div class="banner info">There's new code for the texting script. With it, Text invoice on a computer opens Quo right on the customer's conversation to paste the picture. Texting keeps working with the code you have now. To get it, do steps 4 and 5 again, and allow it if Google asks.</div>` : ""}
       ${step(1, `Get your Quo API key${done(k ? k.has : null)}`, `<p class="note">In Quo on a computer, open Settings, then <b>API</b>, then <b>Generate API key</b> (only the Quo account owner or an admin sees it). Name it CRM, copy it, and paste it here. Quo also has to finish your US carrier registration (10DLC) before texts can go out this way. That's under Settings in Quo too.</p>
         <div class="row"><input type="password" id="tx-key" placeholder="${k && k.has ? `Saved key ending in ${esc(k.last4)}` : "Paste the API key"}" autocomplete="off" spellcheck="false" style="flex:1 1 240px" aria-label="Quo API key"><button class="btn primary" data-act="tx-key-save">Save key</button>${k && k.has ? `<button class="btn ghost" data-act="tx-key-del">Remove</button>` : ""}</div>`)}
       ${step(2, `Update your database rules${done(S.textRulesOk)}`, `<p class="note">${S.textRulesOk ? "Your rules are up to date: only you can read the key or start text blasts." : `Open the <a href="https://console.firebase.google.com/project/${esc(pid)}/firestore/rules" target="_blank" rel="noopener">Firebase rules page</a>, select everything there, paste the new rules over it, and tap Publish. The key can't be saved until this is done. (The same rules cover email blasts and the links in invoice texts.)`}</p>${S.textRulesOk ? "" : `<div class="row"><button class="btn" data-act="tx-copy-rules">Copy the rules</button></div>`}`)}
@@ -8668,11 +8685,18 @@ function textSender(PROJECT, VERSION, fsKit) {
   // one text through Quo: sent (with Quo's id), failed (with why and what kind), unknown (Quo didn't answer), or retry
   function sendOne(cfg, to, body) {
     const r = quo(cfg.key, "post", "messages", { content: body, from: cfg.pn, to: [to] });
-    if (r.code >= 200 && r.code < 300) { const m = r.json.data || {}; return { ok: true, id: m.id || "", fields: { status: statusOf(m.status) || "sent", providerId: m.id || "", sentAt: new Date().toISOString(), error: "", poll: true } }; }
+    if (r.code >= 200 && r.code < 300) { const m = r.json.data || {}; return { ok: true, id: m.id || "", conv: String(m.conversationId || ""), fields: { status: statusOf(m.status) || "sent", providerId: m.id || "", sentAt: new Date().toISOString(), error: "", poll: true } }; }
     const k = kindOf(r);
     if (k === "busy") return { retry: true };
     if (k === "unknown") return { unknown: true, fields: { status: "unknown", error: "Quo didn't answer, so it may or may not have gone. Check the conversation in Quo before sending it again." } };
     return { failed: true, kind: k, msg: why(r), optout: /opted[\s-]?out|unsubscribed/i.test(said(r)), fields: { status: "failed", error: why(r) } };
+  }
+  // the Quo conversation with this number (just texted, so it's among the ones changed in the last 10 minutes), or ""
+  function convOf(cfg, to, now) {
+    const r = quo(cfg.key, "get", "conversations?" + qs({ phoneNumbers: cfg.pn, updatedAfter: new Date(now.getTime() - 10 * 60000).toISOString(), maxResults: 50 }));
+    if (r.code < 200 || r.code >= 300) return "";
+    const c = (r.json.data || []).find(x => (x.participants || []).length === 1 && e164(x.participants[0]) === to);
+    return c && /^CN\w+$/.test(String(c.id || "")) ? String(c.id) : "";
   }
   // a daily limit (texts wait until the morning) or an account problem (nothing goes for half an hour, or until a new
   // key is saved)
@@ -8751,6 +8775,13 @@ function textSender(PROJECT, VERSION, fsKit) {
     host("post", "sites/" + site.id + "/releases?versionName=" + encodeURIComponent(v.name), { message: "Invoice pictures" });
   }
   const hex = (bytes) => bytes.map(b => ((b + 256) % 256).toString(16).padStart(2, "0")).join("");
+  // at night it runs every 5 minutes, unless a text typed in the CRM or an invoice picture for Quo is waiting (version 16)
+  function waiting(now) {
+    try {
+      if (F.query("texts", [["status", "EQUAL", "queued"]], 1).length) return true;
+      return F.query("shared", [["createdAt", "GREATER_THAN_OR_EQUAL", new Date(now.getTime() - 2 * 3600000).toISOString()]], 20).some(d => d.kind === "invoice" && d.img && !d.url && !d.picErr);
+    } catch (e) { return false; }
+  }
   function pics(now) {
     const srv = Date.parse(F.serverTime() || "") || now.getTime(), day = Utilities.formatDate(now, TZ, "yyyyMMdd");
     const docs = F.query("shared", [["createdAt", "GREATER_THAN_OR_EQUAL", new Date(srv - 2 * 3600000).toISOString()]], 20).filter(d => d.kind === "invoice" && d.img && !d.url && !d.picErr);
@@ -8813,6 +8844,8 @@ function textSender(PROJECT, VERSION, fsKit) {
       }
       const res = sendOne(cfg, to, String(d.body || ""));
       if (res.retry) { F.patch("texts/" + d.id, { status: "queued" }); break; }
+      // its conversation in Quo (version 16): the CRM's Open Quo goes straight to it (Text invoice on a computer)
+      if (res.ok) res.fields.conv = res.conv || convOf(cfg, to, now);
       F.patch("texts/" + d.id, res.fields);
       if (res.ok) { st.sentToday = (st.sentToday || 0) + 1; if (d.leadId && !d.drip && !d.test) logSent(d, l, now); }
       else if (res.failed && res.optout) markOut(ctx, pkey(to), { at: now.toISOString(), why: "stop", from: "quo" });
@@ -9272,7 +9305,7 @@ function textSender(PROJECT, VERSION, fsKit) {
     const now = new Date(), t = when(now);
     const st = prop("st", {}); st.lastError = "";
     try {
-      if (!force && (t.h >= 22 || t.h < 7) && t.mi % 5) return "night";
+      if (!force && (t.h >= 22 || t.h < 7) && t.mi % 5 && !waiting(now)) return "night";
       if (st.day !== t.day) { st.day = t.day; st.sentToday = 0; }
       if (st.limitUntil && !limited(st, now)) { st.limitUntil = ""; st.limitMsg = ""; }
       expireQueued(now);
@@ -9905,6 +9938,11 @@ async function autoSave(k, on) {
 // key) and the texting script (version 15) puts it on this project's Firebase Hosting at /i/<day>-<key>.jpg, saving the
 // address on shared/{key} (url, or picErr). The customer gets the picture itself, never the address. The tap also copies
 // the picture, so if Quo doesn't attach it, Paste adds it. Quo has no such link on a computer.
+// Nov 6 (elias, on his computer): "I want to be able to do this on both my phone and computer. So find a way." On his
+// phone Quo's link does attach the picture (tested 11/7). On a computer it doesn't open Quo at all, and Quo's API takes
+// words only, but Quo on the web takes a pasted picture. So on a computer Send invoice queues the message like a text
+// typed in the CRM (the texting script sends it from the Quo number within a minute and, from version 16, saves which Quo
+// conversation it's in: conv), then Open Quo opens that conversation on my.quo.com with the picture copied: Ctrl+V, Enter.
 const TI_MAX = 900000; // a Firestore document holds 1 MB
 let TI = null; // the text box: { q (the editor copy it's for), qid, ready, err, body, sig, file (the picture), url (to show it) }
 // keys of links from before (none are made now), pictures being made, deleted invoices, and pictures put up for Quo
@@ -9936,9 +9974,13 @@ function tiBody(q, l) {
   const first = (l && String(l.name || "").trim().split(/\s+/)[0]) || "there", tot = money(quoteTotals(q).total, true);
   return `Hi ${first}, this is ${BUSINESS.owner} with ${BUSINESS.name}. Thank you for your business! Here's your ${q.status === "paid" ? "paid invoice" : "invoice"} for ${tot}:`;
 }
-// a picture of the invoice small enough to keep (the same one Picture (to text) makes, a little lighter)
+// a picture of the invoice small enough for a picture text: carriers turn down big ones (elias's first two came back
+// Undelivered on 11/6 at 1584 px), so it aims for under about 290 KB, and never more than a Firestore document holds
+const TI_MMS = 400000;
 async function tiPicture(q) {
-  for (const [sc, ql] of [[1.5, 0.82], [1.5, 0.6], [1, 0.6]]) { const c = await renderCanvas(sc, q), img = c.toDataURL("image/jpeg", ql); if (img.length < TI_MAX) return img; }
+  let last = "";
+  for (const [sc, ql] of [[1, 0.75], [1, 0.62], [0.85, 0.6], [0.7, 0.6]]) { const c = await renderCanvas(sc, q), img = c.toDataURL("image/jpeg", ql); if (img.length < TI_MMS) return img; last = img; }
+  if (last && last.length < TI_MAX) return last;
   throw new Error("The invoice picture came out too big to share. Combine a few lines, then try again.");
 }
 const tiWithin = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(Object.assign(new Error("late"), { code: "late" })), ms))]);
@@ -9977,6 +10019,13 @@ const tiCanShare = () => { try { return !!(TI && TI.file && navigator.canShare &
 const tiQuoLink = (to) => { const from = S.textSender && S.textSender.number; return `openphone://message?number=${encodeURIComponent(e164(to))}${from ? `&from=${encodeURIComponent(from)}` : ""}&text=${encodeURIComponent(TI ? TI.body : "")}${TI && TI.picUrl ? `&attachments=${encodeURIComponent(TI.picUrl)}` : ""}`; };
 // the picture for Quo: on a phone, with the texting script at version 15 and running
 const TI_PIC_SCRIPT = 15, TI_PIC_WAIT = 150000;
+// on a computer: the message sent from here, then Quo on the web for the picture (its conversation from script version 16)
+const tiWebOn = () => !tiTouch() && txCanSend();
+const tiMsg = () => (TI && TI.msg && S.texts.find(x => x.id === TI.msg.id)) || null;
+const tiQuoWeb = (t) => { const pn = String((S.textSender && S.textSender.phoneNumberId) || ""), c = String((t && t.conv) || ""); return /^PN\w+$/.test(pn) && /^CN\w+$/.test(c) ? `https://my.quo.com/inbox/${pn}/c/${c}` : "https://my.quo.com/inbox"; };
+const tiMsgState = () => { const t = tiMsg(), st = t ? t.status : "queued"; return st === "queued" || st === "sending" ? "going" : st === "failed" || st === "cancelled" ? "failed" : "sent"; };
+// the texts came in again: the box follows the message
+function tiOnTexts() { if (TI && TI.msg) tiPaint(); }
 const tiPicOn = () => { const s = S.textSender; return tiTouch() && !!s && (+s.version || 0) >= TI_PIC_SCRIPT && Date.now() - (Date.parse(s.lastRun || "") || 0) < 20 * 60000; };
 // "wait" (being put on the web), "ready" (Quo attaches it), or "" (Paste adds it)
 const tiPicState = () => !TI || !TI.picWant ? "" : TI.picUrl ? "ready" : TI.picErr ? "" : "wait";
@@ -10006,18 +10055,32 @@ function tiGoHTML(phone) {
   const to = e164(phone), bl = to ? txBlocked(to) : "";
   if (!to) return `<p class="note">Type their cell number to text it.</p>`;
   if (bl) return `<p class="note">${esc(bl)} Don't text them from your phone either.</p>`;
-  if (!tiTouch()) return `<button class="btn primary" data-act="ti-copy">Copy picture</button><button class="btn" data-act="ti-dl">Download picture</button>`;
+  if (!tiTouch()) {
+    const cp = (main) => `<button class="btn${main ? " primary" : ""}" data-act="ti-copy">Copy picture</button><button class="btn" data-act="ti-dl">Download picture</button>`;
+    if (!TI.msg) return tiWebOn() ? `<button class="btn primary" data-act="ti-send">Send invoice</button>${cp()}` : cp(true);
+    const m = tiMsgState();
+    if (m === "going") return `<button class="btn primary" disabled>Sending the message…</button>`;
+    if (m === "failed") return cp(true);
+    return `<a class="btn primary" id="ti-web" href="${esc(tiQuoWeb(tiMsg()))}" target="_blank" rel="noopener">Open Quo</a>${cp()}`;
+  }
   const p = tiPicState(), share = tiCanShare() ? `<button class="btn" data-act="ti-share">Share picture</button>` : "";
   if (p === "wait") return `<button class="btn primary" id="ti-wait" disabled>Getting the picture ready…</button>${share}`;
   return `<a class="btn primary" id="ti-quo" href="${esc(tiQuoLink(to))}">${p === "ready" ? "Send invoice" : "Send in Quo"}</a>${share}`;
 }
 // what the buttons do, as things stand
 function tiHow() {
-  if (!tiTouch()) return "Copy picture, then paste it into their conversation in Quo with the message. Or download it and attach it there. (On your phone, Send invoice opens Quo with the picture already attached: Quo only allows that in its phone app.)";
+  if (!tiTouch()) {
+    const mac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || "") ? "⌘V" : "Ctrl+V";
+    if (!TI || !TI.msg) return tiWebOn() ? `Send invoice texts this message from your Quo number. Then Open Quo takes you to their conversation with the picture copied: click in the message box, press ${mac}, then Enter.` : `${txWhyNot() ? txWhyNot() + " " : ""}Copy picture, then paste it into their conversation in Quo with the message. Or download it and attach it there.`;
+    const t = tiMsg(), m = tiMsgState(), num = fmtPhone(TI.msg.to);
+    if (m === "going") return `Sending the message to ${num} from your Quo number. It takes up to a minute. Keep this open.`;
+    if (m === "failed") return `The message didn't go${t && t.error ? ` (${t.error})` : ""}. Copy picture, then send it with the message from their conversation in Quo.`;
+    return `Message sent to ${num}. Now the picture: click Open Quo${t && t.conv ? "" : `, then click ${num} in your conversations`}, click in the message box, press ${mac}, then Enter.`;
+  }
   const p = tiPicState(), more = tiCanShare() ? " Share picture sends it another way (Messages, or Save Image to your photos)." : "";
   if (p === "wait") return "Getting the picture ready for Quo. It takes up to a minute.";
-  if (p === "ready") return "Send invoice opens Quo with this message and the picture attached. Tap Send there. If the picture isn't on it, tap the message box, tap Paste, then Send.";
-  return `${TI && TI.picErr && TI.picErr !== "late" ? `Couldn't attach the picture for you (${TI.picErr}). ` : TI && TI.picErr ? "The picture wasn't ready in time. " : ""}Send in Quo copies the picture and opens Quo with this message to their number. Tap the message box, tap Paste to add the picture, then Send.${more}`;
+  if (p === "ready") return "Send invoice opens Quo with this message and the picture attached. Tap Send there. If the picture isn't on it, hold your finger on the message box, tap Paste, then Send.";
+  return `${TI && TI.picErr && TI.picErr !== "late" ? `Couldn't attach the picture for you (${TI.picErr}). ` : TI && TI.picErr ? "The picture wasn't ready in time. " : ""}Send in Quo copies the picture and opens Quo with this message to their number. Hold your finger on the message box, tap Paste to add the picture, then Send.${more}`;
 }
 function tiPaint() {
   if (!TI || !QD || TI.q !== QD) return;
@@ -10065,7 +10128,7 @@ EXTRA_ACTS["ti-open"] = async (t) => {
       tiSyncStatus(); if (TI) tiDrop();
       const snap = tiSnap(q), mine = TI = { q, qid, ready: false, err: "", body: tiBody(snap, l), sig: tiSig(snap), file: null, url: "" }; tiRefresh();
       try {
-        const c = await renderCanvas(2, snap), blob = await new Promise((res, rej) => c.toBlob(b => b ? res(b) : rej(new Error("Couldn't make the picture of the invoice. Try again.")), "image/png"));
+        const c = await renderCanvas(1.25, snap), blob = await new Promise((res, rej) => c.toBlob(b => b ? res(b) : rej(new Error("Couldn't make the picture of the invoice. Try again.")), "image/png"));
         mine.file = new File([blob], `Get It Clean invoice ${snap.number || ""}.png`.replace(/ \.png$/, ".png"), { type: "image/png" }); mine.url = URL.createObjectURL(blob); mine.ready = true;
       } catch (e) { mine.err = (e && e.message) || "Couldn't make the picture of the invoice. Try again."; }
       if (TI === mine) { tiRefresh(); if (mine.ready && tiPicOn()) tiPicStart(mine, snap); } else if (mine.url) URL.revokeObjectURL(mine.url);
@@ -10107,7 +10170,24 @@ document.addEventListener("click", (e) => {
   if (!tiOk()) { e.preventDefault(); return; }
   try { navigator.clipboard.write([new ClipboardItem({ "image/png": TI.file })]).catch(() => toast("Couldn't copy the picture. Use Share picture instead.", 6000)); }
   catch (er) { toast("Couldn't copy the picture. Use Share picture instead.", 6000); }
-  tiSent(TI.picUrl ? "Quo opened with the message and the picture. Tap Send there (if the picture isn't on it, tap Paste)." : "Quo opened with the message. Tap the message box, tap Paste to add the picture, then Send.");
+  tiSent(TI.picUrl ? "Quo opened with the message and the picture. Tap Send there (if the picture isn't on it, hold the message box and tap Paste)." : "Quo opened with the message. Hold your finger on the message box, tap Paste to add the picture, then Send.");
+}, true);
+// on a computer: Send invoice sends the message from the Quo number (the invoice is Sent), then Open Quo
+EXTRA_ACTS["ti-send"] = async (b) => {
+  if (!tiOk() || TI.msg) return;
+  const mine = TI, to = e164(($("#ti-phone") || {}).value || "");
+  if (!to) { toast("Type their cell number first."); return; }
+  b.disabled = true;
+  let id = null; try { id = await txQueue(to, mine.body, { lead: leadById(mine.q.leadId) || undefined }); } catch (e) { toast("Couldn't send the message. Try again."); }
+  if (!id) { b.disabled = false; return; }
+  mine.msg = { id, to }; if (TI === mine) tiPaint();
+  await tiSent("The message is going out from your Quo number. Then Open Quo to add the picture.");
+};
+// Open Quo: the picture is copied in the click itself (only allowed then), and Quo opens in a new tab
+document.addEventListener("click", (e) => {
+  const a = e.target && e.target.closest && e.target.closest("#ti-web"); if (!a || !TI || !TI.file) return;
+  try { navigator.clipboard.write([new ClipboardItem({ "image/png": TI.file })]).catch(() => toast("Couldn't copy the picture. Use Copy picture, then paste it in Quo.", 6000)); }
+  catch (er) { toast("Couldn't copy the picture. Use Copy picture, then paste it in Quo.", 6000); }
 }, true);
 // what's typed: the Quo link and the buttons follow
 document.addEventListener("input", (e) => {
