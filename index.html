@@ -165,7 +165,7 @@ p { margin: 0; }
 .pill.s-new { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
 .pill.s-working, .pill.s-visit, .pill.s-quoted { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
 .pill.s-estimate { background: var(--teal-soft); color: var(--teal); border-color: transparent; }
-.pill.s-followup { background: var(--orange-soft); color: var(--orange); border-color: transparent; }
+.pill.s-followup, .pill.s-rebook { background: var(--orange-soft); color: var(--orange); border-color: transparent; }
 .pill.s-selling { background: var(--plum-soft); color: var(--plum); border-color: transparent; }
 .pill.s-scheduled, .pill.s-completed { background: var(--good-soft); color: var(--good); border-color: transparent; }
 .pill.s-paid { background: var(--good); color: #fff; border-color: transparent; }
@@ -1587,10 +1587,13 @@ const SET_EXTRA = {}; const EXTRA_ACTS = {};
 
 const STAGES = [
   ["new", "New"], ["contacted", "Contacted"], ["working", "Working"], ["estimate", "Estimate booked"], ["selling", "Selling"],
-  ["followup", "Follow up"], ["scheduled", "Won / Scheduled"], ["completed", "Done"], ["paid", "Paid"], ["lost", "Lost"]
+  ["followup", "Follow up"], ["scheduled", "Won / Scheduled"], ["completed", "Done"], ["paid", "Paid"], ["rebook", "Rebook later"], ["lost", "Lost"]
 ];
 const STAGE_LABEL = Object.fromEntries(STAGES);
-const OPEN_STAGES = ["new", "contacted", "working", "estimate", "selling", "followup", "scheduled", "completed"];
+// Rebook later (elias, 2026-11-07): past customers he's sold, with a day to reach out about their next job (next season,
+// say). They have work ahead, so they show with the open leads and on the pipeline; elsewhere they count as customers.
+const OPEN_STAGES = ["new", "contacted", "working", "estimate", "selling", "followup", "scheduled", "completed", "rebook"];
+const CUSTOMER_STAGES = ["completed", "paid", "rebook"];
 const TYPES = ["Residential", "HOA / Condo", "Property manager", "Commercial", "Church / School", "Other"];
 // the crew: EL (Elias), AL (his brother), TL (his dad). A job can have any mix of them, saved as "EL + AL".
 const CREW = ["EL", "AL", "TL"];
@@ -1959,7 +1962,7 @@ function kpiData() {
 // set by itself (No answer, a quote sent, Budget next year, a new Angi lead). Set before fuBy was kept: the history says
 // which it was.
 function fuMine(l) {
-  if (l.stage === "followup") return true;
+  if (l.stage === "followup" || l.stage === "rebook") return true;
   if (l.fuBy) return l.fuBy === "you";
   // saved before fuBy was kept: the newest history line that set the day says who set it (No answer, Left voicemail,
   // Wants quote, Budget next year, an estimate sent or a new Angi lead are the CRM's own), and a day nothing in this CRM
@@ -2053,7 +2056,7 @@ function dripRow(x, inLead) {
 function leadShows() {
   const L = leadsOnly();
   const base = [["open", "Open leads", l => OPEN_STAGES.includes(l.stage) && !l.dnc], ["due", "Follow-up due", l => !!dueState(l) || (!l.dnc && !!efuLeadDue(l))], ["all", "All leads", () => true]];
-  const stages = STAGES.map(([k, t]) => [k, k === "paid" ? "Paid (past customers)" : k === "completed" ? "Done, waiting on payment" : t, l => l.stage === k]);
+  const stages = STAGES.map(([k, t]) => [k, k === "paid" ? "Paid (past customers)" : k === "rebook" ? "Rebook later (past customers)" : k === "completed" ? "Done, waiting on payment" : t, l => l.stage === k]);
   const srcs = SOURCES.filter(s => L.some(l => l.source === s)).map(s => ["src:" + s, s, l => l.source === s]);
   const types = TYPES.filter(t => L.some(l => l.type === t)).map(t => ["type:" + t, t, l => l.type === t]);
   return { base, stages, srcs, types, all: base.concat(stages, srcs, types) };
@@ -2106,10 +2109,12 @@ function boardHTML(list) {
   STAGES.forEach(([k, t]) => {
     const items = list.filter(l => l.stage === k);
     const val = sum(items, l => l.value);
-    // empty Paid and Lost columns are only drop targets, so they share one narrow column and the open stages fit on screen
-    if ((k === "paid" || k === "lost") && !shown.has(k)) { drops.push(`<div class="bcol drop-only" data-drop="${k}"><h3>${t}</h3><div class="note">${k === "paid" ? "Drop a lead here to record their payment." : "Drop a lead here to mark it lost."}</div></div>`); return; }
+    // empty Paid, Rebook later and Lost columns are only drop targets, so they share one narrow column and the open stages fit on screen
+    if ((k === "paid" || k === "rebook" || k === "lost") && !shown.has(k)) { drops.push(`<div class="bcol drop-only" data-drop="${k}"><h3>${t}</h3><div class="note">${k === "paid" ? "Drop a lead here to record their payment." : k === "rebook" ? "Drop a past customer here to reach out about their next job." : "Drop a lead here to mark it lost."}</div></div>`); return; }
     cols.push(`<div class="bcol" data-drop="${k}"><h3>${t} <small class="num">${items.length}${val ? " · " + money(val) : ""}</small></h3><div class="cards">${items.slice(0, 150).map(l => `<button class="card" draggable="true" data-drag="${esc(l.id)}" data-open-lead="${esc(l.id)}"><span class="t">${esc(leadName(l))}</span><span class="s">${esc([l.company ? l.name : "", l.city].filter(Boolean).join(" · "))}</span>${l.value ? `<span class="s num">${money(l.value)}</span>` : ""}${dueState(l) ? `<span class="pill ${dueState(l)}">Follow up ${fmtD(l.nextFollowUp)}</span>` : ""}</button>`).join("")}${items.length > 150 ? `<div class="note">+${items.length - 150} more, use the list</div>` : ""}</div></div>`);
   });
+  // (an empty Rebook later on its own, with Paid and Lost shown in full, isn't worth a column: its stage button is on the lead)
+  if (drops.length === 1 && /data-drop="rebook"/.test(drops[0])) drops.length = 0;
   if (drops.length) cols.push(`<div class="bdrops">${drops.join("")}<p class="note">See past customers with “Paid (past customers)” or “Lost” in the list above.</p></div>`);
   return `<div class="board-wrap"><div class="board${drops.length ? " has-drops" : ""}" style="--n:${cols.length - (drops.length ? 1 : 0)}">${cols.join("")}</div></div>`;
 }
@@ -2131,8 +2136,8 @@ function dropOnStage(l, stage) {
     else { closeModal(); S.view = "money"; S.money.form = "job"; S.money.formLead = l.id; S.money.dropPaid = l.id; S.money.jobQuote = undefined; S.money.auto = {}; S.money.gen = (S.money.gen || 0) + 1; forgetTyped(/^mj-/); render(); window.scrollTo(0, 0); toast("Add the paid job to mark them paid"); }
     return;
   }
-  // Follow up asks for the day first (on the lead's page), so nobody sits in Follow up without a date
-  if (stage === "followup") { if (openLeadId !== l.id) openLead(l.id); fuAskOpen("stage", l.id); return; }
+  // Follow up and Rebook later ask for the day first (on the lead's page), so nobody sits there without a date
+  if (stage === "followup" || stage === "rebook") { if (openLeadId !== l.id) openLead(l.id); fuAskOpen(stage === "rebook" ? "rebook" : "stage", l.id); return; }
   setStage(l, stage, null, stage === "lost" ? "Find them with “Lost” in the list above." : "").catch(() => {});
 }
 // ---------- Follow up: the day to follow up, asked when the call result, an email result or the stage is picked ----------
@@ -2140,7 +2145,7 @@ function dropOnStage(l, stage) {
 // "done" (Done on a follow-up: id = where, "today", "cal" or "lead"; asks for the next one)
 function fuAskOpen(via, leadId, id) {
   const l = leadById(leadId), cur = l && l.nextFollowUp && l.nextFollowUp > today() ? l.nextFollowUp : "";
-  S.fuAsk = { via, leadId, id: id || "", date: via === "done" ? addDays(3) : cur || addDays(1) };
+  S.fuAsk = { via, leadId, id: id || "", date: via === "done" ? addDays(3) : cur || addDays(via === "rebook" ? 365 : 1) };
   fuAskRedraw(S.fuAsk);
   setTimeout(() => { const el = document.getElementById("fu-ask-date"); if (el) el.focus(); }, 30);
 }
@@ -2149,6 +2154,7 @@ const fuAskRedraw = (a) => { if (a && (a.via === "email" || (a.via === "done" &&
 const fuDoneBtn = (l, where) => `<button class="btn sm" data-act="lfu-done" data-id="${esc(l.id)}" data-where="${esc(where)}">Done</button>`;
 const FU_CHIPS = [[1, "Tomorrow"], [3, "In 3 days"], [7, "Next week"], [14, "In 2 weeks"], [30, "In a month"]];
 const FU_DONE_CHIPS = [[3, "In 3 days"], [7, "In 1 week"], [14, "In 2 weeks"]];
+const RB_CHIPS = [[91, "In 3 months"], [182, "In 6 months"], [365, "In a year"]];
 function fuAskHTML(via, leadId, id) {
   const a = S.fuAsk; if (!a || a.via !== via || a.leadId !== leadId || ((via === "email" || via === "done") && a.id !== id)) return "";
   const l = leadById(leadId), name = l ? leadName(l) : "them";
@@ -2156,6 +2162,10 @@ function fuAskHTML(via, leadId, id) {
   if (via === "done") return `<div class="fu-ask" role="group" aria-label="Next follow-up day"><div class="row"><b>Follow-up done. When's the next one with ${esc(name)}?</b></div>
     <div class="row">${FU_DONE_CHIPS.map(([n, t]) => `<button class="btn sm" data-act="fu-chip" data-days="${n}">${t}</button>`).join("")}</div>
     <div class="row"><input type="date" id="fu-ask-date" value="${esc(a.date)}" min="${esc(today())}" aria-label="Next follow-up day"><button class="btn sm primary" data-act="fu-save">Save</button><button class="btn sm ghost" data-act="fu-cancel">Cancel</button></div></div>`;
+  // Rebook later: a past customer, reached out to again about their next job (the day they have stays, if it's ahead)
+  if (via === "rebook") return `<div class="fu-ask" role="group" aria-label="Day to reach out"><div class="row"><b>When should you reach out to ${esc(name)} about their next job?</b></div>
+    <div class="row"><input type="date" id="fu-ask-date" value="${esc(a.date)}" min="${esc(today())}" aria-label="Day to reach out">${RB_CHIPS.map(([n, t]) => `<button class="btn sm" data-act="fu-chip" data-days="${n}" aria-pressed="${a.date === addDays(n)}">${t}</button>`).join("")}</div>
+    <div class="row"><button class="btn sm primary" data-act="fu-save">Move to Rebook later</button><button class="btn sm ghost" data-act="fu-cancel">Cancel</button><span class="note">It shows on Today that day, and on your Google Calendar.</span></div></div>`;
   return `<div class="fu-ask" role="group" aria-label="Follow-up day"><div class="row"><b>When should you follow up with ${esc(name)}?</b></div>
     <div class="row"><input type="date" id="fu-ask-date" value="${esc(a.date)}" min="${esc(today())}" aria-label="Follow-up day">${FU_CHIPS.map(([n, t]) => `<button class="btn sm" data-act="fu-chip" data-days="${n}" aria-pressed="${a.date === addDays(n)}">${t}</button>`).join("")}</div>
     <div class="row"><button class="btn sm primary" data-act="fu-save">Move to Follow up</button><button class="btn sm ghost" data-act="fu-cancel">Cancel</button><span class="note">It shows on Today under “To do today” that day.</span></div></div>`;
@@ -2180,10 +2190,13 @@ async function fuAskSave(pick) {
       fuAskRedraw(a);
     }
     else {
-      const upd = { stage: "followup", nextFollowUp: v, fuBy: "you", activity: activity(l, "stage", `Moved to Follow up · follow up ${fmtD(v)}`), updatedAt: new Date().toISOString() };
-      if (l.stage === "followup") delete upd.stage;
+      const to = a.via === "rebook" ? "rebook" : "followup";
+      const upd = { stage: to, nextFollowUp: v, fuBy: "you", activity: activity(l, "stage", `Moved to ${STAGE_LABEL[to]} · follow up ${fmtD(v, v.slice(0, 4) === today().slice(0, 4) ? undefined : { month: "short", day: "numeric", year: "numeric" })}`), updatedAt: new Date().toISOString() };
+      if (l.stage === to) delete upd.stage;
+      // (the same day as before is left as it is, so its Google Calendar event isn't touched)
+      if (v === l.nextFollowUp && l.fuBy === "you") { delete upd.nextFollowUp; delete upd.fuBy; }
       await saveDoc("leads", l.id, upd, true); ok = true;
-      toast(`${leadName(l)}: Follow up ${fmtD(v, { weekday: "short", month: "short", day: "numeric" })}. It shows on Today that day.${lfuElsewhere(Object.assign({}, l, upd, { stage: "followup" }))}`, 4500);
+      toast(`${leadName(l)}: ${to === "rebook" ? "Rebook later, reach out" : "Follow up"} ${fmtD(v, v.slice(0, 4) === today().slice(0, 4) ? { weekday: "short", month: "short", day: "numeric" } : { weekday: "short", month: "short", day: "numeric", year: "numeric" })}. It shows on Today that day.${lfuElsewhere(Object.assign({}, l, upd, { stage: to, nextFollowUp: v }))}`, 4500);
       refreshLeadModal(true);
     }
   } catch (e) {} finally { fuAskSave.busy = false; }
@@ -2324,7 +2337,7 @@ function leadInfo(l) {
 }
 function stageRow(l) { const cur = l.stage || "new"; return `<div class="stage-row" role="group" aria-label="Stage">${STAGES.map(([k, t]) => `<button class="stg" data-stage-to="${k}" aria-pressed="${cur === k}">${t}</button>`).join("")}</div>`; }
 // Paid needs the payment recorded first (same as dropping the card on Paid); every other stage is a plain move.
-function moveStage(l, stage) { if (stage === "paid" || stage === "followup") { dropOnStage(l, stage); return Promise.resolve(); } return setStage(l, stage); }
+function moveStage(l, stage) { if (stage === "paid" || stage === "followup" || stage === "rebook") { dropOnStage(l, stage); return Promise.resolve(); } return setStage(l, stage); }
 // The call-result dropdown: picking one logs it, then the dropdown goes back to the top line so the same result can be logged again next call.
 function dispoSelect(l) {
   const ny = new Date().getFullYear() + 1;
@@ -2339,7 +2352,7 @@ function leadBanners(l) {
     + (l.emailBounced && !l.dnc ? `<div class="banner warn">${l.emailWrong ? "Their email reached the wrong person" : "Their email bounced"}, so they stay off email blasts. Fix the address under Edit to put them back.</div>` : "");
 }
 // which text templates fit each stage, matched on the template name
-const STAGE_TPL = { new: /intro|follow/i, contacted: /follow|intro/i, working: /estimate|follow/i, estimate: /confirm|way|estimate/i, selling: /quote/i, scheduled: /way|confirm/i, completed: /done|review/i, paid: /review|done|again|year/i, lost: /follow/i };
+const STAGE_TPL = { rebook: /again|year|season|follow/i, new: /intro|follow/i, contacted: /follow|intro/i, working: /estimate|follow/i, estimate: /confirm|way|estimate/i, selling: /quote/i, scheduled: /way|confirm/i, completed: /done|review/i, paid: /review|done|again|year/i, lost: /follow/i };
 const nextSteps = () => `<div class="next-steps"><button class="btn big" data-act="schedule-lead" data-kind="visit">Schedule estimate</button><button class="btn big primary" data-act="quote-lead">New quote</button><button class="btn big" data-act="schedule-lead" data-kind="job">Book job</button></div>`;
 const nowLocal = () => { const d = new Date(); return `${ymd(d)}T${pad(d.getHours())}:${pad(d.getMinutes())}:00`; };
 // the lead's next booked estimate or job that hasn't happened yet
@@ -2359,7 +2372,7 @@ const LEAD_TABS = {
         <div class="row lc-acts"><button class="btn sm" data-ltab="edit">Edit</button><button class="btn sm danger" data-act="delete-lead">Delete</button></div></div>
       <div id="del-confirm"></div>
       ${isOutreach(l) ? "" : `<div class="lc-sec"><span class="lab">Move stage</span>${stageRow(l)}</div>`}
-      <div class="lc-sec"><span class="lab">Call result</span><div class="row dispo-row">${dispoSelect(l)}<span class="note">${l.lastDisposition ? `Last: ${esc(l.lastDisposition)}${l.lastContact ? ", " + esc(fmtD(l.lastContact)) : ""}` : "Pick one after each call"}</span></div>${fuAskHTML("call", l.id) || fuAskHTML("stage", l.id)}${logged}</div>
+      <div class="lc-sec"><span class="lab">Call result</span><div class="row dispo-row">${dispoSelect(l)}<span class="note">${l.lastDisposition ? `Last: ${esc(l.lastDisposition)}${l.lastContact ? ", " + esc(fmtD(l.lastContact)) : ""}` : "Pick one after each call"}</span></div>${fuAskHTML("call", l.id) || fuAskHTML("stage", l.id) || fuAskHTML("rebook", l.id)}${logged}</div>
       ${leadInfo(l)}
     </section>
     <section class="panel"><div class="panel-h"><h2>Next step</h2></div>${nextSteps()}<div id="lead-extra"></div></section>`;
@@ -2547,7 +2560,7 @@ function dispoChange(l, d, k, via, when) {
   // a Lost lead who calls back wanting a quote is open again
   // Follow up moves them there from any stage (a booked customer who reschedules too); a lead waiting in Follow up moves
   // on with whatever comes next
-  if (l.stage !== "paid") { if (d.stage && (d.stage === "lost" || (d.stage === "followup" && !l.dnc) || l.stage === "followup" || stageOrder(d.stage) > stageOrder(l.stage) || (l.stage === "lost" && !l.dnc))) upd.stage = d.stage; else if (!l.stage || l.stage === "new") upd.stage = "contacted"; }
+  if (l.stage !== "paid") { if (d.stage && (d.stage === "lost" || (d.stage === "followup" && !l.dnc) || l.stage === "followup" || stageOrder(d.stage) > stageOrder(l.stage) || (l.stage === "lost" && !l.dnc) || (l.stage === "rebook" && ["estimate", "selling", "scheduled"].includes(d.stage)))) upd.stage = d.stage; else if (!l.stage || l.stage === "new") upd.stage = "contacted"; }
   if (d.askDate && when) { upd.nextFollowUp = when; upd.fuBy = "you"; }
   if (d.next) { upd.nextFollowUp = addDays(d.next); upd.fuBy = "auto"; }
   if (d.nextYear) { upd.nextFollowUp = `${new Date().getFullYear() + 1}-01-12`; upd.fuBy = "auto"; }
@@ -2773,7 +2786,8 @@ async function bookAppt(l, kind, f, statusEl) {
 const isInvoice = (q) => !!q && q.docType === "INVOICE";
 const QSTAT = { draft: "Draft", sent: "Sent", accepted: "Accepted", declined: "Declined", paid: "Paid" };
 const QSTAT_CLS = { draft: "", sent: "s-quoted", accepted: "s-scheduled", declined: "s-lost", paid: "s-paid" };
-const PRE_SALE = ["new", "contacted", "working", "estimate", "selling", "followup"];
+// (a past customer in Rebook later starts over: a new estimate or job moves them on like an open lead)
+const PRE_SALE = ["new", "contacted", "working", "estimate", "selling", "followup", "rebook"];
 // the customer's name for lists, file names and emails (Bill To's second line can be a phone or an email)
 function quoteCust(q) { const l = leadById(q.leadId); return (l && (l.company || l.name)) || (q.billTo || [])[0] || ""; }
 // what it is, once it's sent (elias, 2026-10-25): "Sent invoice" or "Sent estimate"
@@ -4974,7 +4988,7 @@ function soldClients(jm) {
   // invoices that belong to a paid job (tied to it, or its estimate's) show with the job
   const withJob = new Set(); jobs.forEach(j => { const q = jobInvoice(j) || jobOwnInvoice(j, jm); if (q) withJob.add(q.id); });
   S.quotes.filter(q => isInvoice(q) && q.jobId && jobs.some(j => j.id === q.jobId)).forEach(q => withJob.add(q.id));
-  leadsOnly().filter(l => l.stage === "paid").forEach(l => add(l.id, l));
+  leadsOnly().filter(l => l.stage === "paid" || l.stage === "rebook").forEach(l => add(l.id, l));
   S.quotes.filter(q => isInvoice(q) && q.status === "paid" && !withJob.has(q.id)).forEach(q => {
     const l = leadById(q.leadId);
     if (l) { add(l.id, l); return; }
@@ -6155,7 +6169,7 @@ function blastGroups() {
   const put = (k, l) => { if (!g.has(k)) g.set(k, []); g.get(k).push(l); };
   all.forEach(l => {
     if (isOutreach(l)) put(l.type === "Property manager" ? "Property management companies" : "HOAs: " + (l.area || l.city || "Other"), l);
-    else put(["paid", "completed"].includes(l.stage) ? "Customers" : l.stage === "lost" ? "Lost leads" : "Open leads", l);
+    else put(CUSTOMER_STAGES.includes(l.stage) ? "Customers" : l.stage === "lost" ? "Lost leads" : "Open leads", l);
   });
   const rank = (k) => k.startsWith("HOAs: ") ? 0 : k === "Property management companies" ? 1 : k === "Customers" ? 2 : k === "Open leads" ? 3 : 4;
   return [...g].sort((a, b) => rank(a[0]) - rank(b[0]) || a[0].localeCompare(b[0])).map(([k, ls]) => [k, ls.sort((a, b) => leadName(a).localeCompare(leadName(b)))]);
@@ -6356,7 +6370,7 @@ Object.assign(EXTRA_ACTS, {
   "bl-new": () => openBlast(null),
   "bl-open": (t) => { const b = S.blasts.find(x => x.id === t.dataset.id); if (b) openBlast(b); },
   "bl-quick": (t) => {
-    const k = t.dataset.k, f = { hoa: l => isOutreach(l) && l.type !== "Property manager", pm: l => isOutreach(l) && l.type === "Property manager", cust: l => !isOutreach(l) && ["paid", "completed"].includes(l.stage), open: l => !isOutreach(l) && !["paid", "completed", "lost"].includes(l.stage) }[k];
+    const k = t.dataset.k, f = { hoa: l => isOutreach(l) && l.type !== "Property manager", pm: l => isOutreach(l) && l.type === "Property manager", cust: l => !isOutreach(l) && CUSTOMER_STAGES.includes(l.stage), open: l => !isOutreach(l) && !["paid", "completed", "lost"].includes(l.stage) }[k];
     if (k === "none") BP.pick.clear(); else S.leads.filter(l => !isKylemont(l) && f(l) && easyPick(l)).forEach(l => BP.pick.add(l.id));
     S.dirty = true; blastRefresh(["who"]);
   },
@@ -8306,7 +8320,7 @@ Object.assign(EXTRA_ACTS, {
   },
   "tb-open": (t) => { const b = S.textBlasts.find(x => x.id === t.dataset.id); if (b) openTextBlast(b); },
   "tb-quick": (t) => {
-    const k = t.dataset.k, f = { cust: l => ["paid", "completed"].includes(l.stage), open: l => OPEN_STAGES.includes(l.stage) && !["paid", "completed"].includes(l.stage), lost: l => l.stage === "lost", all: () => true }[k];
+    const k = t.dataset.k, f = { cust: l => CUSTOMER_STAGES.includes(l.stage), open: l => OPEN_STAGES.includes(l.stage) && !CUSTOMER_STAGES.includes(l.stage), lost: l => l.stage === "lost", all: () => true }[k];
     tbRead(); if (k === "none") TBP.pick.clear(); else if (f) leadsOnly().filter(l => tbPickable(l) && tbSvcOk(l) && f(l)).forEach(l => TBP.pick.add(l.id));
     S.dirty = true; tbRefresh();
   },
@@ -9947,6 +9961,11 @@ async function autoSave(k, on) {
 // ("Destination not found"), while pictures pasted into Quo, on the same number, went through. So on a phone Send invoice
 // copies the picture and opens Quo with the message, and he pastes it (hold the message box, Paste, Send). Attaching from
 // the link stays only on a device where localStorage gic-quo-attach is "1" (for trying it again if Quo fixes it).
+// Nov 7 (elias, after the phone worked): "I want the computer to do the same thing ... it opens Quo with the message
+// pre-built and all I have to do is paste the image and send it." Quo's website opens a conversation with a message
+// typed from my.quo.com/?handlerUrl=sms:<number>?body=<message> (its own handler for sms: links; tried on his Quo, nothing
+// sent). So on a computer Send invoice opens that in a new tab and copies the picture: Ctrl+V (or Cmd+V), then Enter.
+// Nothing is sent from the CRM anymore (the message going out first, then Open Quo, is gone).
 const TI_MAX = 900000; // a Firestore document holds 1 MB
 let TI = null; // the text box: { q (the editor copy it's for), qid, ready, err, body, sig, file (the picture), url (to show it) }
 // keys of links from before (none are made now), pictures being made, deleted invoices, and pictures put up for Quo
@@ -10023,13 +10042,8 @@ const tiCanShare = () => { try { return !!(TI && TI.file && navigator.canShare &
 const tiQuoLink = (to) => { const from = S.textSender && S.textSender.number; return `openphone://message?number=${encodeURIComponent(e164(to))}${from ? `&from=${encodeURIComponent(from)}` : ""}&text=${encodeURIComponent(TI ? TI.body : "")}${TI && TI.picUrl ? `&attachments=${encodeURIComponent(TI.picUrl)}` : ""}`; };
 // the picture for Quo: on a phone, with the texting script at version 15 and running
 const TI_PIC_SCRIPT = 15, TI_PIC_WAIT = 150000;
-// on a computer: the message sent from here, then Quo on the web for the picture (its conversation from script version 16)
-const tiWebOn = () => !tiTouch() && txCanSend();
-const tiMsg = () => (TI && TI.msg && S.texts.find(x => x.id === TI.msg.id)) || null;
-const tiQuoWeb = (t) => { const pn = String((S.textSender && S.textSender.phoneNumberId) || ""), c = String((t && t.conv) || ""); return /^PN\w+$/.test(pn) && /^CN\w+$/.test(c) ? `https://my.quo.com/inbox/${pn}/c/${c}` : "https://my.quo.com/inbox"; };
-const tiMsgState = () => { const t = tiMsg(), st = t ? t.status : "queued"; return st === "queued" || st === "sending" ? "going" : st === "failed" || st === "cancelled" ? "failed" : "sent"; };
-// the texts came in again: the box follows the message
-function tiOnTexts() { if (TI && TI.msg) tiPaint(); }
+// Quo's website, on their conversation with the message typed (from the inbox Quo has picked, his one number)
+const tiQuoNew = (to) => `https://my.quo.com/?handlerUrl=${encodeURIComponent(`sms:${e164(to)}?body=${encodeURIComponent(TI ? TI.body : "")}`)}`;
 const tiAttachOn = () => { try { return localStorage.getItem("gic-quo-attach") === "1"; } catch (e) { return false; } };
 const tiPicOn = () => { const s = S.textSender; return tiTouch() && tiAttachOn() && !!s && (+s.version || 0) >= TI_PIC_SCRIPT && Date.now() - (Date.parse(s.lastRun || "") || 0) < 20 * 60000; };
 // "wait" (being put on the web), "ready" (Quo attaches it), or "" (Paste adds it)
@@ -10062,11 +10076,7 @@ function tiGoHTML(phone) {
   if (bl) return `<p class="note">${esc(bl)} Don't text them from your phone either.</p>`;
   if (!tiTouch()) {
     const cp = (main) => `<button class="btn${main ? " primary" : ""}" data-act="ti-copy">Copy picture</button><button class="btn" data-act="ti-dl">Download picture</button>`;
-    if (!TI.msg) return tiWebOn() ? `<button class="btn primary" data-act="ti-send">Send invoice</button>${cp()}` : cp(true);
-    const m = tiMsgState();
-    if (m === "going") return `<button class="btn primary" disabled>Sending the message…</button>`;
-    if (m === "failed") return cp(true);
-    return `<a class="btn primary" id="ti-web" href="${esc(tiQuoWeb(tiMsg()))}" target="_blank" rel="noopener">Open Quo</a>${cp()}`;
+    return `<a class="btn primary" id="ti-web" href="${esc(tiQuoNew(to))}" target="_blank" rel="noopener">Send invoice</a>${cp()}`;
   }
   const p = tiPicState(), share = tiCanShare() ? `<button class="btn" data-act="ti-share">Share picture</button>` : "";
   if (p === "wait") return `<button class="btn primary" id="ti-wait" disabled>Getting the picture ready…</button>${share}`;
@@ -10076,11 +10086,7 @@ function tiGoHTML(phone) {
 function tiHow() {
   if (!tiTouch()) {
     const mac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || "") ? "⌘V" : "Ctrl+V";
-    if (!TI || !TI.msg) return tiWebOn() ? `Send invoice texts this message from your Quo number. Then Open Quo takes you to their conversation with the picture copied: click in the message box, press ${mac}, then Enter.` : `${txWhyNot() ? txWhyNot() + " " : ""}Copy picture, then paste it into their conversation in Quo with the message. Or download it and attach it there.`;
-    const t = tiMsg(), m = tiMsgState(), num = fmtPhone(TI.msg.to);
-    if (m === "going") return `Sending the message to ${num} from your Quo number. It takes up to a minute. Keep this open.`;
-    if (m === "failed") return `The message didn't go${t && t.error ? ` (${t.error})` : ""}. Copy picture, then send it with the message from their conversation in Quo.`;
-    return `Message sent to ${num}. Now the picture: click Open Quo${t && t.conv ? "" : `, then click ${num} in your conversations`}, click in the message box, press ${mac}, then Enter.`;
+    return `Send invoice opens Quo in a new tab with this message typed to their number, and copies the picture. Click in the message box, press ${mac} to add the picture, then Enter.`;
   }
   const p = tiPicState(), more = tiCanShare() ? " Share picture sends it another way (Messages, or Save Image to your photos)." : "";
   if (p === "wait") return "Getting the picture ready for Quo. It takes up to a minute.";
@@ -10177,27 +10183,19 @@ document.addEventListener("click", (e) => {
   catch (er) { toast("Couldn't copy the picture. Use Share picture instead.", 6000); }
   tiSent(TI.picUrl ? "Quo opened with the message and the picture. Tap Send there (if the picture isn't on it, hold the message box and tap Paste)." : "Quo opened with the message. Hold your finger on the message box, tap Paste to add the picture, then Send.");
 }, true);
-// on a computer: Send invoice sends the message from the Quo number (the invoice is Sent), then Open Quo
-EXTRA_ACTS["ti-send"] = async (b) => {
-  if (!tiOk() || TI.msg) return;
-  const mine = TI, to = e164(($("#ti-phone") || {}).value || "");
-  if (!to) { toast("Type their cell number first."); return; }
-  b.disabled = true;
-  let id = null; try { id = await txQueue(to, mine.body, { lead: leadById(mine.q.leadId) || undefined }); } catch (e) { toast("Couldn't send the message. Try again."); }
-  if (!id) { b.disabled = false; return; }
-  mine.msg = { id, to }; if (TI === mine) tiPaint();
-  await tiSent("The message is going out from your Quo number. Then Open Quo to add the picture.");
-};
-// Open Quo: the picture is copied in the click itself (only allowed then), and Quo opens in a new tab
+// Send invoice on a computer: the picture is copied in the click itself (only allowed then), Quo opens in a new tab, and
+// the invoice is Sent
 document.addEventListener("click", (e) => {
   const a = e.target && e.target.closest && e.target.closest("#ti-web"); if (!a || !TI || !TI.file) return;
+  if (!tiOk()) { e.preventDefault(); return; }
+  tiSent("Quo opened in a new tab with the message. Click in the message box, paste the picture, then press Enter.");
   try { navigator.clipboard.write([new ClipboardItem({ "image/png": TI.file })]).catch(() => toast("Couldn't copy the picture. Use Copy picture, then paste it in Quo.", 6000)); }
   catch (er) { toast("Couldn't copy the picture. Use Copy picture, then paste it in Quo.", 6000); }
 }, true);
 // what's typed: the Quo link and the buttons follow
 document.addEventListener("input", (e) => {
   if (!TI || !e.target || !["ti-body", "ti-phone"].includes(e.target.id)) return;
-  if (e.target.id === "ti-body") { TI.body = e.target.value; const a = $("#ti-quo"); if (a) a.href = tiQuoLink(($("#ti-phone") || {}).value); }
+  if (e.target.id === "ti-body") { TI.body = e.target.value; const ph = ($("#ti-phone") || {}).value, a = $("#ti-quo"), w = $("#ti-web"); if (a) a.href = tiQuoLink(ph); if (w) w.href = tiQuoNew(ph); }
   else { const g = $("#ti-go"); if (g) g.innerHTML = tiGoHTML(e.target.value); }
 });
 // a different customer or type: the box is for what was there, so it closes
