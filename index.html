@@ -3077,9 +3077,10 @@ async function quoteStatusNow(s) {
   const now = new Date().toISOString(); const inv = isInvoice(q0);
   // an invoice marked Paid keeps the day it was paid (Sold clients matches it to the job by that day)
   const patch = { status: s, updatedAt: now }; if (inv && s === "paid" && !q0.paidDate) patch.paidDate = today();
-  // sent: the follow-ups start (not for someone marked do not contact), saved with the status in one write
-  const l = leadById(q0.leadId), fu = s === "sent" && !inv && !(l && l.dnc) ? efuNewPlan(q0.id) : null;
-  if (fu) Object.assign(patch, { fu, fuOff: "" });
+  // sent: follow-ups don't start by themselves (elias, 2026-11-06): the toast and the estimate offer Start follow-ups.
+  // Ones running from before stop (efuSentPatch).
+  const l = leadById(q0.leadId), est = s === "sent" && !inv;
+  if (est) Object.assign(patch, efuSentPatch(q0, now));
   await saveDoc("quotes", q0.id, patch, true); Object.assign(q0, patch);
   if (l && s !== "draft") {
     // a follow-up day saved before the CRM noted who set it keeps its owner (fuMine reads the newest line, and this one
@@ -3099,10 +3100,10 @@ async function quoteStatusNow(s) {
     if (isOutreach(l)) Object.assign(upd, PROMOTE());
     await saveDoc("leads", l.id, upd, true);
   }
-  if (fu) calSweepSoon();
+  if (est && patch.fuOff) calSweepSoon();
   if (QD === q0) syncQuoteChrome();
   if (s === "paid" && l) toast("Marked paid. Record the payment on the job too, so Money counts it.", 9000, { label: "Open jobs", fn: () => { closeModal(); openLead(l.id, "work"); } });
-  else if (fu) efuStartedToast(fu, "Marked sent.", S.quotes.find(x => x.id === q0.id) || q0);
+  else if (est && !(l && (l.dnc || l.crashOut))) toast("Marked sent.", 9000, { label: "Start follow-ups", fn: () => { efuStart(q0.id).catch(() => {}); } });
   else toast(`Marked ${QSTAT[s].toLowerCase()}`);
   // the calendar opens only if this estimate is still the one on screen
   if (s === "accepted" && !inv && QD === q0 && $("#modal #q-acts")) startBooking();
@@ -3156,12 +3157,33 @@ const calOwner = () => !!((window.GIC && window.GIC.me && window.GIC.me()) || {}
 // a Google event id made from the job's (Google takes 0-9 and a-v), so one added on an earlier try whose answer was lost
 // isn't added twice; calVer moves on when the event with that id was deleted from Google Calendar
 const calEventId = (j, ver) => Array.from(new TextEncoder().encode(String(j.id)), b => b.toString(16).padStart(2, "0")).join("") + "v" + (ver || 0);
+// each crew member's jobs in their own color on Google Calendar (elias, 2026-11-06: "make my color gold and my dad's
+// purple"). Google's event colors: EL Banana (gold), TL Grape (purple, the same as follow-ups, FU_COLOR), AL Basil
+// (green), and a job with more than one of them Tangerine (orange). Estimates and jobs with no crew keep the calendar's
+// own color.
+const CREW_COLOR = { EL: "5", TL: "3", AL: "10" }, CREW_MIX_COLOR = "6";
+const calCrew = (v) => [...new Set(String(v || "").split(/\s*(?:[+,&\/]|\band\b)\s*/i).map(x => x.trim().toUpperCase()).filter(Boolean))];
+function crewColor(j) { if (!j || j.kind !== "job") return ""; const c = calCrew(j.crew); return c.length > 1 ? CREW_MIX_COLOR : c.length ? CREW_COLOR[c[0]] || "" : ""; }
+// jobs put on Google Calendar before they had colors: the ones still ahead turn their crew's color, only when Google has
+// them in the calendar's own color (a color picked in Google Calendar stays). Each is tried once a visit.
+const crewColorTried = new Set();
+async function crewColorSweep() {
+  if (!calBusiness() || !S.cal || S.cal.status !== "ready") return;
+  const now = nowLocal(), ev = new Map((S.cal.events || []).map(e => [e.id, e]));
+  for (const j of S.jobs) {
+    const c = crewColor(j), e = j.eventId ? ev.get(j.eventId) : null;
+    if (!c || !e || e.colorId || j.status !== "scheduled" || String(j.end || j.start || "") < now || crewColorTried.has(j.id)) continue;
+    if (!calBusiness()) return;
+    crewColorTried.add(j.id);
+    try { await GC().patchEvent(e.id, { colorId: c }, e.calendarId); } catch (er) { if (er.code !== "gone") return; }
+  }
+}
 async function calCreate(j, l) {
   let ver = +j.calVer || 0;
   for (let i = 0; i < 4; i++) {
     // another tab can switch Google accounts while this waits, so each try checks it's still the business calendar
     if (i && !calBusiness()) throw new Error("Google Calendar isn't connected to the business account");
-    try { const r = await GC().createEvent({ id: calEventId(j, ver), summary: j.title, location: j.address, description: jobDesc(j, l), start: j.start, end: j.end }); return Object.assign(r, { calVer: ver }); }
+    try { const r = await GC().createEvent({ id: calEventId(j, ver), summary: j.title, location: j.address, description: jobDesc(j, l), start: j.start, end: j.end, colorId: crewColor(j) }); return Object.assign(r, { calVer: ver }); }
     catch (e) { if (e.code !== "taken") throw e; ver++; }
   }
   throw new Error("Google Calendar wouldn't take this booking");
@@ -3180,7 +3202,7 @@ async function calConnectTap() {
 const calTodo = (j) => !!j && ((j.calPending && !j.eventId && j.status === "scheduled" && String(j.end || j.start || "") >= addDays(-1)) || (j.calRemove && j.eventId && j.status === "canceled"));
 const calTriedLately = (id) => Date.now() - (calTried.get(id) || 0) < 180000;
 const calWaiting = () => S.jobs.filter(j => j.calPending && !j.eventId && j.status === "scheduled" && String(j.end || j.start || "") >= addDays(-1));
-function calSweepSoon() { if (!STANDALONE) return; clearTimeout(calSweepT); calSweepT = setTimeout(() => { addPendingToCalendar().catch(() => {}).then(() => efuSweep()).catch(() => {}).then(() => lfuSweep()).catch(() => {}); }, 1500); }
+function calSweepSoon() { if (!STANDALONE) return; clearTimeout(calSweepT); calSweepT = setTimeout(() => { addPendingToCalendar().catch(() => {}).then(() => efuSweep()).catch(() => {}).then(() => lfuSweep()).catch(() => {}).then(() => crewColorSweep()).catch(() => {}); }, 1500); }
 async function addPendingToCalendar() {
   const G = window.GIC; if (calSweeping || !S.db || !G || !G.serverDoc || !calBusiness()) return;
   const todo = S.jobs.filter(j => !calTriedLately(j.id) && calTodo(j)); if (!todo.length) return;
@@ -3621,22 +3643,27 @@ async function bookSave(btn) {
   if (!r) { btn.disabled = false; return; }
   closeModal(); render();
 }
-// ---------- ESTIMATE FOLLOW-UPS (elias, 2026-10-25) ----------
-// "once I send an estimate out, and they don't approve it, within 2 hours, it automatically sets a" follow-up, on To do
-// today, To do this week and his Google Calendar, "as many as you can". Marking an estimate Sent (or emailing it from
-// the estimate) lays them out on the estimate (fu): 2 hours after, then the next day, 3 days, a week, 2 and 3 weeks, a
-// month, 45 days, 2 months and 3 months after, at 10 AM (a Sunday moves to Monday). They stop by themselves when the
+// ---------- ESTIMATE FOLLOW-UPS (elias, 2026-10-25; reworked 2026-11-06) ----------
+// Follow-ups on an estimate, on To do today, To do this week and his Google Calendar. Since 2026-11-06 they start only
+// when Start follow-ups is tapped on a sent estimate (marking it Sent offers it), never by themselves: "I want to be
+// able to click start follow-ups versus it automatically doing it", "it doesn't need to be spammy". From the day it's
+// tapped: the day after tomorrow, then 5 days later, 5 more, 5 more, then a week, 2 weeks and a month later (days 2, 7,
+// 12, 17, 24, 38 and 68), at 10 AM (a Sunday moves to Monday). They stop by themselves when the
 // estimate is accepted, declined or back to Draft, a job or estimate is booked for them after it went out, they accept
-// another estimate, they're Lost, in Follow up (their own day), Budget next year or do not contact, a newer estimate goes
-// out to them, or Stop follow-ups on the estimate; the ones still ahead come off Google Calendar then. One is done when Done is tapped on
-// Today, or a call, email or text to them is logged that day or later. Only a device connected to the business Google
-// account puts them on the calendar and takes them off (efuSweep), the way it does bookings.
-//   fu: { id, sent (when it went out), at: ["YYYY-MM-DDTHH:MM:00", ...] }, written once when it's sent
+// another estimate, they're Lost, in Follow up (their own day), Budget next year or do not contact, a newer estimate's
+// follow-ups start, or Stop follow-ups on the estimate; the ones still ahead come off Google Calendar then. One is done
+// when Done is tapped on Today, or a call, email or text to them is logged that day or later. Only a device connected to
+// the business Google account puts them on the calendar and takes them off (efuSweep), the way it does bookings.
+//   fu: { id, sent (when the estimate went out, else when they started), start (when they started), at:
+//   ["YYYY-MM-DDTHH:MM:00", ...], plan: EFU_PLAN }, written when they start
 //   fuEv: { "<id>_<n>": { id: Google event id ("" once taken off), at, v, atT: when the one-time spacing out moved it
 //   (fuRespace, leadfu.js) } }, fuDone: { "<id>_<n>": when },
-//   fuOff: when Stop follow-ups was tapped ("" when started again)
+//   fuOff: when Stop follow-ups was tapped, or the estimate was marked Sent again ("" when started)
+//   sentAt (on the estimate): when it was last marked Sent
 // settings/efu-gone: the Google events of deleted estimates still to come off ({ ids: { eventId: at } }).
-const EFU_DAYS = [1, 3, 7, 14, 21, 30, 45, 60, 90];
+const EFU_DAYS = [2, 7, 12, 17, 24, 38, 68];
+// the plan since 2026-11-06: running follow-ups from before it are moved onto it once (efuSwitch)
+const EFU_PLAN = 2;
 // follow-ups on Google Calendar are Grape (purple), so they aren't mixed up with jobs and estimates (elias, 2026-10-25)
 const FU_COLOR = "3";
 // (30 minutes: elias, 2026-10-26, "I want you to make follow-ups 30 minutes")
@@ -3704,18 +3731,11 @@ const fuStartOf = (g) => !g || g.status === "cancelled" || !g.start ? "" : g.sta
 const fuClear = (at, not, len) => at > nowLocal() ? at.slice(0, 11) + fuFree(at.slice(0, 10), at.slice(11, 16), not, len) + ":00" : at;
 // one just put somewhere, noted as taken right away (the database has it back in a moment)
 const fuNote = (start, len, who, id) => { const t = Date.now(); for (let i = fuJust.length - 1; i >= 0; i--) if (t - fuJust[i].t > 120000 || fuJust[i].who === who) fuJust.splice(i, 1); fuJust.push({ day: start.slice(0, 10), s: fuMin(start), e: fuMin(start) + len, who, id: id || "", t }); };
-// the follow-up times for an estimate sent at `sent` (a Date); qid: the estimate's (its own follow-ups from before
+// the follow-up times for follow-ups started at `sent` (a Date); qid: the estimate's (its own follow-ups from before
 // don't count as taken)
 function efuPlan(sent, qid) {
   const monday = (d) => { if (d.getDay() === 0) d.setDate(d.getDate() + 1); return d; };
-  // the first: 2 hours after, at the next quarter hour, if that's 8 AM to 8 PM; later at night, 9 AM the next
-  // morning (Monday for a Sunday); before 8 in the morning, 9 AM
-  const f = new Date(sent.getTime() + 2 * 3600e3); f.setSeconds(0, 0);
-  const q = f.getMinutes() % 15; if (q) f.setMinutes(f.getMinutes() + 15 - q);
-  const mins = f.getHours() * 60 + f.getMinutes();
-  if (mins > 20 * 60) { f.setDate(f.getDate() + 1); f.setHours(9, 0, 0, 0); monday(f); }
-  else if (mins < 8 * 60) { f.setHours(9, 0, 0, 0); if (ymd(f) !== ymd(sent)) monday(f); }
-  const out = [efuISO(f)]; let last = ymd(f);
+  const out = []; let last = "";
   for (const n of EFU_DAYS) {
     const d = new Date(ymd(sent) + "T12:00:00"); d.setDate(d.getDate() + n); monday(d);
     // never two on one day: the next day instead
@@ -3725,9 +3745,11 @@ function efuPlan(sent, qid) {
   // each at a time no other follow-up has
   return out.map(at => fuClear(at, { q: qid }));
 }
-// a newer estimate sent to them (one sent and then put back to Draft, by mistake, doesn't count)
+// another estimate of theirs whose follow-ups started after this one's (one sent and then put back to Draft, by
+// mistake, doesn't count)
 const EFU_OUT = ["sent", "accepted", "declined"];
-const efuNewerOf = (q) => q.leadId ? S.quotes.filter(x => x.id !== q.id && x.leadId === q.leadId && !isInvoice(x) && x.fu && EFU_OUT.includes(x.status) && String(x.fu.sent || "") > String(q.fu.sent || "")) : [];
+const efuStartOf = (q) => String((q.fu && (q.fu.start || q.fu.sent)) || "");
+const efuNewerOf = (q) => q.leadId ? S.quotes.filter(x => x.id !== q.id && x.leadId === q.leadId && !isInvoice(x) && x.fu && EFU_OUT.includes(x.status) && efuStartOf(x) > efuStartOf(q)) : [];
 // a job or estimate booked for them since it went out: one made from it, or one for them added after it went out for a day
 // from then on (a past job typed in from the tracker isn't one)
 const efuBookedJobs = (q) => { const sent = String(q.fu.sent || ""), day = ymd(new Date(sent));
@@ -3766,7 +3788,7 @@ async function efuOffSure(q) {
   const off = efuOff(q), G = window.GIC;
   if (!["gone", "dnc", "lost", "followup", "nextyear", "won", "booked", "newer"].includes(off)) return off;
   if (off === "booked") { for (const j of efuBookedJobs(q)) { const s = await G.serverDoc("jobs", j.id); if (s && s.status !== "canceled") return off; } return ""; }
-  if (off === "newer") { for (const x of efuNewerOf(q)) { const s = await G.serverDoc("quotes", x.id); if (s && s.fu && EFU_OUT.includes(s.status) && String(s.fu.sent || "") > String(q.fu.sent || "")) return off; } return ""; }
+  if (off === "newer") { for (const x of efuNewerOf(q)) { const s = await G.serverDoc("quotes", x.id); if (s && s.fu && EFU_OUT.includes(s.status) && efuStartOf(s) > efuStartOf(q)) return off; } return ""; }
   const l = await G.serverDoc("leads", q.leadId); if (!l) return "gone";
   if (l.dnc || l.crashOut) return "dnc"; if (l.stage === "lost") return "lost"; if (l.stage === "followup") return "followup";
   if (efuNextYear(q, l)) return "nextyear"; if (efuWonOther(q, Object.assign({ id: q.leadId }, l))) return "won";
@@ -3840,18 +3862,21 @@ const efuLeadDue = (l) => (efuLeadMap().get(l.id) || {}).due || null;
 function efuNote(q) {
   if (!q || !q.id || isInvoice(q)) return "";
   const live = S.quotes.find(x => x.id === q.id) || q, off = efuOff(live);
-  if (off === "none") return "";
-  if (off === "stopped") return `<div class="row efu-note"><span class="note">Follow-ups are stopped on this estimate.</span>${live.status === "sent" ? `<button class="btn sm" data-act="efu-resume">Start them again</button>` : ""}</div>`;
+  // not started (or stopped): Start follow-ups, on one that's out
+  if (off === "none" || off === "stopped") return live.status === "sent" ? `<div class="row efu-note"><span class="note">${off === "stopped" ? "Follow-ups are stopped on this estimate." : "No follow-ups on this estimate."}</span><button class="btn sm" data-act="efu-start">Start follow-ups</button></div>` : "";
   if (off === "newer" && live.status === "sent") return `<div class="row efu-note"><span class="note">Follow-ups stopped: ${esc(EFU_WHY[off])}.</span><button class="btn sm" data-act="efu-this">Follow up on this one instead</button></div>`;
   if (off) return `<p class="note efu-note">Follow-ups stopped: ${esc(EFU_WHY[off] || off)}.</p>`;
   const nx = efuNext(live), cal = STANDALONE && GC() ? (calBusiness() ? " They're on To do today and your Google Calendar." : " They're on To do today, and go on your Google Calendar from a device connected to it.") : " They show on To do today.";
   return `<div class="row efu-note"><span class="note">${nx ? `Next follow-up ${esc(fmtDT(nx.at))} (${nx.i + 1} of ${nx.n}).${cal}` : `All ${live.fu.at.length} follow-ups have come up.`}</span><button class="btn sm" data-act="efu-stop">Stop follow-ups</button></div>`;
 }
-// marking an estimate Sent: its follow-ups start now (quotes.js saves the plan with the status). Sent again later, they
-// start over, and the ones still ahead from before come off the calendar (efuCalWork: their keys go with the old id).
-const efuNewPlan = (qid) => { const now = new Date(); return { id: now.getTime().toString(36), sent: now.toISOString(), at: efuPlan(now, qid) }; };
+// Start follow-ups: a new plan from now (sent: when the estimate went out, when that's known). One started before
+// starts over, and its ones still ahead come off the calendar (efuCalWork: their keys go with the old id).
+const efuNewPlan = (qid, sent) => { const now = new Date(); return { id: now.getTime().toString(36), sent: sent || now.toISOString(), start: now.toISOString(), at: efuPlan(now, qid), plan: EFU_PLAN }; };
+// marking an estimate Sent: what's saved with the status. Follow-ups running from before stop (Start follow-ups starts
+// them over).
+const efuSentPatch = (q, now) => Object.assign({ sentAt: now }, q && q.fu && !q.fuOff ? { fuOff: now } : {});
 // emailing an estimate from it (Email as Gmail draft, Send it, Download it and open Gmail) is sending it: a Draft one
-// is marked Sent, so its follow-ups start
+// is marked Sent (its follow-ups don't start by themselves)
 async function efuEmailed(qid) {
   if (!qid) return;
   if (QD && QD.id === qid && $("#modal #q-acts")) {
@@ -3860,20 +3885,28 @@ async function efuEmailed(qid) {
     if (!isInvoice(QD) && (QD.status || "draft") === "draft") await quoteStatus("sent"); return; }
   // another estimate is open now (or none): this one is marked Sent quietly, the way the editor does it
   const q = S.quotes.find(x => x.id === qid); if (!q || isInvoice(q) || (q.status || "draft") !== "draft") return;
-  const now = new Date().toISOString(), l = leadById(q.leadId), patch = { status: "sent", updatedAt: now };
-  if (!(l && l.dnc)) Object.assign(patch, { fu: efuNewPlan(q.id), fuOff: "" });
+  const now = new Date().toISOString(), l = leadById(q.leadId), patch = Object.assign({ status: "sent", updatedAt: now }, efuSentPatch(q, now));
   await saveDoc("quotes", q.id, patch, true);
   if (l) { const upd = { activity: activity(l, "quote", `Estimate ${q.number} sent`), updatedAt: now };
     if (l.nextFollowUp && !l.fuBy) upd.fuBy = fuMine(l) ? "you" : "auto"; // as quoteStatusNow does
     if ((PRE_SALE.includes(l.stage || "new") && l.stage !== "selling") || (l.stage === "lost" && !l.dnc)) upd.stage = "selling";
     if (isOutreach(l)) Object.assign(upd, PROMOTE());
     await saveDoc("leads", l.id, upd, true); }
-  if (patch.fu) calSweepSoon();
+  if (patch.fuOff) calSweepSoon();
 }
 function efuStartedToast(fu, base, q) {
   const why = q && efuOff(q); if (why && why !== "none") { toast(`${base} No follow-ups for it: ${EFU_WHY[why] || why}.`, 7000); return; }
   const first = fu.at[0], cal = STANDALONE && GC() ? (calBusiness() ? " They go on your Google Calendar too." : " They go on your Google Calendar from a device connected to it.") : "";
   toast(`${base} First follow-up ${ymd(new Date()) === first.slice(0, 10) ? "today at " + fmtT(first) : fmtDT(first)}, then ${fu.at.length - 1} more until they say yes.${cal}`, 8000);
+}
+// Start follow-ups on an estimate (from it, or from the toast that says it's marked Sent)
+async function efuStart(qid) {
+  // (this device's copy of it can be a moment behind the editor's, just marked Sent)
+  const live = [S.quotes.find(x => x.id === qid), QD && QD.id === qid ? QD : null].find(x => x && x.status === "sent"); if (!live || isInvoice(live)) return;
+  const fu = efuNewPlan(qid, live.sentAt || (live.fu && live.fu.sent) || "");
+  await saveDoc("quotes", qid, { fu, fuOff: "" }, true);
+  if (QD && QD.id === qid) { Object.assign(QD, { fu, fuOff: "" }); syncQuoteChrome(); }
+  calSweepSoon(); efuStartedToast(fu, "Follow-ups started.", Object.assign({}, S.quotes.find(x => x.id === qid) || live, { fu, fuOff: "" }));
 }
 // what's left to do on Google Calendar for one estimate: the ones ahead to put on, the ones ahead to take off
 // when a follow-up on Google Calendar is: where it is on Google if this device has it (moved later or earlier), else its time
@@ -3973,26 +4006,21 @@ async function efuForget(q) {
   await saveDoc("settings", "efu-gone", { kind: "efu-gone", ids }, true).catch(() => {});
   calSweepSoon();
 }
-// on the owner's CRM, each time it opens: an estimate out (sent in the last 3 months) with no follow-ups yet gets them
-// from the day it went out (the ones already out when this came in, one marked Sent by a CRM page still open from
-// before, or a save that didn't go through); the ones already past show as one overdue follow-up on Today. Goes by the
-// database's estimates, not this device's copy. One whose follow-ups are paused now (they're in Follow up, say) gets
-// them too, so they come back when that ends. settings/efu notes when it first ran.
-async function efuBackfill() {
-  const G = window.GIC; if (!STANDALONE || !S.db || !G || !G.serverDoc || !G.serverColl || !calOwner() || efuBackfill.ran) return;
-  efuBackfill.ran = true;
+// on the owner's CRM, once: follow-ups running on the plan from before 2026-11-06 (2 hours, then 1, 3, 7 ... 90 days)
+// go on the new one, counted from when they started; only the ones still ahead are kept (elias picked "Switch to new
+// plan"). Their old ones still ahead come off the calendar (new id: efuCalWork). Goes by the database's estimates.
+async function efuSwitch() {
+  const G = window.GIC; if (!STANDALONE || !S.db || !G || !G.serverColl || !G.patchDoc || !calOwner() || efuSwitch.ran) return;
+  efuSwitch.ran = true;
   try {
-    const cut = new Date(Date.now() - 90 * 864e5).toISOString(); let n = 0;
-    for (const q0 of (await G.serverColl("quotes")).filter(q => !isInvoice(q) && q.status === "sent" && !q.fu)) {
-      const l = q0.leadId ? leadById(q0.leadId) : null;
-      const line = l && (l.activity || []).find(a => a.type === "quote" && new RegExp("^Estimate " + String(q0.number || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + " sent\\b").test(a.text || ""));
-      const sent = (line && line.at) || q0.updatedAt || (q0.date ? q0.date + "T12:00:00" : "");
-      const d = new Date(sent); if (!sent || isNaN(d) || d.toISOString() < cut) continue;
-      const fu = { id: d.getTime().toString(36), sent: d.toISOString(), at: efuPlan(d, q0.id) };
-      await G.patchDoc("quotes", q0.id, { fu, fuOff: "" }).then(() => n++, () => {});
+    const now = nowLocal(); let n = 0;
+    for (const q0 of (await G.serverColl("quotes")).filter(q => !isInvoice(q) && q.status === "sent" && !q.fuOff && q.fu && Array.isArray(q.fu.at) && q.fu.at.length && q.fu.plan !== EFU_PLAN)) {
+      const d = new Date(q0.fu.start || q0.fu.sent); if (isNaN(d)) continue;
+      const fu = { id: Date.now().toString(36) + "s" + n, sent: q0.fu.sent, start: d.toISOString(), at: efuPlan(d, q0.id).filter(a => a > now), plan: EFU_PLAN };
+      await G.patchDoc("quotes", q0.id, { fu }).then(() => n++, () => {});
     }
-    if (n) { const flag = await G.serverDoc("settings", "efu").catch(() => null); await saveDoc("settings", "efu", { kind: "efu", start: (flag && flag.start) || new Date().toISOString(), backfilled: ((flag && +flag.backfilled) || 0) + n }, true).catch(() => {}); calSweepSoon(); }
-  } catch (e) { efuBackfill.ran = false; }
+    if (n) calSweepSoon();
+  } catch (e) { efuSwitch.ran = false; }
 }
 EXTRA_ACTS["efu-done"] = async (t) => {
   const q = S.quotes.find(x => x.id === t.dataset.q), k = t.dataset.k; if (!q || !k) return; t.disabled = true;
@@ -4006,18 +4034,10 @@ EXTRA_ACTS["efu-stop"] = async () => {
   calSweepSoon(); syncQuoteChrome(); toast("Follow-ups stopped on this estimate. The ones ahead come off your Google Calendar.", 6000);
 };
 // an older estimate out to them is the one to follow up on after all: it starts over from now, and the newer one's stop
-EXTRA_ACTS["efu-this"] = async () => {
-  if (!QD || !QD.id) return; const fu = efuNewPlan(QD.id);
-  await saveDoc("quotes", QD.id, { fu, fuOff: "" }, true); Object.assign(QD, { fu, fuOff: "" });
-  calSweepSoon(); syncQuoteChrome(); efuStartedToast(fu, "Following up on this estimate now.", Object.assign({}, S.quotes.find(x => x.id === QD.id) || QD, { fu, fuOff: "" }));
-};
-EXTRA_ACTS["efu-resume"] = async () => {
-  if (!QD || !QD.id) return;
-  await saveDoc("quotes", QD.id, { fuOff: "" }, true); QD.fuOff = "";
-  calSweepSoon(); syncQuoteChrome();
-  const why = efuOff(Object.assign({}, S.quotes.find(x => x.id === QD.id) || QD, { fuOff: "" }));
-  toast(why && why !== "none" ? `Started again, but they stay off for now: ${EFU_WHY[why] || why}.` : "Follow-ups are back on.", why ? 7000 : 4000);
-};
+EXTRA_ACTS["efu-this"] = async () => { if (QD && QD.id) await efuStart(QD.id); };
+EXTRA_ACTS["efu-start"] = async (t) => { if (!QD || !QD.id) return; if (t) t.disabled = true; try { await efuStart(QD.id); } finally { if (t) t.disabled = false; } };
+// (the button on a CRM page still open from before)
+EXTRA_ACTS["efu-resume"] = EXTRA_ACTS["efu-start"];
 // ---------- FOLLOW-UPS ON GOOGLE CALENDAR (elias, 2026-10-25) ----------
 // "when I select a date I want to follow up with them, that it books it onto my calendar, my Google Calendar", in purple
 // ("my jobs and estimates are gold. I want my follow-ups to be, say, purple"), and a new day moves it: "I essentially
@@ -10691,7 +10711,7 @@ async function init() {
     const loaded = {};
     const sub = (coll, key) => db.collection(coll).onSnapshot(snap => {
       S[key] = snap.docs.map(d => Object.assign({ id: d.id }, d.data())); loaded[key] = true;
-      const all = loaded.leads && loaded.quotes && loaded.jobs; if (all) { S.dataReady = true; applyCarried(); sweepEstimates(); efuBackfill(); healJobLeads(); }
+      const all = loaded.leads && loaded.quotes && loaded.jobs; if (all) { S.dataReady = true; applyCarried(); sweepEstimates(); efuSwitch(); healJobLeads(); }
       schedule(); if (key === "leads" || key === "quotes" || key === "jobs") refreshLeadModal(); if (key === "jobs") refreshBook(); if (key === "jobs" || key === "quotes" || key === "leads") calSweepSoon(); // bookings, and estimate follow-ups (estfu.js)
       if (key === "leads") { autoPromote(); if (S.sweepAngi) S.sweepAngi(); if (S.blastPromote) S.blastPromote(); if (S.txBlockSync && (!snap.fromCache || S.leads.length)) S.txBlockSync(); }
       if (all && S.pendingOpen && leadById(S.pendingOpen) && !$("#modal").innerHTML) {
