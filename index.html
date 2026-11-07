@@ -9943,6 +9943,10 @@ async function autoSave(k, on) {
 // words only, but Quo on the web takes a pasted picture. So on a computer Send invoice queues the message like a text
 // typed in the CRM (the texting script sends it from the Quo number within a minute and, from version 16, saves which Quo
 // conversation it's in: conv), then Open Quo opens that conversation on my.quo.com with the picture copied: Ctrl+V, Enter.
+// Nov 7 (elias, phone: "It keeps saying fail to send"): every picture Quo attached from the link came back Undelivered
+// ("Destination not found"), while pictures pasted into Quo, on the same number, went through. So on a phone Send invoice
+// copies the picture and opens Quo with the message, and he pastes it (hold the message box, Paste, Send). Attaching from
+// the link stays only on a device where localStorage gic-quo-attach is "1" (for trying it again if Quo fixes it).
 const TI_MAX = 900000; // a Firestore document holds 1 MB
 let TI = null; // the text box: { q (the editor copy it's for), qid, ready, err, body, sig, file (the picture), url (to show it) }
 // keys of links from before (none are made now), pictures being made, deleted invoices, and pictures put up for Quo
@@ -10026,7 +10030,8 @@ const tiQuoWeb = (t) => { const pn = String((S.textSender && S.textSender.phoneN
 const tiMsgState = () => { const t = tiMsg(), st = t ? t.status : "queued"; return st === "queued" || st === "sending" ? "going" : st === "failed" || st === "cancelled" ? "failed" : "sent"; };
 // the texts came in again: the box follows the message
 function tiOnTexts() { if (TI && TI.msg) tiPaint(); }
-const tiPicOn = () => { const s = S.textSender; return tiTouch() && !!s && (+s.version || 0) >= TI_PIC_SCRIPT && Date.now() - (Date.parse(s.lastRun || "") || 0) < 20 * 60000; };
+const tiAttachOn = () => { try { return localStorage.getItem("gic-quo-attach") === "1"; } catch (e) { return false; } };
+const tiPicOn = () => { const s = S.textSender; return tiTouch() && tiAttachOn() && !!s && (+s.version || 0) >= TI_PIC_SCRIPT && Date.now() - (Date.parse(s.lastRun || "") || 0) < 20 * 60000; };
 // "wait" (being put on the web), "ready" (Quo attaches it), or "" (Paste adds it)
 const tiPicState = () => !TI || !TI.picWant ? "" : TI.picUrl ? "ready" : TI.picErr ? "" : "wait";
 const tiNewKey = () => Array.from(crypto.getRandomValues(new Uint8Array(32)), b => "abcdefghijklmnopqrstuvwxyz0123456789"[b % 36]).join("");
@@ -10065,7 +10070,7 @@ function tiGoHTML(phone) {
   }
   const p = tiPicState(), share = tiCanShare() ? `<button class="btn" data-act="ti-share">Share picture</button>` : "";
   if (p === "wait") return `<button class="btn primary" id="ti-wait" disabled>Getting the picture ready…</button>${share}`;
-  return `<a class="btn primary" id="ti-quo" href="${esc(tiQuoLink(to))}">${p === "ready" ? "Send invoice" : "Send in Quo"}</a>${share}`;
+  return `<a class="btn primary" id="ti-quo" href="${esc(tiQuoLink(to))}">Send invoice</a>${share}`;
 }
 // what the buttons do, as things stand
 function tiHow() {
@@ -10080,7 +10085,7 @@ function tiHow() {
   const p = tiPicState(), more = tiCanShare() ? " Share picture sends it another way (Messages, or Save Image to your photos)." : "";
   if (p === "wait") return "Getting the picture ready for Quo. It takes up to a minute.";
   if (p === "ready") return "Send invoice opens Quo with this message and the picture attached. Tap Send there. If the picture isn't on it, hold your finger on the message box, tap Paste, then Send.";
-  return `${TI && TI.picErr && TI.picErr !== "late" ? `Couldn't attach the picture for you (${TI.picErr}). ` : TI && TI.picErr ? "The picture wasn't ready in time. " : ""}Send in Quo copies the picture and opens Quo with this message to their number. Hold your finger on the message box, tap Paste to add the picture, then Send.${more}`;
+  return `${TI && TI.picErr && TI.picErr !== "late" ? `Couldn't attach the picture for you (${TI.picErr}). ` : TI && TI.picErr ? "The picture wasn't ready in time. " : ""}Send invoice copies the picture and opens Quo with this message to their number. Then hold your finger on the message box, tap Paste to add the picture, and tap Send.${more}`;
 }
 function tiPaint() {
   if (!TI || !QD || TI.q !== QD) return;
@@ -10147,7 +10152,7 @@ const tiOk = () => { if (!TI || !TI.ready || !QD || TI.q !== QD) return false; i
 EXTRA_ACTS["ti-share"] = async () => {
   if (!tiOk()) return;
   try { await navigator.share({ files: [TI.file], text: TI.body }); }
-  catch (er) { if (er && er.name === "AbortError") return; toast("Couldn't open the share sheet. Use Send in Quo instead."); return; }
+  catch (er) { if (er && er.name === "AbortError") return; toast("Couldn't open the share sheet. Use Send invoice instead."); return; }
   await tiSent("Shared. If you picked Save Image, attach it to the message in Quo.");
 };
 EXTRA_ACTS["ti-copy"] = async () => {
@@ -10164,7 +10169,7 @@ async function tiMarkSent(qid) {
   const upd = { activity: activity(l, "quote", `Invoice ${q.number} sent`), updatedAt: now }; if (isOutreach(l)) Object.assign(upd, PROMOTE());
   await saveDoc("leads", l.id, upd, true);
 }
-// Send in Quo: the picture is copied in the tap itself (a phone only allows it then), and Quo opens as the link's own tap
+// Send invoice on a phone: the picture is copied in the tap itself (a phone only allows it then), and Quo opens as the link's own tap
 document.addEventListener("click", (e) => {
   const a = e.target && e.target.closest && e.target.closest("#ti-quo"); if (!a) return;
   if (!tiOk()) { e.preventDefault(); return; }
