@@ -185,7 +185,7 @@ input[type=text], input[type=search], input[type=email], input[type=tel], input[
 select.show { font-weight: 700; font-size: 15px; padding: 10px 14px; border-color: var(--ink-2); max-width: 100%; }
 textarea { resize: vertical; min-height: 70px; }
 label.f { display: flex; flex-direction: column; gap: 5px; font-size: 13px; font-weight: 600; color: var(--muted); min-width: 0; }
-label.f[hidden] { display: none; }
+label.f[hidden], .plan-note[hidden] { display: none; }
 /* email blasts */
 .bl-list { max-height: 460px; overflow-y: auto; border-top: 1px solid var(--line); }
 .bl-grp .grp-toggle { cursor: default; padding: 10px 20px; }
@@ -2362,11 +2362,12 @@ const nowLocal = () => { const d = new Date(); return `${ymd(d)}T${pad(d.getHour
 function nextAppt(l, kind) { const now = nowLocal(); return S.jobs.filter(j => j.leadId === l.id && j.status === "scheduled" && (!kind || j.kind === kind) && (j.end || j.start || "") >= now).sort((a, b) => (a.start || "").localeCompare(b.start || ""))[0]; }
 const LEAD_TABS = {
   overview: (l) => {
-    const nx = nextAppt(l); const showFu = l.nextFollowUp && !l.dnc; const ds = dueState(l); const ef = efuLeadNext(l);
+    const nx = nextAppt(l); const showFu = l.nextFollowUp && !l.dnc; const ds = dueState(l); const ef = efuLeadNext(l); const pl = planLive(l);
     const pills = [isOutreach(l) ? '<span class="pill out">Email outreach</span>' : stagePill(l.stage || "new"), l.dnc ? '<span class="pill dnc">Do not contact</span>' : "",
       showFu ? `<span class="pill ${ds === "over" ? "over" : ds === "due" ? "due" : ""}">Follow up ${esc(fmtD(l.nextFollowUp, { weekday: "short", month: "short", day: "numeric" }))}</span>` : "",
       nx ? `<span class="pill s-visit">${nx.kind === "visit" ? "Estimate" : "Job"} ${esc(fmtDT(nx.start))}</span>` : "",
-      ef ? `<span class="pill s-selling">Estimate follow-up ${esc(fmtDT(ef.at))}</span>` : ""].filter(Boolean).join("");
+      ef ? `<span class="pill s-selling">Estimate follow-up ${esc(fmtDT(ef.at))}</span>` : "",
+      pl ? `<span class="pill s-paid">Plan: ${esc(planEveryLabel(pl.every).toLowerCase())}</span>` : ""].filter(Boolean).join("");
     const logged = S.dispoMsg && S.dispoMsg.leadId === l.id ? `<div class="logged" role="status"><span>${esc(S.dispoMsg.text)}</span>${S.lastDispo && S.lastDispo.leadId === l.id && S.lastDispo.stamp === l.updatedAt ? `<button class="btn sm" data-act="undo-dispo">Undo</button>` : ""}</div>` : "";
     return `${leadBanners(l)}
     ${isOutreach(l) ? `<div class="banner info spread"><span>Outreach contact, not a lead yet. They move to Leads when they reply or you schedule an estimate.</span><button class="btn sm" data-act="promote">They replied, move to Leads</button></div>` : ""}
@@ -2411,6 +2412,7 @@ const LEAD_TABS = {
   },
   work: (l, qs, js) => `${nextSteps()}
     <div id="lead-extra"></div>
+    ${plansHTML(l)}
     <section class="panel flush"><div class="panel-h"><h2>Quotes</h2></div>${qs.length ? `<div class="list">${qs.map(quoteRow).join("")}</div>` : `<div class="pad note">No quotes yet.</div>`}</section>
     <section class="panel flush"><div class="panel-h"><h2>Estimates and jobs</h2></div>${js.length ? `<div class="list">${js.map(jobRow).join("")}</div><div id="pay-box" data-keep>${payBoxFor("modal", js)}</div>` : `<div class="pad note">Nothing scheduled yet.</div>`}</section>`,
   notes: (l) => namesSoon(l) + `<section class="panel"><div class="panel-h"><h2>Notes</h2></div><textarea id="ln-notes" rows="4" placeholder="What they want, gate codes, who to ask for…" aria-label="Notes about this lead">${esc(l.notes || "")}</textarea><div class="row"><button class="btn primary" data-act="save-notes">Save notes</button></div></section>
@@ -2694,7 +2696,7 @@ function mcpMsg(server, e) {
 // scheduling
 function scheduleForm(l, kind, preset) {
   const box = $("#lead-extra"); if (!box) return; clearExtra();
-  const dur = kind === "visit" ? 30 : 240;
+  const dur = +preset?.dur || (kind === "visit" ? 30 : 240);
   const booked = nextAppt(l, kind);
   // a job for an accepted estimate that has no job yet is tied to it (picked for them when there's only one; with more,
   // one has to be picked). Picking one puts its price and service in, unless they were typed.
@@ -2703,16 +2705,16 @@ function scheduleForm(l, kind, preset) {
     ${booked ? `<div class="banner warn">${kind === "visit" ? "An estimate" : "A job"} is already booked for ${esc(fmtDT(booked.start))}. Save this only if it's an extra one.</div>` : ""}
     <div class="form">
       <label class="f">Date<input type="date" id="sc-date" value="${esc(preset?.date || addDays(1))}"></label>
-      <label class="f">Start time<input type="time" id="sc-time" value="${kind === "visit" ? "10:00" : "08:00"}"></label>
+      <label class="f">Start time<input type="time" id="sc-time" value="${esc(preset?.time || (kind === "visit" ? "10:00" : "08:00"))}"></label>
       <label class="f">Length (minutes)<input type="number" id="sc-dur" min="15" step="15" value="${dur}"></label>
       ${kind === "job" ? `<label class="f">Job price ($)<input type="number" id="sc-amt" min="0" step="1" value="${esc(preset?.amount || (est1 && quoteTotals(est1).total) || l.value || "")}"${preset?.amount ? "" : ' data-auto="1"'}></label>
-      <label class="f">Service<input type="text" id="sc-svc" value="${esc((est1 && estSvc(est1)) || (l.services || []).join(", "))}" data-auto="1"></label>
-      ${crewPick("sc-crew", "EL")}${estPickHTML("sc-quote", ests, est1 ? est1.id : PICK_EST)}` : `<span></span>`}
+      <label class="f">Service<input type="text" id="sc-svc" value="${esc(preset?.service || (est1 && estSvc(est1)) || (l.services || []).join(", "))}"${preset?.service ? "" : ' data-auto="1"'}></label>
+      ${crewPick("sc-crew", preset?.crew || "EL")}${estPickHTML("sc-quote", ests, est1 ? est1.id : PICK_EST)}${planFields("sc", Object.assign({ date: preset?.date || addDays(1), amount: preset?.amount || (est1 && quoteTotals(est1).total) || l.value || "" }, preset?.plan))}` : `<span></span>`}
       <label class="f full">Address<input type="text" id="sc-addr" value="${esc([l.address, l.city].filter(Boolean).join(", "))}"></label>
       <label class="f full">Calendar title<input type="text" id="sc-title" value="${esc((kind === "visit" ? "Estimate: " : "Job: ") + [l.company, l.name].filter(Boolean).join(", "))}"></label>
       <label class="check full"><input type="checkbox" id="sc-gcal" checked> ${S.mcp || GC() || !STANDALONE ? "Add to my Google Calendar" : "Add it to my Google Calendar (opens Google Calendar so you can save it there)"}</label>
     </div>
-    <div class="row"><button class="btn primary" data-act="save-schedule" data-kind="${kind}" data-quote="${esc(preset?.quoteId || "")}">${kind === "visit" ? "Save estimate" : "Book job"}</button><span id="sc-status" class="note"></span></div>
+    <div class="row"><button class="btn primary" data-act="save-schedule" data-kind="${kind}" data-quote="${esc(preset?.quoteId || "")}" data-renews="${esc(preset?.plan?.renews || "")}">${kind === "visit" ? "Save estimate" : "Book job"}</button><span id="sc-status" class="note"></span></div>
   </div>`;
   box.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
@@ -2723,19 +2725,23 @@ function gcalLink(job, l) {
   return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(job.title || "")}&dates=${stamp(job.start)}/${stamp(job.end)}&ctz=America/New_York&location=${encodeURIComponent(job.address || "")}&details=${encodeURIComponent(details)}`;
 }
 // what the Google Calendar event says under the title
-function jobDesc(job, l) { l = l || {}; return [l.name && `Contact: ${l.name}`, l.phone && `Phone: ${l.phone}`, l.email && `Email: ${l.email}`, job.kind === "job" && job.amount ? `Price: ${money(job.amount)}` : "", job.service ? `Service: ${job.service}` : "", l.notes ? `Notes: ${l.notes}` : "", "Added from Get It Clean CRM"].filter(Boolean).join("\n"); }
+function jobDesc(job, l) { l = l || {}; return [l.name && `Contact: ${l.name}`, l.phone && `Phone: ${l.phone}`, l.email && `Email: ${l.email}`, job.kind === "job" && job.amount ? `Price: ${money(job.amount)}` : "", job.service ? `Service: ${job.service}` : "", planTag(job), l.notes ? `Notes: ${l.notes}` : "", "Added from Get It Clean CRM"].filter(Boolean).join("\n"); }
 async function saveSchedule(btn) {
   const l = leadById(openLeadId); if (!l) return;
   const kind = btn.dataset.kind; const date = $("#sc-date").value;
   if (!date) { toast("Pick a date"); return; }
   if (!fuYearOk(date)) { toast("Finish typing the year in the date"); return; }
   const qp = $("#sc-quote"); if (qp && qp.value === PICK_EST) { toast("Pick which estimate this job is for under For estimate, or pick Not for an estimate.", 6000); qp.focus(); return; }
+  if (kind === "job" && !planOk("sc")) return;
   btn.disabled = true;
-  const ok = await bookAppt(l, kind, { noEstimate: !!qp && qp.value === "", date, time: $("#sc-time").value, dur: +$("#sc-dur").value, title: $("#sc-title").value, addr: $("#sc-addr").value, amount: $("#sc-amt")?.value, service: $("#sc-svc")?.value, crew: kind === "job" ? crewVal("sc-crew") : "", cal: $("#sc-gcal").checked, quoteId: btn.dataset.quote || ($("#sc-quote") ? $("#sc-quote").value : "") }, $("#sc-status"));
+  const f = { noEstimate: !!qp && qp.value === "", date, time: $("#sc-time").value, dur: +$("#sc-dur").value, title: $("#sc-title").value, addr: $("#sc-addr").value, amount: $("#sc-amt")?.value, service: $("#sc-svc")?.value, crew: kind === "job" ? crewVal("sc-crew") : "", cal: $("#sc-gcal").checked, quoteId: btn.dataset.quote || ($("#sc-quote") ? $("#sc-quote").value : "") };
+  // Repeats picked: every visit of the plan is booked (plans.js)
+  const ok = kind === "job" ? await bookJobs(l, Object.assign(f, planRead("sc"), { renews: btn.dataset.renews || "" }), $("#sc-status")) : await bookAppt(l, kind, f, $("#sc-status"));
   if (ok) clearExtra(); else btn.disabled = false;
 }
 // Saves an estimate (kind "visit") or a job for a lead and puts it on Google Calendar; f holds the form's values.
-// Used by the lead's Schedule estimate / Book job form and by Book the job on an accepted estimate. True when saved.
+// Used by the lead's Schedule estimate / Book job form and by Book the job on an accepted estimate. Gives back the saved
+// job (with its id), or false when it didn't save.
 async function bookAppt(l, kind, f, statusEl) {
   const say = (x) => { if (statusEl) statusEl.textContent = x; };
   const date = f.date, time = f.time || "09:00";
@@ -2744,6 +2750,7 @@ async function bookAppt(l, kind, f, statusEl) {
   const end = `${ymd(endD)}T${pad(endD.getHours())}:${pad(endD.getMinutes())}:00`;
   const job = { kind, leadId: l.id, title: String(f.title || "").trim(), start, end, address: String(f.addr || "").trim(), amount: kind === "job" ? (+f.amount || 0) : 0, status: "scheduled", quoteId: f.quoteId || "", createdAt: new Date().toISOString() };
   job.bookedBy = typeof dealWho === "function" ? dealWho() : "";
+  if (kind === "job" && f.plan) Object.assign(job, f.plan); // a visit on a recurring plan (plans.js)
   if (kind === "job") { job.service = String(f.service || "").trim(); job.crew = f.crew || ""; if (f.noEstimate && !job.quoteId) job.noEstimate = true;
     // the % to bank typed on the Money tab for this estimate goes on its job
     try { await tieToEstimate(job, f.quoteId, l); } catch (e) { return false; } }
@@ -2769,6 +2776,8 @@ async function bookAppt(l, kind, f, statusEl) {
   if (wantCal && !job.eventId && !S.mcp && STANDALONE && GC()) job.calPending = true;
   try {
     await saveDoc("jobs", id, job);
+    // a plan's later visits: the job only. The customer's page is written once, by the plan (bookJobs)
+    if (f.quiet) return Object.assign({ id }, job);
     const upd = { stage: kind === "visit" ? (["new", "contacted", "working", "followup"].includes(l.stage || "new") || (l.stage === "lost" && !l.dnc) ? "estimate" : l.stage) : "scheduled", updatedAt: new Date().toISOString() };
     // Every booked job tells the owner's phone (elias, 2026-11-11: "make sure notifications come through when I book
     // jobs"). The notification goes out for a lead's won = { at, who }, which until now was only set on the move into
@@ -2786,8 +2795,8 @@ async function bookAppt(l, kind, f, statusEl) {
     else if (calErr) toast(`${what} saved in the CRM, but it is NOT on your Google Calendar. ${calErr}`, 8000);
     // a copy of the CRM with no Google sign-in set up: Google Calendar's own page, filled in, to save it there
     else if (wantCal && !S.mcp && !job.eventId && STANDALONE && !GC()) toast(kind === "visit" ? "Estimate scheduled" : "Job booked", 9000, { label: "Add to Google Calendar", fn: () => window.open(gcalLink(job, l), "_blank", "noopener") });
-    else toast(kind === "visit" ? `Estimate scheduled${job.eventId ? " and on your Google Calendar" : ""}` : `Job booked for ${fmtDT(start)}${job.eventId ? " and on your Google Calendar" : ""}`);
-    return true;
+    else if (!f.planToast) toast(kind === "visit" ? `Estimate scheduled${job.eventId ? " and on your Google Calendar" : ""}` : `Job booked for ${fmtDT(start)}${job.eventId ? " and on your Google Calendar" : ""}`);
+    return Object.assign({ id }, job);
   } catch (e) { say(""); return false; }
 }
 // ---------- QUOTES ----------
@@ -3599,6 +3608,7 @@ function bookHTML(l) {
       <label class="f">Job price ($)<input type="number" id="bk-amt" min="0" step="1" value="${esc(b.amount || "")}"></label>
       <label class="f full">Service<input type="text" id="bk-svc" value="${esc(b.svc)}"></label>
       ${crewPick("bk-crew", "EL")}
+      ${planFields("bk", { date: b.day, amount: b.amount })}
       <label class="f full">Address<input type="text" id="bk-addr" value="${esc(leadAddr(l))}"></label>
       <label class="f full">Calendar title<input type="text" id="bk-title" value="${esc("Job: " + [l.company, l.name].filter(Boolean).join(", "))}"></label>
       <label class="check full"><input type="checkbox" id="bk-gcal" checked> ${calNote}</label>
@@ -3654,6 +3664,7 @@ function bookPickDay(d) {
   if (!S.book || !/^\d{4}-\d{2}-\d{2}$/.test(d) || !fuYearOk(d)) return;
   S.book.day = d; S.book.month = monthKey(d);
   const di = $("#bk-date"); if (di && di.value !== d) di.value = d;
+  planSync("bk");
   const ti = $("#bk-time"), open = openTimes(d, S.book.dur);
   // a time that doesn't work on the new day moves to that day's first open one; a time typed by hand that still fits stays
   if (ti && open.length && clashFor(d, ti.value, S.book.dur)) { ti.value = open[0]; S.book.auto = open[0]; }
@@ -3665,9 +3676,11 @@ async function bookSave(btn) {
   const time = $("#bk-time").value; if (!time) { toast("Pick a start time"); return; }
   const hrs = +$("#bk-hrs").value; if (!(hrs > 0)) { toast("Put how many hours the job takes"); return; }
   if (hrs > 12) { toast("A job here can be up to 12 hours. Book a second day for a longer one."); return; }
+  if (!planOk("bk")) return;
   btn.disabled = true; b.saving = true; // the popup can't be closed until it's saved, so the job can't be booked twice
   let r = false;
-  try { r = await bookAppt(l, "job", { date, time, dur: Math.round(hrs * 60), title: $("#bk-title").value, addr: $("#bk-addr").value, amount: $("#bk-amt").value, service: $("#bk-svc").value, crew: crewVal("bk-crew"), cal: $("#bk-gcal").checked, quoteId: b.quoteId }, $("#bk-status")); }
+  // with Repeats picked this books every visit of the plan; the first one is the estimate's job (plans.js)
+  try { r = await bookJobs(l, Object.assign({ date, time, dur: Math.round(hrs * 60), title: $("#bk-title").value, addr: $("#bk-addr").value, amount: $("#bk-amt").value, service: $("#bk-svc").value, crew: crewVal("bk-crew"), cal: $("#bk-gcal").checked, quoteId: b.quoteId }, planRead("bk")), $("#bk-status")); }
   finally { b.saving = false; }
   if (S.book !== b) return;
   if (!r) { btn.disabled = false; return; }
@@ -4811,12 +4824,12 @@ function jobRow(j, where) {
   const l = money1 ? jobLead(j) : leadById(j.leadId);
   const st = { scheduled: "Scheduled", completed: "Done, unpaid", paid: "Paid", canceled: "Canceled" }[j.status] || j.status;
   const cls = { scheduled: "s-visit", completed: "s-quoted", paid: "s-paid", canceled: "s-lost" }[j.status] || "";
-  const sub = [fmtDT(j.start), j.service, j.crew ? "Crew " + j.crew : "", j.paidDate ? "paid " + fmtD(j.paidDate) + (j.method ? " by " + j.method : "") : ""].filter(Boolean).join(" · ");
+  const sub = [fmtDT(j.start), j.service, planTag(j), j.crew ? "Crew " + j.crew : "", j.paidDate ? "paid " + fmtD(j.paidDate) + (j.method ? " by " + j.method : "") : ""].filter(Boolean).join(" · ");
   // on Money the name opens them (or asks who it was for, when it has no customer)
   const nm = esc(jobClient(j, l)), who = !money1 ? nm : l ? `<button class="who" data-open-lead="${esc(l.id)}">${nm}</button>` : `<button class="who" ${jobCustAttr(j.id)}>${nm}</button>`;
   return `<div class="item static${money1 ? " flow" : ""}"><div class="main-col"><span class="t">${esc(j.kind === "visit" ? "Estimate" : "Job")}: ${who}</span><span class="s">${esc(sub)}</span></div>
     <div class="r"><span class="row">${j.kind === "job" ? `<span class="num" style="font-weight:700">${money(j.amount, (+j.amount || 0) % 1 !== 0)}</span>` : ""}<span class="pill ${cls}">${esc(st)}</span></span>
-    <div class="row">${money1 && j.kind === "job" ? bankBox(j) : ""}${j.status === "scheduled" ? `<button class="btn sm" data-job="${esc(j.id)}" data-js="completed">${j.kind === "visit" ? "Done" : "Job done"}</button><button class="btn sm ghost danger" data-job="${esc(j.id)}" data-js="canceled">Cancel ${j.kind === "visit" ? "estimate" : "job"}</button>` : ""}${j.kind === "job" && (j.status === "completed" || j.status === "scheduled") ? `<button class="btn sm primary" data-pay="${esc(j.id)}">Paid</button>` : ""}</div></div></div>`;
+    <div class="row">${money1 && j.kind === "job" ? bankBox(j) : ""}${j.status === "scheduled" ? `<button class="btn sm" data-job="${esc(j.id)}" data-js="completed">${j.kind === "visit" ? "Done" : "Job done"}</button>${money1 ? "" : `<button class="btn sm" data-act="job-move" data-id="${esc(j.id)}">Move</button>`}<button class="btn sm ghost danger" data-job="${esc(j.id)}" data-js="canceled">Cancel ${j.kind === "visit" ? "estimate" : "job"}</button>` : ""}${j.kind === "job" && (j.status === "completed" || j.status === "scheduled") ? `<button class="btn sm primary" data-pay="${esc(j.id)}">Paid</button>` : ""}</div></div></div>`;
 }
 // The payment box is drawn from S.payOpen, so a refresh of the page doesn't close it or clear what was typed.
 function payBoxFor(where, jobs) {
@@ -10568,6 +10581,187 @@ EXTRA_ACTS["ms-note"] = async (t) => {
 document.addEventListener("submit", (e) => { if (e.target && e.target.id === "ms-form") { e.preventDefault(); msGo(); } });
 // Escape closes the map only, not the estimate or lead underneath
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && MS) { e.stopPropagation(); e.preventDefault(); msClose(); } }, true);
+// ---- Recurring plans (elias, 2026-11-11): "sell reoccurring plans for window cleaning ... automatically book the job
+// out, whether it's quarterly. So that'd be 3 months from the time we book the job, every single 3 months for a year,
+// semi-annually, or whatever it may be." ----
+// Book job (on a customer, or on an accepted estimate) has Repeats. With it picked, every visit is booked right then as
+// its own job, so each one is on the calendar, gets its reminder, and can be moved, canceled, marked done and paid like
+// any other job. The plan itself is kept on the customer: lead.plans[id] = { service, amount (each visit), every (months
+// between visits), visits, first, time, dur, crew, address, status }. Each visit's job carries planId, planN and planOf.
+const PLAN_EVERY = [[1, "Every month"], [2, "Every 2 months"], [3, "Every 3 months"], [4, "Every 4 months"], [6, "Every 6 months"], [12, "Once a year"]];
+const planEveryLabel = (n) => (PLAN_EVERY.find(x => x[0] === +n) || [0, `Every ${+n || 0} months`])[1];
+// a year of visits (two visits for once a year), which can be changed in the form
+const planDefaultVisits = (every) => every >= 12 ? 2 : Math.round(12 / every);
+const PLAN_MAX = 36;
+// the visit days: the same day of the month every so many months (the 31st becomes a short month's last day)
+function planDates(first, every, count) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(first || ""); if (!m || !(every > 0)) return [];
+  const y = +m[1], mo = +m[2] - 1, d = +m[3];
+  return Array.from({ length: Math.max(0, Math.min(PLAN_MAX, count)) }, (_, i) => { const t = mo + i * every, yy = y + Math.floor(t / 12), mm = t % 12, last = new Date(yy, mm + 1, 0).getDate(); return `${yy}-${pad(mm + 1)}-${pad(Math.min(d, last))}`; });
+}
+const planDay = (d) => fmtD(d, { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+// what the form says under Repeats: how many visits, the price of each, and every day that gets booked
+function planNoteText(date, every, n, amount) {
+  if (!every) return "";
+  if (!(n >= 2)) return "Put how many visits the plan has (2 or more).";
+  if (n > PLAN_MAX) return `A plan here can have up to ${PLAN_MAX} visits.`;
+  const days = planDates(date, every, n); if (!days.length) return "Pick the first visit's date to see every visit.";
+  return `Books ${n} visits${+amount ? ` at ${money(+amount, +amount % 1 !== 0)} each` : ""}: ${days.map(planDay).join(" · ")}. Each one goes on the calendar now and can be moved or canceled on its own later.`;
+}
+// the Repeats boxes for a Book job form whose boxes start with pfx (sc on a customer, bk on an accepted estimate)
+function planFields(pfx, p) {
+  p = p || {}; const ev = +p.every || 0, n = ev ? (+p.visits || planDefaultVisits(ev)) : "";
+  return `<label class="f">Repeats<select id="${pfx}-rep" data-plan="${pfx}"><option value="0">Just this once</option>${PLAN_EVERY.map(([v, t]) => `<option value="${v}"${v === ev ? " selected" : ""}>${t}</option>`).join("")}</select></label>
+      <label class="f" id="${pfx}-repn-f"${ev ? "" : " hidden"}>Number of visits<input type="number" id="${pfx}-repn" data-plan="${pfx}" min="2" max="${PLAN_MAX}" step="1" inputmode="numeric" value="${n}"></label>
+      <p class="note full plan-note" id="${pfx}-repnote"${ev ? "" : " hidden"}>${esc(planNoteText(p.date, ev, +n, p.amount))}</p>`;
+}
+const planRead = (pfx) => { const s = $(`#${pfx}-rep`), n = $(`#${pfx}-repn`); return { every: s ? +s.value || 0 : 0, visits: n ? Math.round(+n.value || 0) : 0 }; };
+// shows or hides the visits box and rewrites the note from what's in the form now
+function planSync(pfx) {
+  const s = $(`#${pfx}-rep`); if (!s) return;
+  const ev = +s.value || 0, nf = $(`#${pfx}-repn-f`), ni = $(`#${pfx}-repn`), note = $(`#${pfx}-repnote`);
+  if (nf) nf.hidden = !ev; if (!note) return;
+  note.hidden = !ev;
+  note.textContent = planNoteText(($(`#${pfx}-date`) || {}).value, ev, ni ? Math.round(+ni.value || 0) : 0, ($(`#${pfx}-amt`) || {}).value);
+}
+// false (with a note saying why) when Repeats is picked and the number of visits can't be booked
+function planOk(pfx) {
+  const r = planRead(pfx); if (!r.every) return true;
+  if (r.visits >= 2 && r.visits <= PLAN_MAX) return true;
+  toast(r.visits > PLAN_MAX ? `A plan here can have up to ${PLAN_MAX} visits.` : "Put how many visits the plan has (2 or more), or set Repeats to Just this once.", 6000);
+  const n = $(`#${pfx}-repn`); if (n) n.focus(); return false;
+}
+document.addEventListener("change", (e) => {
+  const t = e.target; if (!t || !t.dataset || !t.dataset.plan || !/-rep$/.test(t.id)) return;
+  // a new How often starts from a year of visits again
+  const n = $(`#${t.dataset.plan}-repn`); if (n && +t.value) n.value = planDefaultVisits(+t.value);
+  planSync(t.dataset.plan);
+});
+document.addEventListener("input", (e) => { const m = e.target && e.target.id && /^(sc|bk)-(repn|date|amt)$/.exec(e.target.id); if (m) planSync(m[1]); });
+
+// Books one job, or with Repeats picked a whole plan. f is what bookAppt takes, plus every (months between visits) and
+// visits (how many). The first visit is booked like any job (it's the one tied to the estimate, when there is one, and
+// the one the "closed a deal" notification goes out for); the rest are booked quietly behind it. True when the first
+// one saved.
+async function bookJobs(l, f, statusEl) {
+  const every = +f.every || 0, n = Math.round(+f.visits || 0);
+  if (!every || n < 2) return bookAppt(l, "job", f, statusEl);
+  const pid = uid("plan"), days = planDates(f.date, every, n), tag = (i) => ({ planId: pid, planN: i + 1, planOf: n });
+  const first = await bookAppt(l, "job", Object.assign({}, f, { plan: tag(0), planToast: true }), statusEl);
+  if (!first) return false;
+  const made = [first];
+  for (let i = 1; i < n; i++) {
+    if (statusEl) statusEl.textContent = `Booking visit ${i + 1} of ${n}…`;
+    let j = null;
+    try { j = await bookAppt(leadById(l.id) || l, "job", Object.assign({}, f, { date: days[i], quoteId: "", noEstimate: true, plan: tag(i), quiet: true }), null); } catch (e) {}
+    if (!j) break; made.push(j);
+  }
+  const cur = leadById(l.id) || l, k = made.length;
+  const plan = { id: pid, service: String(f.service || "").trim(), amount: +f.amount || 0, every, visits: k, first: f.date, time: f.time || "09:00", dur: Math.max(15, +f.dur || 60), crew: f.crew || "", address: String(f.addr || "").trim(), status: "active", at: new Date().toISOString(), by: typeof dealWho === "function" ? dealWho() : "" };
+  if (f.renews) plan.renews = f.renews;
+  const upd = { plans: { [pid]: plan }, updatedAt: new Date().toISOString() };
+  if (f.renews && (cur.plans || {})[f.renews]) upd.plans[f.renews] = { renewedBy: pid };
+  upd.activity = activity(cur, "job", `Plan ${f.renews ? "renewed" : "started"}: ${plan.service || "job"}, ${money(plan.amount, plan.amount % 1 !== 0)} a visit, ${planEveryLabel(every).toLowerCase()}, ${plural(k, "visit")} (${days.slice(0, k).map(d => fmtD(d, { month: "short", day: "numeric", year: "numeric" })).join(", ")})`);
+  try { await saveDoc("leads", l.id, upd, true); } catch (e) {}
+  // fewer visits than asked for got booked (the connection dropped part way): the jobs say how many there really are
+  if (k < n) for (const j of made) { try { await saveDoc("jobs", j.id, { planOf: k }, true); } catch (e) {} }
+  const onCal = made.filter(j => j.eventId).length, waiting = made.filter(j => j.calPending).length;
+  const cal = onCal === k ? " and on your Google Calendar" : onCal || waiting ? `. ${onCal ? onCal + " of them are on your Google Calendar; the rest go" : "They go"} on when it's connected` : "";
+  if (k < n) toast(`Only ${k} of the ${n} visits were booked before the connection dropped. Book the rest from their Quotes & jobs tab.`, 10000);
+  else toast(`Plan started: ${k} visits booked, the last one ${planDay(days[k - 1])}${cal}.`, 8000);
+  return true;
+}
+
+// ---- the plan on the customer's page ----
+const leadPlans = (l) => Object.values((l && l.plans) || {}).filter(p => p && p.id).sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")));
+const planVisits = (p) => S.jobs.filter(j => j.planId === p.id && j.kind === "job").sort((a, b) => String(a.start || "").localeCompare(String(b.start || "")));
+function planState(p) {
+  const all = planVisits(p), live = all.filter(j => j.status !== "canceled"), left = live.filter(j => j.status === "scheduled");
+  return { live, left, next: left[0] || null, done: live.length - left.length, off: p.status === "canceled", ended: p.status !== "canceled" && !left.length };
+}
+// the plan visit a job is, for its line on the customer's page and on Money ("Plan visit 2 of 4")
+const planTag = (j) => j && j.planId && j.planN ? `Plan visit ${j.planN}${j.planOf ? " of " + j.planOf : ""}` : "";
+// a customer with a plan running: for the pill at the top of their page
+const planLive = (l) => leadPlans(l).find(p => { const s = planState(p); return !s.off && !s.ended; }) || null;
+function planRow(p) {
+  const s = planState(p);
+  const pill = s.off ? '<span class="pill s-lost">Canceled</span>' : s.ended ? '<span class="pill s-quoted">All visits done</span>' : '<span class="pill s-paid">Active</span>';
+  const sub = [`${money(p.amount, (+p.amount || 0) % 1 !== 0)} a visit`, planEveryLabel(p.every).toLowerCase(), `${s.done} of ${plural(s.live.length, "visit")} done`, s.next ? "next " + fmtDT(s.next.start) : "", p.renewedBy ? "renewed" : ""].filter(Boolean).join(" · ");
+  const ask = S.planAsk === p.id && s.left.length;
+  const btns = ask ? `<span class="note">Cancel the ${plural(s.left.length, "visit")} still ahead?</span><button class="btn sm danger" data-act="plan-cancel-yes" data-id="${esc(p.id)}">Yes, cancel ${s.left.length === 1 ? "it" : "them"}</button><button class="btn sm" data-act="plan-cancel-no">No</button>`
+    : `${!s.off && s.left.length <= 1 && !p.renewedBy ? `<button class="btn sm primary" data-act="plan-renew" data-id="${esc(p.id)}">Renew</button>` : ""}${!s.off && s.left.length ? `<button class="btn sm ghost danger" data-act="plan-cancel" data-id="${esc(p.id)}">Cancel plan</button>` : ""}`;
+  return `<div class="item static flow" data-plan-row="${esc(p.id)}"><div class="main-col"><span class="t">${esc(p.service || "Job")} plan</span><span class="s" style="white-space:normal">${esc(sub)}</span></div><div class="r"><span class="row">${pill}</span><div class="row">${btns}</div></div></div>`;
+}
+function plansHTML(l) {
+  const ps = leadPlans(l); if (!ps.length) return "";
+  return `<section class="panel flush" id="lead-plans"><div class="panel-h"><h2>${ps.length > 1 ? "Plans" : "Plan"}</h2><span class="note">Each visit is a job below</span></div><div class="list">${ps.map(planRow).join("")}</div></section>`;
+}
+// takes one visit off the books the way Cancel job does: off Google Calendar now, or as soon as it's connected
+async function planDropVisit(j) {
+  await saveDoc("jobs", j.id, { status: "canceled", updatedAt: new Date().toISOString() }, true);
+  let gone = false;
+  if (j.eventId && calBusiness()) { try { await GC().deleteEvent(j.eventId, j.calendarId); gone = true; } catch (e) {} }
+  if (j.eventId && !gone && STANDALONE && GC()) { try { await saveDoc("jobs", j.id, { calRemove: true }, true); calSweepSoon(); } catch (e) {} }
+  if (!j.eventId && j.calPending) { try { await saveDoc("jobs", j.id, { calPending: false, calRemove: true }, true); } catch (e) {} }
+  return gone;
+}
+Object.assign(EXTRA_ACTS, {
+  "plan-cancel": (t) => { S.planAsk = t.dataset.id; refreshLeadModal(true); },
+  "plan-cancel-no": () => { S.planAsk = null; refreshLeadModal(true); },
+  "plan-cancel-yes": async (t, l) => {
+    const p = l && (l.plans || {})[t.dataset.id]; if (!p) return;
+    t.disabled = true; const left = planState(p).left; let n = 0, off = 0;
+    for (const j of left) { try { if (await planDropVisit(j)) off++; n++; } catch (e) { break; } }
+    S.planAsk = null;
+    if (n < left.length) { toast(`Canceled ${n} of the ${left.length} visits, then the connection dropped. Tap Cancel plan again for the rest.`, 9000); refreshLeadModal(true); return; }
+    const cur = leadById(l.id) || l;
+    try { await saveDoc("leads", l.id, { plans: { [p.id]: { status: "canceled", canceledAt: new Date().toISOString() } }, activity: activity(cur, "job", `Plan canceled: ${p.service || "job"}, ${plural(n, "visit")} taken off the books`), updatedAt: new Date().toISOString() }, true); } catch (e) { return; }
+    toast(`Plan canceled. ${plural(n, "visit")} taken off the books${off === n && n ? " and off your Google Calendar" : off ? `, ${off} of them off your Google Calendar so far` : ""}.`, 8000);
+    refreshLeadModal(true);
+  },
+  // the same plan again, starting one step after its last visit: opens Book job with everything filled in
+  "plan-renew": (t, l) => {
+    const p = l && (l.plans || {})[t.dataset.id]; if (!p) return;
+    const live = planState(p).live, last = live.length ? live[live.length - 1] : null;
+    const from = last ? String(last.start || "").slice(0, 10) : p.first, date = planDates(from, +p.every || 3, 2)[1] || addDays(1);
+    S.leadTab = "work"; refreshLeadModal(true);
+    scheduleForm(l, "job", { date, amount: p.amount, plan: { every: +p.every || 3, visits: planDefaultVisits(+p.every || 3), renews: p.id }, service: p.service, time: p.time, dur: p.dur, crew: p.crew });
+  },
+});
+
+// ---- moving a booked estimate or job to another day or time (the visits of a plan get moved around: weather, the
+// customer's week). It keeps its length, its plan and everything else; on Google Calendar the same event moves. ----
+function jobMoveForm(j) {
+  const box = $("#lead-extra"); if (!box) return; clearExtra();
+  const what = j.kind === "visit" ? "estimate" : "job";
+  box.innerHTML = `<div class="tpl stack" style="margin-top:4px"><div class="spread"><h3 style="font-size:17px">Move this ${what}</h3><button class="btn ghost sm" data-act="close-extra">Close</button></div>
+    <p class="note">${esc([j.title, planTag(j), "now " + fmtDT(j.start)].filter(Boolean).join(" · "))}</p>
+    <div class="form"><label class="f">New date<input type="date" id="sc-mv-date" value="${esc(String(j.start || "").slice(0, 10))}"></label><label class="f">Start time<input type="time" id="sc-mv-time" value="${esc(String(j.start || "").slice(11, 16))}"></label></div>
+    <div class="row"><button class="btn primary" data-act="job-move-save" data-id="${esc(j.id)}">Move ${what}</button><span id="sc-status" class="note"></span></div></div>`;
+  box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+Object.assign(EXTRA_ACTS, {
+  "job-move": (t) => { const j = S.jobs.find(x => x.id === t.dataset.id); if (j && j.status === "scheduled") jobMoveForm(j); },
+  "job-move-save": async (t, l) => {
+    const j = S.jobs.find(x => x.id === t.dataset.id); if (!j || j.status !== "scheduled") { clearExtra(); return; }
+    const date = $("#sc-mv-date").value, time = $("#sc-mv-time").value;
+    if (!date || !fuYearOk(date)) { toast(date ? "Finish typing the year in the date" : "Pick a date"); return; }
+    if (!time) { toast("Pick a start time"); return; }
+    const start = `${date}T${time}:00`; if (start === j.start) { clearExtra(); return; }
+    const mins = Math.max(15, Math.round((new Date(j.end) - new Date(j.start)) / 60000) || 60), e = new Date(start); e.setMinutes(e.getMinutes() + mins);
+    const end = `${ymd(e)}T${pad(e.getHours())}:${pad(e.getMinutes())}:00`, what = j.kind === "visit" ? "Estimate" : "Job";
+    t.disabled = true;
+    try { await saveDoc("jobs", j.id, { start, end, movedFrom: j.start, updatedAt: new Date().toISOString() }, true); } catch (er) { t.disabled = false; return; }
+    let cal = "";
+    if (j.eventId) {
+      if (calBusiness()) { try { await GC().patchEvent(j.eventId, { start, end }, j.calendarId); cal = " and on your Google Calendar"; } catch (er) { cal = ". Google Calendar didn't take the change, so move it there too"; } }
+      else cal = ". On Google Calendar it's still at the old time, so move it there too";
+    }
+    const cur = l && (leadById(l.id) || l);
+    if (cur) await saveDoc("leads", cur.id, { activity: activity(cur, j.kind, `${what} moved from ${fmtDT(j.start)} to ${fmtDT(start)}`), updatedAt: new Date().toISOString() }, true).catch(() => {});
+    clearExtra(); toast(`${what} moved to ${fmtDT(start)}${cal}.`, 7000);
+  },
+});
 
 // ---------- CSV export ----------
 function toCSV(rows) { return rows.map(r => r.map(v => { const s = String(v ?? ""); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }).join(",")).join("\n"); }
