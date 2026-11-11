@@ -357,7 +357,10 @@ label.check { display: flex; align-items: center; gap: 9px; font-size: 14px; fon
 .items { display: flex; flex-direction: column; gap: 8px; }
 .qitem { border: 1px solid var(--line); background: var(--surface); border-radius: 12px; padding: 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .qitem .full { grid-column: 1 / -1; }
-.qitem .mini { display: grid; grid-template-columns: 1fr 1fr 70px auto; gap: 8px; align-items: end; grid-column: 1 / -1; }
+.qitem .mini { display: grid; grid-template-columns: 1.5fr 1fr 70px auto; gap: 8px; align-items: end; grid-column: 1 / -1; }
+.sqrow { display: flex; gap: 6px; align-items: stretch; }
+.sqrow input { flex: 1; min-width: 0; }
+.sqrow .btn { white-space: nowrap; }
 .qitem label.f { font-size: 12px; }
 .qtotal { display: flex; justify-content: space-between; font-family: var(--f-display); font-weight: 700; font-size: 24px; padding: 6px 2px; }
 .preview-box { position: sticky; top: 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 12px; min-width: 0; }
@@ -2324,7 +2327,7 @@ function leadInfo(l) {
   const phoneActs = l.phone ? `<a class="btn sm" href="tel:${esc(digits(l.phone))}">${icon("phone")}Call</a>${l.dnc ? "" : `<a class="btn sm" href="${smsHref(l)}">${icon("text")}Text</a>`}<button class="btn sm icon-btn" data-copy="${esc(l.phone)}" data-copy-label="Phone" aria-label="Copy phone">${icon("copy")}</button>` : "";
   const emailActs = l.email ? `${l.dnc ? "" : `<button class="btn sm" data-ltab="messages">Email</button>`}<button class="btn sm icon-btn" data-copy="${esc(l.email)}" data-copy-label="Email" aria-label="Copy email">${icon("copy")}</button>` : "";
   const addr = [l.address, l.city].filter(Boolean).join(", ");
-  const addrActs = addr ? `<a class="btn sm" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent([l.address || l.company, l.city, "FL"].filter(Boolean).join(", "))}">${icon("map")}Map</a>` : "";
+  const addrActs = addr ? `<a class="btn sm" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent([l.address || l.company, l.city, "FL"].filter(Boolean).join(", "))}">${icon("map")}Map</a><button class="btn sm" data-act="ms-open" data-id="${esc(l.id)}">Measure</button>` : "";
   const last = [l.lastDisposition ? `${esc(l.lastDisposition)}${l.lastContact ? ` · ${esc(fmtD(l.lastContact, dLong))}` : ""}` : "",
     l.lastEmailDispo ? `<span class="note">Email: ${esc(l.lastEmailDispo)}${l.lastEmailAt ? ` · ${esc(fmtD(l.lastEmailAt, dLong))}` : ""}</span>` : ""].filter(Boolean).join("<br>");
   const notes = l.notes ? `<div class="cnotes"><span class="k">Notes</span><div class="clamp">${esc(l.notes)}</div>${l.notes.length > 140 || /\n/.test(l.notes) ? `<button class="btn ghost sm" data-ltab="notes">Read all</button>` : ""}</div>` : "";
@@ -2767,6 +2770,11 @@ async function bookAppt(l, kind, f, statusEl) {
   try {
     await saveDoc("jobs", id, job);
     const upd = { stage: kind === "visit" ? (["new", "contacted", "working", "followup"].includes(l.stage || "new") || (l.stage === "lost" && !l.dnc) ? "estimate" : l.stage) : "scheduled", updatedAt: new Date().toISOString() };
+    // Every booked job tells the owner's phone (elias, 2026-11-11: "make sure notifications come through when I book
+    // jobs"). The notification goes out for a lead's won = { at, who }, which until now was only set on the move into
+    // Won / Scheduled, so a job for someone already there or in Done (Carole's second job, 11/9) sent nothing. A deal
+    // closed in the last 30 minutes (Accepted, then Book the job) isn't marked again: still one notification.
+    if (kind === "job") { const w = Date.parse((l.won || {}).at || ""); if (!(w && Math.abs(Date.now() - w) < 30 * 60000)) upd.won = { at: new Date().toISOString(), who: dealWho(), by: S.myId || "" }; }
     let txt = `${kind === "visit" ? "Estimate" : "Job"} scheduled for ${fmtDT(start)}${job.eventId ? " (on Google Calendar)" : ""}`;
     if (isOutreach(l)) { Object.assign(upd, PROMOTE()); txt += " · moved from outreach to Leads"; }
     if (calErr || job.calPending) txt += " · going on Google Calendar when it's connected";
@@ -2804,7 +2812,7 @@ VIEWS.quotes = () => {
   // Accepted counts the ones still waiting on the job, the same as Today; the close rate counts every yes
   const em = estimateJobs(), wait = acceptedWaiting(), jobPaid = new Set(acc.filter(q => estimateState(q, em) === "paid").map(q => q.id)), owed = acc.filter(q => estimateState(q, em) === "done").length;
   const decided = acc.length + dec.length;
-  return `${pageHead("Quotes", "Estimates and invoices on your Get It Clean template", `<button class="btn primary" data-act="new-quote">+ New quote</button>`)}
+  return `${pageHead("Quotes", "Estimates and invoices on your Get It Clean template", `<button class="btn" data-act="ms-open">Measure on map</button><button class="btn primary" data-act="new-quote">+ New quote</button>`)}
   ${noDbBanner()}
   ${kpiStrip([["Out for decision", money(sum(sent, q => q.total)), plural(sent.length, "quote") + " sent"], ["Accepted", money(sum(wait, q => q.total)), `${plural(wait.length, "quote")} waiting for completion${owed ? ` · ${owed} waiting on payment` : ""}${jobPaid.size ? ` · ${jobPaid.size} paid` : ""}`], ["Close rate", decided ? Math.round(acc.length / decided * 100) + "%" : "–", decided ? `${acc.length} of ${decided} decided` : "Shows once quotes are decided"], ["Average estimate", ests.length ? money(sum(ests, q => q.total) / ests.length) : "–", plural(ests.length, "estimate") + (qs.length > ests.length ? ` · ${plural(qs.length - ests.length, "invoice")}` : "")]])}
   <section class="panel flush">${qs.length ? `<div class="list">${qs.map(q => quoteRow(q, jobPaid)).join("")}</div>` : `<div class="empty">No quotes yet. “+ New quote” builds one on your estimate template, with your price book filling in the prices.</div>`}</section>`;
@@ -2910,7 +2918,7 @@ function renderItems() {
     <label class="f">Service<input type="text" list="svc-list" data-k="service" value="${esc(it.service)}"></label>
     <label class="f">Description<input type="text" data-k="description" value="${esc(it.description)}"></label>
     <div class="mini">
-      <label class="f"><span data-sqlab>${sqLabel(it.service)}</span><input type="text" inputmode="decimal" data-k="sqft" value="${esc(it.sqft ?? "")}" placeholder="N/A"></label>
+      <label class="f"><span data-sqlab>${sqLabel(it.service)}</span><span class="sqrow"><input type="text" inputmode="decimal" data-k="sqft" value="${esc(it.sqft ?? "")}" placeholder="N/A"><button type="button" class="btn sm" data-act="ms-line" data-i="${i}" aria-label="Measure it on the map" title="Measure it on the map">${icon("map")}Map</button></span></label>
       <label class="f">Price ($)<input type="number" step="0.01" data-k="price" value="${esc(it.price)}"></label>
       <label class="f">Qty<input type="number" min="1" step="1" data-k="qty" value="${esc(it.qty)}"></label>
       <button class="btn sm danger" data-act="q-del-item" data-i="${i}" aria-label="Remove line">Remove</button>
@@ -10324,6 +10332,242 @@ if (TX_ON()) {
   try { const q = new URLSearchParams(location.search); if (q.get("open")) { history.replaceState(null, "", location.pathname + location.hash); setTimeout(() => pushOpen(q), 0); } } catch (e) {}
   if ("serviceWorker" in navigator) navigator.serviceWorker.addEventListener("message", (e) => { const u = e.data && e.data.gicOpen; if (u) { try { pushOpen(new URL(u).searchParams); } catch (err) {} } });
 }
+// ---- Measure on the map (elias, 2026-11-11): "go on a map, type in an address pulls up, you could draw a line around the
+// driveway or whatever needs to be cleaned, and it gives you the square footage." ----
+// It opens over whatever is on screen (an estimate being written stays open underneath): an address box, the county's
+// aerial picture, and a tap on each corner. Areas come out in square feet and lengths in feet. From a line on an estimate,
+// Use puts the number in that line's Sq ft (or Linear ft) box, which prices it from the price book; from a lead's page it
+// can go in their notes.
+// The pictures and the address lookup are the counties' own public map services (no key, no cost): Pinellas County's
+// 2026 aerials (3 inches to the pixel) and Hillsborough County's 2025 ones (6 inches). Anywhere else shows a street map
+// only. The map itself is Leaflet, loaded the first time this opens.
+const MS_LEAFLET = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min";
+const MS_STREETS = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
+// later in the list draws on top. black: that service sends a solid black square where it has no picture, which is hidden
+const MS_AERIALS = [
+  { name: "Hillsborough County 2025", url: "https://maps.hillsboroughcounty.org/arcgis/rest/services/AerialsNew/Aerials_2025/ImageServer/tile/{z}/{y}/{x}", bounds: [[27.564, -82.78], [28.185, -82.05]], max: 21, black: true },
+  { name: "Pinellas County 2026", url: "https://egis.pinellas.gov/gis/rest/services/Aerials2026/ImageServer/tile/{z}/{y}/{x}", bounds: [[27.563, -82.873], [28.184, -82.559]], max: 22 },
+];
+const MS_FIND = [
+  "https://egis.pinellas.gov/gis/rest/services/Geocoding/PinellasComposite/GeocodeServer",
+  "https://maps.hillsboroughcounty.org/arcgis/rest/services/Geocoding/Composite_Address_Locator_Overall/GeocodeServer",
+];
+const MS_HOME = [28.105, -82.72]; // Palm Harbor / East Lake, when there's no address to start from
+const MS_SQFT = 10.763910416709722, MS_FT = 3.280839895013123;
+let MS = null, msLibP = null;
+
+// ---- the arithmetic: corners (latitude, longitude) to flat feet around their middle, on the real shape of the earth ----
+function msFlat(pts) {
+  const rad = Math.PI / 180, la0 = pts.reduce((a, p) => a + p[0], 0) / pts.length, ln0 = pts.reduce((a, p) => a + p[1], 0) / pts.length;
+  const a = 6378137, e2 = 0.00669437999014, s = Math.sin(la0 * rad), w = Math.sqrt(1 - e2 * s * s), N = a / w, M = a * (1 - e2) / (w * w * w);
+  return pts.map(p => [(p[1] - ln0) * rad * N * Math.cos(la0 * rad), (p[0] - la0) * rad * M]);
+}
+// square feet inside the corners
+function msArea(pts) {
+  if (pts.length < 3) return 0;
+  const f = msFlat(pts); let t = 0;
+  for (let i = 0; i < f.length; i++) { const j = (i + 1) % f.length; t += f[i][0] * f[j][1] - f[j][0] * f[i][1]; }
+  return Math.abs(t) / 2 * MS_SQFT;
+}
+// feet along the points
+function msLength(pts) {
+  if (pts.length < 2) return 0;
+  const f = msFlat(pts); let t = 0;
+  for (let i = 1; i < f.length; i++) t += Math.hypot(f[i][0] - f[i - 1][0], f[i][1] - f[i - 1][1]);
+  return t * MS_FT;
+}
+const msN = (n) => Math.round(n).toLocaleString("en-US");
+const msOk = (s) => s.pts.length >= (s.kind === "line" ? 2 : 3);
+const msSize = (s) => s.kind === "line" ? msLength(s.pts) : msArea(s.pts);
+const msSays = (s) => `${msN(msSize(s))} ${s.kind === "line" ? "ft" : "sq ft"}`;
+function msTotals() {
+  const good = MS ? MS.shapes.filter(msOk) : [];
+  return { sqft: good.filter(s => s.kind === "area").reduce((a, s) => a + msArea(s.pts), 0), ft: good.filter(s => s.kind === "line").reduce((a, s) => a + msLength(s.pts), 0), areas: good.filter(s => s.kind === "area").length, lines: good.filter(s => s.kind === "line").length };
+}
+// what Use gives back: feet for a line priced by the linear foot, else square feet
+const msUseN = () => { const t = msTotals(); return Math.round(MS && MS.o.unit === "lnft" ? t.ft : t.sqft); };
+
+// ---- looking an address up: both counties are asked, the better match wins (Pinellas on a tie) ----
+async function msFind(q) {
+  q = String(q || "").trim(); if (!q) return null;
+  const ask = async (u) => {
+    try {
+      const r = await fetch(`${u}/findAddressCandidates?f=json&outSR=4326&maxLocations=1&SingleLine=${encodeURIComponent(q)}`, window.AbortSignal && AbortSignal.timeout ? { signal: AbortSignal.timeout(12000) } : undefined);
+      const c = ((await r.json()).candidates || [])[0];
+      return c && c.location && +c.score >= 85 ? { lat: +c.location.y, lng: +c.location.x, score: +c.score, label: String(c.address || q) } : null;
+    } catch (e) { return null; }
+  };
+  const hits = (await Promise.all(MS_FIND.map(ask))).filter(Boolean);
+  return hits.sort((a, b) => b.score - a.score)[0] || null;
+}
+
+function msLib() {
+  if (window.L && window.L.map) return Promise.resolve();
+  return msLibP || (msLibP = Promise.all([
+    new Promise((res, rej) => { const k = document.createElement("link"); k.rel = "stylesheet"; k.href = MS_LEAFLET + ".css"; k.onload = res; k.onerror = () => rej(new Error("css")); document.head.appendChild(k); }),
+    loadScript(MS_LEAFLET + ".js"),
+  ]).catch(e => { msLibP = null; throw e; }));
+}
+function msCss() {
+  if ($("#ms-css")) return;
+  const st = document.createElement("style"); st.id = "ms-css";
+  st.textContent = `
+.ms { position: fixed; inset: 0; z-index: 70; background: var(--bg); display: flex; flex-direction: column; padding-top: env(safe-area-inset-top, 0px); }
+.ms-top { display: flex; gap: 8px; align-items: center; padding: 10px 12px; background: var(--surface); border-bottom: 1px solid var(--line); }
+.ms-top form { display: flex; gap: 8px; flex: 1; min-width: 0; }
+.ms-top input { flex: 1; min-width: 0; }
+#ms-map { flex: 1; min-height: 0; background: var(--wash); cursor: crosshair; }
+#ms-map.leaflet-drag-target { cursor: grabbing; }
+.ms-bar { background: var(--surface); border-top: 1px solid var(--line); padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0px)); display: flex; flex-direction: column; gap: 8px; }
+.ms-read { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.ms-read b { font-family: var(--f-display); font-size: 22px; }
+.ms-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.ms-chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: var(--surface-2); border-radius: 999px; padding: 4px 6px 4px 12px; font-size: 14px; }
+.ms-chip button { border: 0; background: none; color: var(--muted); font-size: 18px; line-height: 1; padding: 4px 8px; cursor: pointer; }
+.ms-btns { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.ms-btns .grow { flex: 1; }
+.ms-pt { width: 16px; height: 16px; margin: 6px; border-radius: 50%; background: #fff; border: 3px solid #10203f; box-shadow: 0 1px 4px rgba(0,0,0,.5); }
+.leaflet-tooltip.ms-lab { background: rgba(16,32,63,.9); color: #fff; border: 0; border-radius: 8px; font-weight: 700; font-size: 14px; padding: 3px 8px; box-shadow: none; }
+.leaflet-tooltip.ms-lab::before { display: none; }
+@media (max-width: 640px) { .ms-read b { font-size: 20px; } .ms-btns .btn { min-height: 42px; } }`;
+  document.head.appendChild(st);
+}
+
+// ---- opening it. o: { addr, unit: "sqft" | "lnft", use: fn(n), leadId } ----
+async function msOpen(o) {
+  if (MS) return;
+  o = o || {}; msCss();
+  const el = document.createElement("div"); el.className = "ms"; el.id = "ms"; el.setAttribute("role", "dialog"); el.setAttribute("aria-modal", "true"); el.setAttribute("aria-label", "Measure on the map");
+  el.innerHTML = `<div class="ms-top"><form id="ms-form"><input type="search" id="ms-q" placeholder="Address, city" aria-label="Address" value="${esc(o.addr || "")}" autocomplete="off"><button class="btn primary" type="submit">Find</button></form><button class="btn" data-act="ms-close">Close</button></div>
+    <div id="ms-map"></div>
+    <div class="ms-bar"><div class="ms-read"><b id="ms-total"></b><span class="note" id="ms-hint"></span></div><div class="ms-chips" id="ms-chips"></div><div class="ms-btns" id="ms-btns"></div></div>`;
+  document.body.appendChild(el);
+  MS = { o, el, shapes: [], mode: o.unit === "lnft" ? "line" : "area", map: null, pin: null, found: "" };
+  el.ms = { get state() { return MS; }, add: msAdd, area: msArea, length: msLength }; // a way in for the tests (this page keeps its code to itself)
+  msRead();
+  try { await msLib(); } catch (e) { if (MS && MS.el === el) $("#ms-map").innerHTML = `<p class="pad note">The map couldn't load. Check your internet connection, then close this and try again.</p>`; return; }
+  if (!MS || MS.el !== el) return; // closed while it loaded
+  const L = window.L, map = MS.map = L.map("ms-map", { doubleClickZoom: false, minZoom: 8, maxZoom: 22 });
+  map.attributionControl.setPrefix(false);
+  L.tileLayer(MS_STREETS, { maxNativeZoom: 19, maxZoom: 22, attribution: "Street map &copy; OpenStreetMap" }).addTo(map);
+  MS_AERIALS.forEach(a => {
+    const t = L.tileLayer(a.url, Object.assign({ bounds: a.bounds, maxNativeZoom: a.max, maxZoom: 22, attribution: a.name }, a.black ? { crossOrigin: "anonymous" } : {}));
+    if (a.black) t.on("tileload", (ev) => { if (msBlack(ev.tile)) ev.tile.style.visibility = "hidden"; });
+    t.addTo(map);
+  });
+  map.setView(MS_HOME, 13);
+  map.on("click", (e) => msAdd([e.latlng.lat, e.latlng.lng]));
+  setTimeout(() => { if (MS && MS.map === map) map.invalidateSize(); }, 60);
+  if (o.addr) msGo();
+}
+// a square with no picture in it (solid black): true
+function msBlack(img) {
+  try {
+    const c = document.createElement("canvas"); c.width = c.height = 2; const g = c.getContext("2d"); g.drawImage(img, 0, 0, 2, 2);
+    const d = g.getImageData(0, 0, 2, 2).data; for (let i = 0; i < d.length; i += 4) if (d[i] > 2 || d[i + 1] > 2 || d[i + 2] > 2 || d[i + 3] < 250) return false;
+    return true;
+  } catch (e) { return false; }
+}
+function msClose() {
+  if (!MS) return;
+  try { if (MS.map) MS.map.remove(); } catch (e) {}
+  MS.el.remove(); MS = null;
+}
+// the address in the box: the map goes there, close enough to see the driveway
+async function msGo() {
+  if (!MS) return; const me = MS, q = $("#ms-q").value.trim(); if (!q) return;
+  if (!me.map) return;
+  $("#ms-hint").textContent = "Looking it up…";
+  const hit = await msFind(q);
+  if (MS !== me) return;
+  if (!hit) { msRead(); toast("Couldn't find that address in Pinellas or Hillsborough. Check the street and city, or drag the map to it.", 6000); return; }
+  const L = window.L; me.found = hit.label;
+  me.map.setView([hit.lat, hit.lng], 20);
+  if (me.pin) me.pin.remove();
+  me.pin = L.circleMarker([hit.lat, hit.lng], { radius: 7, color: "#fff", weight: 2, fillColor: "#e23b2e", fillOpacity: 1, interactive: false }).addTo(me.map);
+  msRead();
+}
+
+// ---- drawing ----
+// the shape being drawn: the last one, until Add another closes it
+function msCur(make) {
+  let s = MS.shapes[MS.shapes.length - 1];
+  if ((!s || s.done) && make) { s = { kind: MS.mode, pts: [], done: false, marks: [], layer: null }; MS.shapes.push(s); }
+  return s && !s.done ? s : null;
+}
+function msAdd(p) { if (!MS || !MS.map) return; const s = msCur(true); s.pts.push(p); msShape(s); msRead(); }
+function msUnshape(s) { if (s.layer) { s.layer.remove(); s.layer = null; } (s.marks || []).forEach(m => m.remove()); s.marks = []; }
+// puts a shape's outline, size label and corner dots on the map (again after any change)
+function msShape(s) {
+  const L = window.L; msUnshape(s);
+  if (!s.pts.length) return;
+  const line = s.kind === "line";
+  s.layer = (line ? L.polyline : L.polygon)(s.pts, { color: line ? "#3fc2ff" : "#ffd400", weight: 3, fillColor: "#ffd400", fillOpacity: line ? 0 : 0.22, interactive: false }).addTo(MS.map);
+  if (msOk(s)) s.layer.bindTooltip(msSays(s), { permanent: true, direction: "center", className: "ms-lab", interactive: false }).openTooltip();
+  s.marks = s.pts.map((p, i) => {
+    const m = L.marker(p, { draggable: true, icon: L.divIcon({ className: "", html: '<div class="ms-pt"></div>', iconSize: [28, 28], iconAnchor: [14, 14] }), keyboard: false }).addTo(MS.map);
+    m.on("drag", (e) => { const ll = e.target.getLatLng(); s.pts[i] = [ll.lat, ll.lng]; s.layer.setLatLngs(s.pts); if (msOk(s)) { if (s.layer.getTooltip()) s.layer.setTooltipContent(msSays(s)); } msRead(); });
+    m.on("dragend", () => { msShape(s); msRead(); });
+    return m;
+  });
+}
+// the numbers and buttons under the map
+function msRead() {
+  if (!MS) return;
+  const t = msTotals(), cur = msCur(false), lnft = MS.o.unit === "lnft", n = msUseN();
+  const total = [t.areas ? `${msN(t.sqft)} sq ft` : "", t.lines ? `${msN(t.ft)} ft` : ""].filter(Boolean).join(" · ");
+  $("#ms-total").textContent = total || (MS.mode === "line" ? "0 ft" : "0 sq ft");
+  const need = cur && !msOk(cur) ? (cur.kind === "line" ? 2 : 3) - cur.pts.length : 0;
+  $("#ms-hint").textContent = !MS.map ? "Loading the map…" : need ? `Tap ${need} more ${need === 1 ? "point" : "points"}.` : cur ? "Keep tapping to add corners. Drag a dot to move it." : MS.mode === "line" ? "Tap along the fence or edge on the picture." : "Tap each corner of the area on the picture.";
+  const good = MS.shapes.filter(msOk); let a = 0, b = 0;
+  $("#ms-chips").innerHTML = good.length > 1 ? MS.shapes.map((s, i) => msOk(s) ? `<span class="ms-chip">${s.kind === "line" ? "Length " + (++b) : "Area " + (++a)}: ${esc(msSays(s))}<button data-act="ms-del" data-i="${i}" aria-label="Remove it">×</button></span>` : "").join("") : "";
+  const any = MS.shapes.some(s => s.pts.length);
+  const use = MS.o.use ? `<button class="btn primary" data-act="ms-use" ${n > 0 ? "" : "disabled"}>Use ${msN(n)} ${lnft ? "ft" : "sq ft"}</button>` : MS.o.leadId ? `<button class="btn primary" data-act="ms-note" ${total ? "" : "disabled"}>Save to their notes</button>` : "";
+  $("#ms-btns").innerHTML = `<div class="seg" role="group" aria-label="What to measure"><button data-act="ms-mode" data-m="area" aria-pressed="${MS.mode === "area"}">Area</button><button data-act="ms-mode" data-m="line" aria-pressed="${MS.mode === "line"}">Length</button></div>
+    <button class="btn" data-act="ms-undo" ${any ? "" : "disabled"}>Undo</button><button class="btn" data-act="ms-next" ${cur && msOk(cur) ? "" : "disabled"}>Add another</button><button class="btn ghost" data-act="ms-clear" ${any ? "" : "disabled"}>Clear</button>
+    <span class="grow"></span><button class="btn" data-act="ms-copy" ${total ? "" : "disabled"}>Copy</button>${use}`;
+  if (MS.o.use && lnft && !t.lines && t.areas) $("#ms-hint").textContent = "This line is priced by the foot: switch to Length and tap along it.";
+}
+const msSummary = () => { let a = 0, b = 0; const t = msTotals(), parts = MS.shapes.filter(msOk).map(s => `${s.kind === "line" ? "Length " + (++b) : "Area " + (++a)} ${msSays(s)}`); return parts.length > 1 ? `${parts.join(", ")} (${[t.areas ? msN(t.sqft) + " sq ft" : "", t.lines ? msN(t.ft) + " ft" : ""].filter(Boolean).join(" and ")} in all)` : parts.join("").replace(/^(Area|Length) 1 /, ""); };
+
+EXTRA_ACTS["ms-open"] = (t) => { const l = t && t.dataset.id ? leadById(t.dataset.id) : null; return msOpen({ addr: l ? [l.address, l.city].filter(Boolean).join(", ") : "", leadId: l ? l.id : "" }); };
+// from a line on an estimate: the customer's address, and Use fills that line's size
+EXTRA_ACTS["ms-line"] = (t) => {
+  if (!QD) return; const i = +t.dataset.i, row = QD.items[i]; if (!row) return;
+  const lsel = $("#q-lead"), l = leadById(lsel ? lsel.value : QD.leadId);
+  let addr = l && l.address ? [l.address, l.city].filter(Boolean).join(", ") : "";
+  if (!addr) { const bt = ($("#q-bill") ? $("#q-bill").value.split("\n") : QD.billTo || []).map(s => String(s).trim()).filter(Boolean), k = bt.findIndex(x => /^\d+\s+\S/.test(x)); if (k >= 0) addr = bt.slice(k, k + 2).join(", "); }
+  const p = bookItem(row.service);
+  return msOpen({ addr, unit: p && p.unit === "lnft" ? "lnft" : "sqft", use: (n) => { const inp = document.querySelector(`#q-items .qitem[data-i="${i}"] [data-k="sqft"]`); if (!inp) return; inp.value = String(n); inp.dispatchEvent(new Event("input", { bubbles: true })); } });
+};
+EXTRA_ACTS["ms-close"] = () => msClose();
+EXTRA_ACTS["ms-mode"] = (t) => {
+  if (!MS) return; const m = t.dataset.m === "line" ? "line" : "area"; MS.mode = m;
+  const cur = msCur(false);
+  // a shape already started: finished ones stay as they are and the next taps start a new one; a bare start changes kind
+  if (cur && cur.kind !== m) { if (msOk(cur)) cur.done = true; else { cur.kind = m; if (MS.map) msShape(cur); } }
+  msRead();
+};
+EXTRA_ACTS["ms-undo"] = () => {
+  if (!MS) return; let s = MS.shapes[MS.shapes.length - 1]; if (!s) return;
+  s.done = false; s.pts.pop();
+  if (!s.pts.length) { msUnshape(s); MS.shapes.pop(); const p = MS.shapes[MS.shapes.length - 1]; if (p) p.done = false; } else msShape(s);
+  msRead();
+};
+EXTRA_ACTS["ms-next"] = () => { if (!MS) return; const s = msCur(false); if (s && msOk(s)) s.done = true; msRead(); };
+EXTRA_ACTS["ms-del"] = (t) => { if (!MS) return; const s = MS.shapes[+t.dataset.i]; if (!s) return; msUnshape(s); MS.shapes.splice(+t.dataset.i, 1); msRead(); };
+EXTRA_ACTS["ms-clear"] = () => { if (!MS) return; MS.shapes.forEach(msUnshape); MS.shapes = []; msRead(); };
+EXTRA_ACTS["ms-copy"] = () => { if (!MS) return; const t = msTotals(); return copy(MS.o.unit === "lnft" && t.lines ? String(Math.round(t.ft)) : t.areas ? String(Math.round(t.sqft)) : String(Math.round(t.ft)), "Size"); };
+EXTRA_ACTS["ms-use"] = () => { if (!MS || !MS.o.use) return; const n = msUseN(); if (!(n > 0)) return; const use = MS.o.use; msClose(); use(n); };
+EXTRA_ACTS["ms-note"] = async (t) => {
+  if (!MS || !MS.o.leadId) return; const l = leadById(MS.o.leadId), txt = msSummary(); if (!l || !txt) return;
+  t.disabled = true;
+  try { await saveDoc("leads", l.id, { activity: activity(l, "note", `Measured on the map: ${txt}`), updatedAt: new Date().toISOString() }, true); msClose(); toast(`Saved to ${leadName(l)}'s notes: ${txt}`, 5000); }
+  catch (e) { t.disabled = false; toast("Couldn't save it. Check your internet connection and try again."); }
+};
+document.addEventListener("submit", (e) => { if (e.target && e.target.id === "ms-form") { e.preventDefault(); msGo(); } });
+// Escape closes the map only, not the estimate or lead underneath
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && MS) { e.stopPropagation(); e.preventDefault(); msClose(); } }, true);
 
 // ---------- CSV export ----------
 function toCSV(rows) { return rows.map(r => r.map(v => { const s = String(v ?? ""); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }).join(",")).join("\n"); }
