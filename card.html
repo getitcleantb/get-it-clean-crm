@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>Card on file · Get It Clean Tampa Bay</title>
+<!-- Where a customer lands after Stripe's secure card page (v2/pay.js): a thank-you when the card was saved, or a note
+     that it wasn't. Nothing in the CRM can be reached from here, and no card details ever come to this page. -->
+<style>
+  :root { --bg: #f4f6fb; --card: #fff; --ink: #14213d; --muted: #5b6475; --line: #dde2ec; --accent: #1d43d8; --good: #17794a; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #0f1420; --card: #171e2e; --ink: #e8ecf4; --muted: #a3acbd; --line: #2a3346; --accent: #7d98ff; --good: #5fd39b; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 17px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  main { max-width: 560px; margin: 0 auto; padding: 40px 16px 32px; }
+  .box { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 24px 20px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  h1 { font-size: 22px; margin: 0 0 8px; }
+  .ok { color: var(--good); }
+  p { margin: 0 0 12px; }
+  .note { color: var(--muted); }
+  footer { color: var(--muted); font-size: 15px; padding: 16px 4px 0; }
+  footer a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <div class="box" id="box">
+    <h1>Get It Clean Tampa Bay</h1>
+    <p class="note">Your card wasn't saved. If you meant to save it, open the link we sent you again.</p>
+  </div>
+  <footer>Questions? Call or text Elias at <a href="tel:+17272541391">727-254-1391</a>, or email <a href="mailto:getitclean.tb@gmail.com">getitclean.tb@gmail.com</a>.</footer>
+</main>
+<script>
+(function () {
+  if (!/[?&]saved=1(?:&|$)/.test(location.search)) return;
+  document.getElementById("box").innerHTML = '<h1 class="ok">Your card is saved. Thank you!</h1><p>Get It Clean Tampa Bay will charge it after each visit of your service plan, for the price you agreed to. Nothing was charged today.</p><p class="note">Stripe keeps your card details secure; we never see the number. To change or remove your card, call or text us any time. You can close this page.</p>';
+})();
+</script>
+</body>
+</html>
