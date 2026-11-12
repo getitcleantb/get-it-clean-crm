@@ -51,9 +51,11 @@ service cloud.firestore {
         && !(request.resource.data.get('kind', '') in ['blast', 'blastrun', 'blastout', 'sender', 'pause', 'textblast', 'textrun', 'textout', 'textsender']));
       allow delete: if isOwner() || (isCrew() && !docId.matches('blast.*'));
     }
-    // the texting service's key: only the owner (and the owner's texting script) can see it
+    // the texting service's key and the card payment records: only the owner (and the owner's texting script) can see
+    // them. The Stripe key (private/paykey) goes in from the owner's login and is read back only by the script.
     match /private/{docId} {
-      allow read, write: if isOwner();
+      allow read: if isOwner() && docId != 'paykey';
+      allow write: if isOwner();
     }
     // the view-only copy of an invoice texted to a customer (i.html): anyone with its long random key can open that one,
     // nobody can list them, and only the team can make, change or remove one

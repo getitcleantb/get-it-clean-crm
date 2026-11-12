@@ -1393,6 +1393,48 @@ html.gated, html.gated body { overflow: hidden; }
     }
   });
 
+  // ---------- straight to the database over HTTPS, as this login (the rules still decide) ----------
+  // Unlike everything above, these never touch this device's saved copy or its queue of unsent writes: a write either
+  // reaches the database now or fails now, and what it wrote isn't kept in this browser. For the Stripe key and for
+  // card charges, where "it'll sync later" is the wrong answer. A write can be made to go in only if the document is
+  // still as it was read (ifTime) or isn't there yet (ifNew): false when it has changed.
+  const DOCS = "projects/" + CFG.firebase.projectId + "/databases/(default)/documents";
+  const REST = (CFG.emulator ? "http://" + CFG.emulator.host + ":" + CFG.emulator.port : "https://firestore.googleapis.com") + "/v1/" + DOCS.split("/").map(encodeURIComponent).join("/");
+  const rEnc = (v) => v == null ? { nullValue: null } : typeof v === "boolean" ? { booleanValue: v } : typeof v === "number" ? (Number.isInteger(v) ? { integerValue: String(v) } : { doubleValue: v })
+    : Array.isArray(v) ? { arrayValue: { values: v.map(rEnc) } } : typeof v === "object" ? { mapValue: { fields: rFields(v) } } : { stringValue: String(v) };
+  const rFields = (o) => { const f = {}; Object.keys(o).forEach(k => { if (o[k] !== undefined) f[k] = rEnc(o[k]); }); return f; };
+  const rDec = (v) => !v ? null : "stringValue" in v ? v.stringValue : "integerValue" in v ? Number(v.integerValue) : "doubleValue" in v ? v.doubleValue : "booleanValue" in v ? v.booleanValue : "timestampValue" in v ? v.timestampValue
+    : "arrayValue" in v ? (v.arrayValue.values || []).map(rDec) : "mapValue" in v ? rObj(v.mapValue.fields) : null;
+  const rObj = (f) => { const o = {}; Object.keys(f || {}).forEach(k => { o[k] = rDec(f[k]); }); return o; };
+  const rErr = (code) => Object.assign(new Error(code === "revoked" ? "Not allowed" : "No connection"), { code });
+  // tail: what follows ".../documents" in the address
+  async function rest(method, tail, body) {
+    const u = auth.currentUser; if (!u) throw rErr("revoked");
+    let r;
+    try {
+      const tok = await u.getIdToken(), ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 12000);
+      try { r = await fetch(REST + tail, { method, headers: Object.assign({ Authorization: "Bearer " + tok }, body ? { "Content-Type": "application/json" } : {}), body: body ? JSON.stringify(body) : undefined, signal: ctl.signal, cache: "no-store" }); }
+      finally { clearTimeout(timer); }
+    } catch (e) { throw rErr("unavailable"); }
+    return r;
+  }
+  const restGet = async (coll, id) => {
+    const r = await rest("GET", "/" + encodeURIComponent(coll) + "/" + encodeURIComponent(id)); if (r.status === 404) return null;
+    if (!r.ok) throw rErr(r.status === 401 || r.status === 403 ? "revoked" : "unavailable");
+    const j = await r.json(); return { data: rObj(j.fields), t: j.updateTime || "" };
+  };
+  // o.mask: only those fields (the rest of the document stays); without it the whole document is replaced
+  const restSet = async (coll, id, data, o) => {
+    o = o || {};
+    const w = { update: { name: DOCS + "/" + coll + "/" + id, fields: rFields(data) } };
+    if (o.mask) w.updateMask = { fieldPaths: o.mask };
+    if (o.ifTime) w.currentDocument = { updateTime: o.ifTime }; else if (o.ifNew) w.currentDocument = { exists: false };
+    const r = await rest("POST", ":commit", { writes: [w] }); if (r.ok) return true;
+    let txt = ""; try { txt = await r.text(); } catch (e) {}
+    if ((o.ifTime || o.ifNew) && [400, 404, 409, 412].includes(r.status) && /FAILED_PRECONDITION|ALREADY_EXISTS|ABORTED|NOT_FOUND/.test(txt)) return false;
+    throw rErr(r.status === 401 || r.status === 403 ? "revoked" : "unavailable");
+  };
+
   // ---------- account tools for Settings > Account ----------
   const memberRef = (email) => F.doc(fs, "members", String(email).trim().toLowerCase());
   window.GIC = Object.freeze({
@@ -1405,6 +1447,8 @@ html.gated, html.gated body { overflow: hidden; }
     patchDoc: (coll, id, fields) => F.updateDoc(F.doc(fs, coll, id), toStore(fields)),
     // a whole document, resolved once the database has it (not when it's queued, as saveDoc is)
     setDocAck: (coll, id, data) => F.setDoc(F.doc(fs, coll, id), toStore(data)),
+    // straight to the database, never through this device's saved copy or its queue (see REST above)
+    restGet, restSet,
     // the newest n texts, kept up to date (an error here never shows the "access turned off" screen: it's what crew
     // see until the owner publishes the rules that allow texts)
     textsListen: (n, cb, err) => F.onSnapshot(F.query(F.collection(fs, "texts"), F.orderBy("at", "desc"), F.limit(n)), snap => cb(snap.docs.map(d => Object.assign({ id: d.id }, toPlain(d.data())))), e => { if (err) err(mapErr(e)); }),
@@ -7782,7 +7826,7 @@ function ibGo(id, leadId) {
 // with "Reply STOP to opt out." Blasts only send 8 AM to 8 PM Eastern (Florida's limits), and none in vacation mode.
 const TX_ON = () => STANDALONE && !!window.GIC;
 // 3: appointment reminders and re-clean texts (autotext.js). Texting works with 2; only the automatic texts need 3.
-const TEXT_SENDER_VERSION = 17, TEXT_SENDER_MIN = 2;
+const TEXT_SENDER_VERSION = 18, TEXT_SENDER_MIN = 2;
 const TX_STOP_LINE = "Reply STOP to opt out.";
 const TX_MAX = 1500; // characters in one text (Quo takes 1,600)
 S.texts = []; S.textBlasts = []; S.textRuns = {}; S.textSender = null; S.textOut = {}; S.textKey = null; S.textRulesOk = null;
@@ -9274,13 +9318,18 @@ function textSender(PROJECT, VERSION, fsKit, SITE) {
   }
 
   // ---- card on file and charging (pay.js) ----
-  // Stripe keeps the cards and runs the charges, with the key the owner pasted (private/pay). This makes the secure page
-  // a customer types a card on when the CRM asks for one (a lead's cardAsk), watches for the card, and runs the charges
-  // the owner's login asked for (private/charge-<job>). It never charges on its own: every charge is one of those, and
-  // none can be more than the owner's limit. A problem here never stops the texting.
+  // Stripe keeps the cards and runs the charges, with the key the owner pasted (private/paykey). This makes the secure
+  // page a customer types a card on when the CRM asks for one (a lead's cardAsk), watches for the card, and runs the
+  // charges the owner's login asked for (private/charge-<job>). It never charges on its own: every charge is one of
+  // those, and none can be more than the owner's limit. A problem here never stops the texting.
+  // What keeps a visit from ever being charged twice: (1) a charge that went through is written to private/paid-<job>,
+  // which only the owner and this script can write, and a job with one is never charged again whatever its own line
+  // says; (2) before a new charge, Stripe's own list of that customer's payments is checked for this job; (3) a request
+  // already sent to Stripe is only ever repeated word for word, with the same idempotency key, inside the day Stripe
+  // remembers the key, and after that its outcome is looked up instead of asked for again.
   // Stripe's API changes by version (2026-09-30 renamed how a Checkout page is told "cards only"), so every call names
   // the version this was written against, whatever the account's own default is.
-  const STRIPE = "https://api.stripe.com/v1/", STRIPE_VERSION = "2026-10-28.endive", PAY_MAX = 500;
+  const STRIPE = "https://api.stripe.com/v1/", STRIPE_VERSION = "2026-10-28.endive", PAY_MAX = 500, PAY_STALE = 15 * 60000, PAY_KEY_LIFE = 23 * 3600000;
   const CONSENT = "By saving your card you allow Get It Clean Tampa Bay to charge it after each visit of your service plan, for the price you agreed to. Call or text us any time to change or remove it.";
   function stripe(key, method, path, params, idem) {
     const opts = { method: method, headers: { Authorization: "Bearer " + key, "Stripe-Version": STRIPE_VERSION }, muteHttpExceptions: true };
@@ -9289,7 +9338,9 @@ function textSender(PROJECT, VERSION, fsKit, SITE) {
     let code = 0, txt = "";
     try { const r = UrlFetchApp.fetch(STRIPE + path, opts); code = r.getResponseCode(); txt = r.getContentText() || ""; } catch (e) { return { code: 0, json: {}, err: "Couldn't reach Stripe." }; }
     let json = {}; try { json = JSON.parse(txt) || {}; } catch (e) {}
-    return { code: code, json: json, err: code >= 200 && code < 300 ? "" : String((json.error && json.error.message) || ("Stripe error " + code)).slice(0, 200) };
+    // Stripe's own words, without anything that looks like a key or an account number (these can end up where crew read)
+    const msg = String((json.error && json.error.message) || ("Stripe error " + code)).replace(/\b(sk|rk|pk)_(test|live)_[A-Za-z0-9*.]+/g, "your key").replace(/\bacct_[A-Za-z0-9]+/g, "your account").slice(0, 200);
+    return { code: code, json: json, err: code >= 200 && code < 300 ? "" : msg };
   }
   const payMode = (key) => /^(sk|rk)_test_/.test(key) ? "test" : /^(sk|rk)_live_/.test(key) ? "live" : "";
   const payName = (l) => String((l && (l.name || l.company)) || "A customer");
@@ -9297,6 +9348,9 @@ function textSender(PROJECT, VERSION, fsKit, SITE) {
   const usd = (n) => "$" + (Math.round(+n * 100) / 100).toFixed(2).replace(/\.00$/, "");
   const brandName = (b) => ({ visa: "Visa", mastercard: "Mastercard", amex: "American Express", discover: "Discover", diners: "Diners Club", jcb: "JCB", unionpay: "UnionPay" })[String(b || "").toLowerCase()] || "Card";
   const leadLink = (id) => "./?open=lead&id=" + encodeURIComponent(id);
+  const noAnswer = (r) => r.code === 0 || r.code === 409 || r.code === 429 || r.code >= 500;
+  // Stripe took the card off its customer, or it was off already
+  const detached = (r) => r.code === 200 || r.code === 404 || (r.code === 400 && /not attached|already detached|was (previously )?detached/i.test(r.err));
   function payPush(st, title, body, link) {
     try { const p = F.get("private/push"), devs = p && p.kind === "push" ? Object.keys(p.devices || {}).filter(id => p.devices[id] && p.devices[id].token) : []; if (devs.length && p.cards !== false) pushOut(st, p, devs, title, body, link); } catch (e) {}
   }
@@ -9308,10 +9362,18 @@ function textSender(PROJECT, VERSION, fsKit, SITE) {
   }
   function pay(st, now, force) {
     if (!force && CACHE.get("payoff")) return;
-    const cfg = F.get("private/pay"), key = cfg ? String(cfg.key || "").trim() : "";
+    const cfg = F.get("private/pay") || {};
+    let kd = F.get("private/paykey");
+    // the key has a document of its own, which no browser reads back. One saved the old way (in private/pay, by a CRM
+    // page that hadn't reloaded yet) is moved there.
+    if (cfg.key != null) {
+      if (!kd || String(kd.savedAt || "") < String(cfg.savedAt || "")) { kd = { kind: "paykey", key: String(cfg.key || ""), savedAt: String(cfg.savedAt || ""), by: String(cfg.by || "") }; F.put("private/paykey", kd); }
+      const k = String(kd.key || ""); F.patch("private/pay", { has: !!k, last4: k.slice(-4), mode: payMode(k) }, ["key", "has", "last4", "mode"]);
+    }
+    const key = kd ? String(kd.key || "").trim() : "";
     // no key: nothing to do, and it looks again in 5 minutes
     if (!key) { CACHE.put("payoff", "1", 300); if (prop("paysig", "")) payStatus({ ok: false }); return; }
-    const mode = payMode(key), keyAt = String(cfg.savedAt || "");
+    const mode = payMode(key), keyAt = String(kd.savedAt || "");
     let ps = prop("pay", {});
     // the key is tried with Stripe when it's new, and again every 6 hours
     if (force || ps.keyAt !== keyAt || now.getTime() - (ps.at || 0) > 6 * 3600000) {
@@ -9323,30 +9385,57 @@ function textSender(PROJECT, VERSION, fsKit, SITE) {
     }
     payStatus({ ok: ps.ok, mode: mode, err: ps.err, keyAt: keyAt });
     if (!ps.ok) return;
+    const each = (list, fn, what) => list.forEach(c => { try { fn(c); } catch (e) { console.error(what + ": " + e); } });
+    // charges first, and on a look-up of their own, so card pages that are still open can never crowd them out
+    each(F.query("private", [["kind", "EQUAL", "charge"], ["todo", "EQUAL", true]], 30), c => payCharge(key, mode, cfg, c, st, now), "Card charge");
     try { payCards(key, mode, now); } catch (e) { console.error("Card on file: " + e); }
-    const todo = F.query("private", [["todo", "EQUAL", true]], 30);
-    todo.filter(c => c.kind === "card" && c.sid).forEach(c => { try { payCardLook(key, mode, c, st, now); } catch (e) { console.error("Card on file: " + e); } });
-    todo.filter(c => c.kind === "charge").forEach(c => { try { payCharge(key, mode, cfg, c, st, now); } catch (e) { console.error("Card charge: " + e); } });
+    each(F.query("private", [["kind", "EQUAL", "card"], ["todo", "EQUAL", true]], 100), c => { if (c.sid) payCardLook(key, mode, c, st, now); else if (c.old) payCardTidy(key, mode, c, now); }, "Card on file");
   }
-  // someone tapped Get card on file (or Remove) on a customer: the secure page is made and its address saved on them
+  // someone tapped Get card on file on a customer (a lead's cardAsk): the secure page is made and its address saved on
+  // them. Anyone on the team can ask for a first card. Taking a card off, or replacing one, is the owner's to ask: the
+  // CRM saves that where only the owner's login can write (private/cardask-<lead>), and without it nothing is removed.
   function payCards(key, mode, now) {
     F.query("leads", [["cardAsk", "GREATER_THAN", ""]], 10, ["name", "company", "email", "phone", "cardAsk"]).forEach(l => {
-      const path = "private/card-" + l.id, iso = now.toISOString(); let c = F.get(path) || { kind: "card", leadId: l.id };
-      const done = (o) => F.patch("leads/" + l.id, Object.assign({ cardAsk: "" }, o), ["cardAsk"].concat(Object.keys(o)));
+      const path = "private/card-" + l.id, apath = "private/cardask-" + l.id, iso = now.toISOString(); let c = F.get(path) || { kind: "card", leadId: l.id };
+      // (good for ten minutes, so one that was never used can't be picked up by a later ask)
+      const a = F.get(apath), own = a && a.kind === "cardask" && a.todo === true && a.leadId === l.id && now.getTime() - (Date.parse(a._t || "") || 0) < 10 * 60000 + (+a.tries || 0) * 90000 ? String(a.what || "") : "";
+      const done = (o) => { if (own) F.patch(apath, { todo: false, doneAt: iso }, ["todo", "doneAt"]); return F.patch("leads/" + l.id, Object.assign({ cardAsk: "" }, o), ["cardAsk"].concat(Object.keys(o))); };
+      if (c.leadId !== l.id) c = { kind: "card", leadId: l.id };
       if (l.cardAsk === "remove") {
-        if (c.pm && c.mode === mode) stripe(key, "post", "payment_methods/" + encodeURIComponent(c.pm) + "/detach");
+        if (own !== "remove") return done({});
+        if (c.pm) {
+          if (c.mode !== mode) return done({ cardErr: "This card was saved with your " + (c.mode === "live" ? "live" : "test") + " key, so the key that's in now can't remove it. Put that key back first, or remove the card in Stripe." });
+          const d = stripe(key, "post", "payment_methods/" + encodeURIComponent(c.pm) + "/detach");
+          if (!detached(d)) {
+            // no answer: asked again next run (ten times), and the card stays on file here until Stripe says it's gone
+            const n = (+a.tries || 0) + 1;
+            if (noAnswer(d) && n < 10) { F.patch(apath, { tries: n }, ["tries"]); return; }
+            return done({ cardErr: "Stripe didn't take the card off file (" + d.err + "). It's still on file. Tap Remove again, or remove it in Stripe." });
+          }
+        }
         F.put(path, { kind: "card", leadId: l.id, cus: c.cus || "", mode: c.mode || "", todo: false, removedAt: iso });
         return done({ card: null, cardLink: null, cardErr: "" });
       }
+      // a card is on file already: only the owner's ask replaces it
+      if (c.pm && c.mode === mode && own !== "replace") return done({});
       // a card saved with the test key is no use to the live one (and the other way round): they start over
       if (c.mode && c.mode !== mode) c = { kind: "card", leadId: l.id };
+      const mkCus = () => stripe(key, "post", "customers", { name: payName(l), email: payEmail(l), phone: phonesOf(l.phone)[0] || "", "metadata[lead]": l.id });
+      const mkPage = () => stripe(key, "post", "checkout/sessions", { mode: "setup", customer: c.cus, currency: "usd", "allowed_payment_method_types[0]": "card", success_url: SITE + "card.html?saved=1", cancel_url: SITE + "card.html", "custom_text[submit][message]": CONSENT, "metadata[lead]": l.id });
+      const sorry = (r) => done({ cardErr: "Couldn't get the card page: " + (r.err || "Stripe didn't answer.") + " Try again." });
       if (!c.cus) {
-        const cu = stripe(key, "post", "customers", { name: payName(l), email: payEmail(l), phone: phonesOf(l.phone)[0] || "", "metadata[lead]": l.id });
-        if (cu.code !== 200 || !cu.json.id) return done({ cardErr: cu.err || "Stripe didn't answer. Try again." });
+        const cu = mkCus(); if (cu.code !== 200 || !cu.json.id) return sorry(cu);
         c.cus = cu.json.id; c.mode = mode; F.put(path, c);
       }
-      const s = stripe(key, "post", "checkout/sessions", { mode: "setup", customer: c.cus, currency: "usd", "allowed_payment_method_types[0]": "card", success_url: SITE + "card.html?saved=1", cancel_url: SITE + "card.html", "custom_text[submit][message]": CONSENT, "metadata[lead]": l.id });
-      if (s.code !== 200 || !s.json.url || !s.json.id) return done({ cardErr: s.err || "Stripe didn't answer. Try again." });
+      let s = mkPage();
+      const se = (s.json && s.json.error) || {};
+      if (s.code >= 400 && s.code < 500 && (se.param === "customer" || (se.code === "resource_missing" && /customer/i.test(String(se.message || ""))))) {
+        // their record is gone from Stripe (deleted there, or the test data was cleared): a new one, and no card
+        const cu = mkCus(); if (cu.code !== 200 || !cu.json.id) return sorry(cu);
+        c = { kind: "card", leadId: l.id, cus: cu.json.id, mode: mode }; F.put(path, c); F.patch("leads/" + l.id, { card: null }, ["card"]);
+        s = mkPage();
+      }
+      if (s.code !== 200 || !s.json.url || !s.json.id) return sorry(s);
       c.sid = s.json.id; c.linkAt = iso; c.todo = true; c.mode = mode; F.put(path, c);
       done({ cardLink: { url: String(s.json.url), at: iso }, cardErr: "" });
     });
@@ -9360,18 +9449,34 @@ function textSender(PROJECT, VERSION, fsKit, SITE) {
     const s = r.json || {}, si = s.setup_intent, pm = si && typeof si === "object" ? si.payment_method : null, l = F.get("leads/" + c.leadId);
     if (r.code === 200 && s.status === "complete" && pm && typeof pm === "object" && pm.id) {
       const cd = pm.card || {}, card = { brand: brandName(cd.brand), last4: String(cd.last4 || ""), exp: cd.exp_month ? cd.exp_month + "/" + String(cd.exp_year || "").slice(-2) : "", at: iso, mode: mode };
-      F.put(path, { kind: "card", leadId: c.leadId, cus: c.cus, pm: pm.id, brand: card.brand, last4: card.last4, exp: card.exp, savedAt: iso, mode: mode, todo: false });
-      if (c.pm && c.pm !== pm.id) stripe(key, "post", "payment_methods/" + encodeURIComponent(c.pm) + "/detach"); // the card it replaces
+      // the card it replaces is taken off at Stripe next (payCardTidy), and asked for again until Stripe says it's gone
+      const old = c.pm && c.pm !== pm.id ? String(c.pm) : "";
+      F.put(path, { kind: "card", leadId: c.leadId, cus: c.cus, pm: pm.id, brand: card.brand, last4: card.last4, exp: card.exp, savedAt: iso, mode: mode, todo: !!old, old: old });
       if (!l) return;
       F.patch("leads/" + c.leadId, { card: card, cardLink: null, cardErr: "" }, ["card", "cardLink", "cardErr"]);
       payPush(st, "Card on file saved", payName(l) + " · " + card.brand + " ending in " + card.last4 + (mode === "test" ? " (test mode)" : ""), leadLink(c.leadId));
       return;
     }
+    // the key isn't allowed to read the page (a restricted key without the right boxes ticked): said on the customer
+    if (r.code >= 400 && r.code !== 404) {
+      const why = "Stripe wouldn't let this key check for the saved card (" + r.err + "). Check the key in Settings > Card payments.";
+      if (l && l.cardErr !== why) F.patch("leads/" + c.leadId, { cardErr: why }, ["cardErr"]);
+      if (age <= 25 * 3600000) return;
+    }
     // the page ran out (Stripe keeps one open for a day) or is gone
     if (r.code === 404 || s.status === "expired" || age > 25 * 3600000) {
-      F.patch(path, { todo: false, sid: "" }, ["todo", "sid"]);
+      F.patch(path, { todo: false, sid: "" }, ["todo", "sid"], c._t);
       if (l) F.patch("leads/" + c.leadId, { cardLink: null }, ["cardLink"]);
     }
+  }
+  // the card a new one replaced: taken off at Stripe (asked again every 5 minutes, for a day, until Stripe says it's gone)
+  function payCardTidy(key, mode, c, now) {
+    const path = "private/" + c.id, n = +c.oldTries || 0;
+    if (n && when(now).mi % 5) return;
+    const d = c.mode === mode ? stripe(key, "post", "payment_methods/" + encodeURIComponent(c.old) + "/detach") : { code: 0, err: "" };
+    if (detached(d)) return F.patch(path, { todo: false, old: "", oldTries: 0 }, ["todo", "old", "oldTries"], c._t);
+    if (n >= 288) { console.error("Card on file: Stripe still holds a replaced card (" + d.code + ")"); return F.patch(path, { todo: false, oldLeft: String(c.old), old: "", oldTries: 0 }, ["todo", "oldLeft", "old", "oldTries"], c._t); }
+    F.patch(path, { oldTries: n + 1 }, ["oldTries"], c._t);
   }
   const declineWhy = (r, pi) => {
     const e = (r.json && r.json.error) || {}, code = String(e.decline_code || e.code || (pi && pi.status) || "");
@@ -9379,53 +9484,122 @@ function textSender(PROJECT, VERSION, fsKit, SITE) {
     if (code === "expired_card") return "The card has expired.";
     if (code === "insufficient_funds") return "Not enough money on the card.";
     if (/^(card_declined|generic_decline|do_not_honor|requires_payment_method)$/.test(code)) return "The bank declined the card.";
-    if (r.code === 401) return "Stripe didn't accept the key. Check Settings > Card payments.";
-    return String(e.message || "Stripe couldn't run the charge.").slice(0, 160);
+    if (r.code === 401 || r.code === 403) return "Stripe didn't accept the key. Check Settings > Card payments.";
+    return String(r.err || "Stripe couldn't run the charge.").slice(0, 160);
   };
-  // one charge the owner's CRM asked for. It's claimed first (so two runs can't both take it), and Stripe gets the
-  // same idempotency key on every try, so a try whose answer was lost can't charge the card twice.
+  // Stripe's own list of this customer's payments that are for this job (null when Stripe can't be asked right now)
+  function paySeen(key, cus, jobId) {
+    const r = stripe(key, "get", "payment_intents?customer=" + encodeURIComponent(cus) + "&limit=100");
+    if (r.code !== 200 || !r.json || !Array.isArray(r.json.data)) return null;
+    return r.json.data.filter(p => p && p.metadata && String(p.metadata.job || "") === jobId);
+  }
+  // one charge the owner's CRM asked for (the rules above this section say what keeps it from happening twice)
   function payCharge(key, mode, cfg, c, st, now) {
-    const path = "private/" + c.id, iso = now.toISOString();
+    const path = "private/" + c.id, iso = now.toISOString(), jobId = String(c.jobId || ""), leadId = String(c.leadId || ""), ask = String(c.ask || "");
+    const flying = c.state === "charging", req = flying && c.req && typeof c.req === "object" ? c.req : null;
     // charged on Job done: a minute to take it back first
-    if (c.state === "queued" && (Date.parse(c._t || "") || 0) + (+c.wait || 0) * 1000 > now.getTime()) return;
-    const j = F.get("jobs/" + c.jobId), l = F.get("leads/" + c.leadId), who = payName(l), amt = Math.round((+c.amount || 0) * 100), max = +cfg.max > 0 ? +cfg.max : PAY_MAX;
+    if (!flying && (Date.parse(c._t || "") || 0) + (+c.wait || 0) * 1000 > now.getTime()) return;
+    const j = jobId ? F.get("jobs/" + jobId) : null, l = leadId ? F.get("leads/" + leadId) : null, who = payName(l), max = +cfg.max > 0 ? +cfg.max : PAY_MAX;
+    const amt = req ? +req.cents || 0 : Math.round((+c.amount || 0) * 100);
+    // the job can still take a card payment (not paid, canceled or deleted since)
+    const open = !!j && j.kind === "job" && ["scheduled", "completed"].indexOf(j.status) >= 0 && j.leadId === leadId;
+    const shut = (o) => F.patch(path, Object.assign({ todo: false, doneAt: iso }, o), ["todo", "doneAt"].concat(Object.keys(o)));
+    const mine = () => !!j && !!j.pay && String(j.pay.ask || "") === ask;
+    // over without a charge: skipped (nothing to say), failed (the card or the request), unsure (Stripe never said)
     const end = (state, why) => {
-      F.patch(path, { state: state, todo: false, err: why, doneAt: iso }, ["state", "todo", "err", "doneAt"]);
-      if (!j) return;
-      if (state !== "failed") { if (j.pay && j.pay.state === "queued") F.patch("jobs/" + j.id, { pay: null }, ["pay"]); return; }
-      F.patch("jobs/" + j.id, { pay: { state: "failed", err: why, amount: amt / 100, at: iso, auto: !!c.auto, ask: String(c.ask || "") } }, ["pay"]);
-      payPush(st, "Card didn't go through", who + " · " + usd(amt / 100) + " · " + why, leadLink(c.leadId));
+      shut({ state: state, err: why });
+      if (state === "skipped") { if (mine() && j.pay.state === "queued") F.patch("jobs/" + j.id, { pay: null }, ["pay"]); return; }
+      if (open) F.patch("jobs/" + j.id, { pay: { state: state, err: why, amount: amt / 100, at: iso, auto: !!c.auto, ask: ask } }, ["pay"]);
+      else if (mine() && j.pay.state === "queued") F.patch("jobs/" + j.id, { pay: null }, ["pay"]);
+      payPush(st, state === "unsure" ? "Check Stripe: a card may have been charged" : "Card didn't go through", who + " · " + usd(amt / 100) + " · " + why, leadLink(leadId));
     };
-    if (!j || j.kind !== "job" || ["scheduled", "completed"].indexOf(j.status) < 0 || j.leadId !== c.leadId) return end("skipped", "The job was already paid, canceled or deleted.");
-    const card = F.get("private/card-" + c.leadId);
-    if (!card || !card.pm || !card.cus) return end("failed", "There's no card on file for this customer.");
+    // the job's own line says paid by card, from the record of the charge
+    // (again: the CRM already wrote its history line and invoice for this payment the first time, so it doesn't twice)
+    const jobPaid = (rec, again) => { const p = { state: "paid", pi: rec.pi, amount: rec.amount, at: rec.at, brand: rec.brand || "", last4: rec.last4 || "", auto: !!c.auto, mode: mode }; if (again) p.done = true; return F.patch("jobs/" + j.id, { status: "paid", amount: rec.amount, method: "Card on file", paidDate: when(new Date(Date.parse(rec.at || "") || now.getTime())).day, updatedAt: iso, pay: p }, ["status", "amount", "method", "paidDate", "updatedAt", "pay"]); };
+    // Stripe took the money for this request: remembered first (private/paid-<job>), then shown
+    const paid = (pi, cd) => {
+      const rec = { kind: "paid", jobId: jobId, leadId: leadId, pi: String(pi.id || ""), amount: (+pi.amount_received || +pi.amount || amt) / 100, at: iso, mode: mode, brand: (cd && cd.brand) || "", last4: (cd && cd.last4) || "", ask: ask };
+      F.put("private/paid-" + jobId, rec);
+      shut({ state: "paid", pi: rec.pi, err: "" });
+      if (open) { jobPaid(rec); payPush(st, "Card charged", who + " · " + usd(rec.amount) + (mode === "test" ? " (test mode)" : ""), leadLink(leadId)); return; }
+      // the job was marked paid another way, canceled or deleted while the charge was with Stripe: the owner decides
+      if (j && j.kind === "job") F.patch("jobs/" + j.id, { pay: { state: "paid", pi: rec.pi, amount: rec.amount, at: iso, brand: rec.brand, last4: rec.last4, auto: !!c.auto, mode: mode, extra: true, done: true } }, ["pay"]);
+      payPush(st, "Card charged, but look at this job", who + " · " + usd(rec.amount) + " · The job was already marked paid, canceled or deleted when the card went through. Refund it in Stripe if it shouldn't have been charged.", leadLink(leadId));
+    };
+    // this visit's card was charged before (by an earlier request): nothing is charged, and the job says paid again
+    const already = (rec, again) => {
+      shut({ state: "skipped", err: "This visit's card was already charged " + usd(rec.amount) + ". Nothing was charged again." });
+      if (open) jobPaid(rec, again); else if (mine() && j.pay.state === "queued") F.patch("jobs/" + j.id, { pay: null }, ["pay"]);
+      payPush(st, "Not charged twice", who + " · This visit's card was already charged " + usd(rec.amount) + ", so it wasn't charged again. To charge it again on purpose, do it in Stripe.", leadLink(leadId));
+    };
+    const was = jobId ? F.get("private/paid-" + jobId) : null;
+    if (was && was.pi && was.mode === mode) {
+      if (String(was.ask || "") !== ask) return already(was, true);
+      // this same request, whose bookkeeping stopped halfway: finished without asking Stripe for anything
+      shut({ state: "paid", pi: was.pi, err: "" }); if (open) jobPaid(was); return;
+    }
+    // what did Stripe do with a request it may have got? Its list of the customer's payments settles it
+    const lookup = (cus) => {
+      const seen = cus ? paySeen(key, cus, jobId) : null;
+      if (!seen) {
+        const n = (+c.looks || 0) + 1;
+        if (n < 30) { F.patch(path, { looks: n }, ["looks"]); return; }
+        return end("unsure", "Stripe didn't say whether this charge went through. Look in Stripe (Payments) before charging again.");
+      }
+      const got = seen.filter(p => String((p.metadata || {}).ask || "") === ask), ok = got.find(p => p.status === "succeeded"), going = got.find(p => p.status === "processing");
+      if (ok) return paid(ok, req);
+      if (going) { F.patch(path, { pi: String(going.id) }, ["pi"]); return; }
+      got.filter(p => /^requires_/.test(String(p.status))).forEach(p => stripe(key, "post", "payment_intents/" + encodeURIComponent(p.id) + "/cancel"));
+      end("failed", got.length ? "The card didn't go through." : "The charge never reached Stripe, so nothing was charged. Tap Charge card again.");
+    };
+    // Stripe's answer to the request (fresh: it was sent for the first time just now)
+    const answer = (r, rq, fresh) => {
+      const e = (r.json && r.json.error) || {}, pi = r.code === 200 ? r.json : e.payment_intent || null;
+      if (r.code === 200 && pi && pi.status === "succeeded") return paid(pi, rq);
+      // still going through at the bank: it looks again next run
+      if (r.code === 200 && pi && pi.status === "processing") { if (!c.pi) F.patch(path, { pi: String(pi.id || "") }, ["pi"]); return; }
+      // no answer, or one that doesn't say (a key turned down mid-way, the same request seen as a different one): the
+      // same request is sent again next run, which can't charge twice, and after 15 tries its outcome is looked up
+      if (noAnswer(r) || e.type === "idempotency_error" || (!fresh && (r.code === 401 || r.code === 403))) {
+        const n = (+c.tries || 0) + 1;
+        if (n < 15 && e.type !== "idempotency_error") { F.patch(path, { tries: n }, ["tries"]); return; }
+        return lookup(rq && rq.cus);
+      }
+      // declined, or the bank wants the customer to approve it (which they can't from here): that try is over
+      if (pi && pi.id && pi.status !== "canceled") stripe(key, "post", "payment_intents/" + encodeURIComponent(pi.id) + "/cancel");
+      end("failed", declineWhy(r, pi));
+    };
+    const send = (rq, fresh) => answer(stripe(key, "post", "payment_intents", { amount: rq.cents, currency: "usd", customer: rq.cus, payment_method: rq.pm, off_session: "true", confirm: "true", "automatic_payment_methods[enabled]": "true", "automatic_payment_methods[allow_redirects]": "never", description: rq.what, receipt_email: rq.email, "metadata[job]": jobId, "metadata[lead]": leadId, "metadata[ask]": ask }, "gic-" + jobId + "-" + ask), rq, fresh);
+
+    // ---- already with Stripe: nothing is decided from today's data, only from Stripe's answer to that same request ----
+    if (flying) {
+      if (c.pi) return answer(stripe(key, "get", "payment_intents/" + encodeURIComponent(c.pi)), req, false);
+      // Stripe forgets the key after a day, so an old request is never sent again: its outcome is looked up
+      if (!req || now.getTime() - (Date.parse(c.claimAt || "") || 0) > PAY_KEY_LIFE) return lookup(req ? req.cus : String((F.get("private/card-" + leadId) || {}).cus || ""));
+      return send(req, false);
+    }
+    // ---- a new request ----
+    if (c.stop) return end("skipped", "Stopped before the card was charged.");
+    // one that took too long to get here isn't run (a phone with no signal can hand a request over much later)
+    const t = Date.parse(c._t || "") || now.getTime();
+    if (t - (Date.parse(ask) || t) > PAY_STALE || now.getTime() - t > PAY_STALE + (+c.wait || 0) * 1000) return end("failed", "This charge waited too long to start, so it wasn't run. Tap Charge card again if it's still owed.");
+    if (!open) return end("skipped", "The job was already paid, canceled or deleted.");
+    const card = F.get("private/card-" + leadId);
+    if (!card || card.leadId !== leadId || !card.pm || !card.cus) return end("failed", "There's no card on file for this customer.");
     if (card.mode !== mode) return end("failed", mode === "live" ? "Their card was saved in test mode. Get the card on file again." : "Their card was saved with your live key, and the test key is in now.");
     if (!(amt >= 50)) return end("failed", "The amount has to be at least 50 cents.");
     if (amt > max * 100) return end("failed", "That's more than the largest charge you allow (" + usd(max) + "). Change it in Settings > Card payments.");
-    let r;
-    if (c.pi) r = stripe(key, "get", "payment_intents/" + encodeURIComponent(c.pi));
-    else {
-      if (c.state === "queued" && !F.patch(path, { state: "charging", claimAt: iso }, ["state", "claimAt"], c._t)) return; // taken back, or changed, just now
-      r = stripe(key, "post", "payment_intents", { amount: amt, currency: "usd", customer: card.cus, payment_method: card.pm, off_session: "true", confirm: "true", "automatic_payment_methods[enabled]": "true", "automatic_payment_methods[allow_redirects]": "never", description: String(c.what || "Get It Clean Tampa Bay").slice(0, 200), receipt_email: payEmail(l), "metadata[job]": c.jobId, "metadata[lead]": c.leadId }, "gic-" + c.jobId + "-" + String(c.ask || ""));
-    }
-    const pi = r.code === 200 ? r.json : (r.json.error && r.json.error.payment_intent) || null;
-    if (r.code === 200 && pi.status === "succeeded") {
-      F.patch("jobs/" + j.id, { status: "paid", amount: amt / 100, method: "Card on file", paidDate: when(now).day, updatedAt: iso, pay: { state: "paid", pi: String(pi.id || ""), amount: amt / 100, at: iso, brand: card.brand || "", last4: card.last4 || "", auto: !!c.auto, mode: mode } }, ["status", "amount", "method", "paidDate", "updatedAt", "pay"]);
-      F.patch(path, { state: "paid", todo: false, pi: String(pi.id || ""), err: "", doneAt: iso }, ["state", "todo", "pi", "err", "doneAt"]);
-      payPush(st, "Card charged", who + " · " + usd(amt / 100) + (mode === "test" ? " (test mode)" : ""), leadLink(c.leadId));
-      return;
-    }
-    // still going through at the bank: it looks again next run
-    if (r.code === 200 && pi.status === "processing") { if (!c.pi) F.patch(path, { pi: String(pi.id || "") }, ["pi"]); return; }
-    // no answer from Stripe: the same charge is asked for again next run (it can't go through twice)
-    if (r.code === 0 || r.code === 409 || r.code === 429 || r.code >= 500) {
-      const n = (+c.tries || 0) + 1;
-      if (n >= 15) return end("failed", "Stripe didn't answer. Look in Stripe before charging again, in case it went through.");
-      F.patch(path, { tries: n }, ["tries"]); return;
-    }
-    // asked the customer to approve it, which they can't from here: that charge is dropped
-    if (r.code === 200 && pi && pi.id) stripe(key, "post", "payment_intents/" + encodeURIComponent(pi.id) + "/cancel");
-    end("failed", declineWhy(r, pi));
+    // has Stripe been paid for this visit already? (a charge whose record never made it back here)
+    const seen = paySeen(key, card.cus, jobId);
+    if (!seen) { const n = (+c.looks || 0) + 1; if (n < 10) { F.patch(path, { looks: n }, ["looks"], c._t); return; } return end("failed", "Couldn't reach Stripe, so nothing was charged. Tap Charge card again."); }
+    const before = seen.find(p => p.status === "succeeded"), going = seen.find(p => p.status === "processing");
+    if (before) { const rec = { kind: "paid", jobId: jobId, leadId: leadId, pi: String(before.id || ""), amount: (+before.amount_received || +before.amount || 0) / 100, at: before.created ? new Date(before.created * 1000).toISOString() : iso, mode: mode, brand: card.brand || "", last4: card.last4 || "", ask: String((before.metadata || {}).ask || "") }; F.put("private/paid-" + jobId, rec); return already(rec); }
+    const rq = { cus: String(card.cus), pm: String(card.pm), email: payEmail(l), cents: amt, what: String(c.what || "Get It Clean Tampa Bay").slice(0, 200), brand: card.brand || "", last4: card.last4 || "" };
+    // one from an earlier request is still going through at the bank: this request waits on that one instead of charging
+    if (going) { F.patch(path, { state: "charging", claimAt: iso, req: rq, pi: String(going.id) }, ["state", "claimAt", "req", "pi"], c._t); return; }
+    // claimed (so nothing else can take it or take it back), with exactly what is about to be sent
+    if (!F.patch(path, { state: "charging", claimAt: iso, req: rq }, ["state", "claimAt", "req"], c._t)) return; // taken back, or changed, just now
+    send(rq, true);
   }
 
   // ---- each run ----
@@ -9595,7 +9769,9 @@ function fsKit(PROJECT) {
   const fail = (what, r) => new Error("Couldn't " + what + " (" + r.code + " " + JSON.stringify(r.json).slice(0, 200) + ")");
   const conflict = (r) => /FAILED_PRECONDITION|ALREADY_EXISTS|ABORTED|NOT_FOUND/.test(JSON.stringify(r.json || {}));
   const commit = (w) => call("post", ":commit", { writes: [w] });
-  function get(path) { const r = call("get", path); if (r.code === 404) return null; if (r.code >= 300) throw fail("read " + path, r); return docOf(r.json); }
+  // each part of an address is encoded, so an id with odd characters in it can only ever name its own document
+  const seg = (p) => String(p).split("/").map(encodeURIComponent).join("/");
+  function get(path) { const r = call("get", seg(path)); if (r.code === 404) return null; if (r.code >= 300) throw fail("read " + path, r); return docOf(r.json); }
   // fields: only those (and the id) come back
   function query(coll, filters, limit, fields) {
     const f = filters.map(x => ({ fieldFilter: { field: { fieldPath: x[0] }, op: x[1], value: enc(x[2]) } }));
@@ -9622,7 +9798,7 @@ function fsKit(PROJECT) {
   }
   // the whole document, replacing what was there
   function put(path, o) { const r = commit({ update: { name: ROOT + "/" + path, fields: fieldsOf(o) } }); if (r.code >= 300) throw fail("save " + path, r); return true; }
-  function del(path) { const r = call("delete", path); if (r.code >= 300 && r.code !== 404) throw fail("delete " + path, r); }
+  function del(path) { const r = call("delete", seg(path)); if (r.code >= 300 && r.code !== 404) throw fail("delete " + path, r); }
   return { get: get, query: query, create: create, patch: patch, put: put, del: del, serverTime: () => srvTime };
 }
 const textScript = () => `// Get It Clean CRM: texting. Sends the texts you write in the CRM from your Quo number and brings answers back.
@@ -10927,24 +11103,30 @@ Object.assign(EXTRA_ACTS, {
 // ---------- CARD ON FILE AND CHARGING (elias, 2026-11-11) ----------
 // "I want it to take a card on file, process the payment when the job is done each time ... I want it to also
 // automatically get billed from the customer's card on that day." He picked Stripe. Stripe keeps the card and runs each
-// charge; the CRM never sees a card number. The texting script (version 17, texts.js) does the talking to Stripe, with
+// charge; the CRM never sees a card number. The texting script (version 18, texts.js) does the talking to Stripe, with
 // the key the owner pastes in Settings > Card payments, so it works with the CRM closed and the key never reaches a
 // crew login.
-//   private/pay            key (Stripe's secret key), savedAt, by, auto (charge when a plan visit is marked done: off
-//                          until the owner turns it on), max (the most one charge can be, in dollars)
+//   private/paykey         key (Stripe's secret key), savedAt, by: written here, read back only by the script
+//   private/pay            has, last4, mode, savedAt (the same as the key's), auto (charge when a plan visit is marked
+//                          done: off until the owner turns it on), max (the most one charge can be, in dollars)
 //   settings/blast-pay     the script's word on the key: kind "pay", ok, mode (test / live), err, keyAt
 //   leads/{id}.cardAsk     someone tapped Get card on file (the time), or Remove ("remove"); the script answers with
+//   private/cardask-<lead> the owner's say-so for Remove or Replace card (what, todo): without it the script takes no
+//                          card off, so a crew login can't
 //   leads/{id}.cardLink    { url, at }: Stripe's secure page to type the card on, good for a day
 //   leads/{id}.card        { brand, last4, exp, at, mode }: what's on file, for showing (Stripe's ids for it are in
 //                          private/card-<lead>, which only the owner and the script can read)
 //   private/charge-<job>   a charge the owner asked for: jobId, leadId, amount, ask, wait (seconds it can still be
-//                          taken back), state (queued, charging, paid, failed, skipped), todo
-//   jobs/{id}.pay          { state: queued / paid / failed, amount, at, err, ... } for showing; a paid one makes the job
-//                          paid by "Card on file"
+//                          taken back), stop (taken back), state (queued, charging, paid, failed, unsure, skipped), todo
+//   private/paid-<job>     the script's own record that this job's card was charged: one with it is never charged again
+//   jobs/{id}.pay          { state: queued / paid / failed / unsure, amount, at, err, ... } for showing; a paid one
+//                          makes the job paid by "Card on file"
 // Only the owner's login can ask for a charge (private/ is the owner's), so a crew login can't charge anybody. Nothing
 // is charged by itself until the owner turns the switch on, and then only a plan visit, when the owner marks it done.
+// The key, a charge and "Don't charge" go straight to the database (GIC.restSet), never through this device's queue of
+// unsent writes: a tap with no signal fails there and then instead of charging a card hours later.
 const PAY_ON = () => TX_ON();
-const PAY_VERSION = 17, PAY_MAX_DEFAULT = 500, PAY_WAIT = 75, PAY_UNDO_MS = 60000;
+const PAY_VERSION = 18, PAY_MAX_DEFAULT = 500, PAY_WAIT = 75, PAY_UNDO_MS = 60000;
 S.payCfg = null; S.payStatus = null; S.chargeAsk = null; S.cardSure = null;
 const payOwner = () => canEditBlast();
 const payKeyMode = (k) => /^(sk|rk)_test_/.test(k) ? "test" : /^(sk|rk)_live_/.test(k) ? "live" : "";
@@ -10952,13 +11134,14 @@ function payOnSettings(docs) {
   const was = JSON.stringify(S.payStatus || null); S.payStatus = docs.find(d => d.id === "blast-pay" && d.kind === "pay") || null;
   if (JSON.stringify(S.payStatus) !== was) refreshLeadModal(); // an open customer's Card on file follows it
 }
-// the owner's settings: whether a key is saved and its last 4 characters, never the key
+// the owner's settings: whether a key is saved and its last 4 characters. The key itself is in a document of its own
+// (private/paykey) that this page writes and never reads.
 let payUnsub = null;
 function payListen() {
   if (payUnsub || !S.db || !PAY_ON() || !payOwner()) return;
   payUnsub = S.db.doc("private/pay").onSnapshot(d => {
-    const x = d.exists ? d.data() || {} : {}, k = String(x.key || "");
-    S.payCfg = { has: !!k, last4: k.slice(-4), mode: payKeyMode(k), auto: x.auto === true, max: +x.max > 0 ? +x.max : PAY_MAX_DEFAULT, savedAt: x.savedAt || "" };
+    const x = d.exists ? d.data() || {} : {};
+    S.payCfg = { has: x.has === true, last4: String(x.last4 || ""), mode: x.mode === "live" ? "live" : x.mode === "test" ? "test" : "", auto: x.auto === true, max: +x.max > 0 ? +x.max : PAY_MAX_DEFAULT, savedAt: x.savedAt || "" };
     schedule(); refreshLeadModal();
   }, () => {});
 }
@@ -10989,8 +11172,8 @@ function payWhyNot() {
 const cardAny = (l) => l && l.card && l.card.last4 ? l.card : null;
 const cardOf = (l) => { const c = cardAny(l), st = payState(); return c && !((st === "test" || st === "live") && c.mode && c.mode !== st) ? c : null; };
 const cardLabel = (c) => `${(c && c.brand) || "Card"} ending in ${(c && c.last4) || ""}`;
-// Stripe's page for typing the card, while it's still good (only ever an address at stripe.com)
-const cardLinkOf = (l) => { const k = l && l.cardLink; return k && typeof k.url === "string" && /^https:\/\/[a-z0-9.-]*stripe\.com\//i.test(k.url) && Date.now() - (Date.parse(k.at || "") || 0) < 23 * 3600000 ? k : null; };
+// Stripe's page for typing the card, while it's still good (only ever an address at checkout.stripe.com)
+const cardLinkOf = (l) => { const k = l && l.cardLink; return k && typeof k.url === "string" && /^https:\/\/checkout\.stripe\.com\//i.test(k.url) && Date.now() - (Date.parse(k.at || "") || 0) < 23 * 3600000 ? k : null; };
 const cardText = (l, url) => `Hi ${firstName(l)}, this is Elias with Get It Clean Tampa Bay. Here's the secure page to put your card on file: ${url} Nothing is charged today. Your card is only charged after each visit.`;
 const payRedraw = () => { schedule(); refreshLeadModal(true); };
 
@@ -11006,7 +11189,7 @@ function cardHTML(l) {
   if (c) {
     const sub = [c.exp ? "expires " + c.exp : "", c.at ? "saved " + fmtD(String(c.at).slice(0, 10), { month: "short", day: "numeric", year: "numeric" }) : "", !ok ? (c.mode === "test" ? "saved in test mode, so it can't be charged for real: get it again" : "saved with your live key") : ""].filter(Boolean).join(" · ");
     const btns = removing ? `<span class="note" role="status">Taking it off file…</span>` : sure ? `<span class="note">Take this card off file?</span><button class="btn sm danger" data-act="card-remove-yes">Yes, remove it</button><button class="btn sm" data-act="card-remove-no">No</button>`
-      : `${asking || link ? "" : `<button class="btn sm" data-act="card-ask"${live ? "" : " disabled"}>${ok ? "Replace card" : "Get card again"}</button>`}${payOwner() ? `<button class="btn sm ghost danger" data-act="card-remove">Remove</button>` : ""}`;
+      : `${asking || link || (ok && !payOwner()) ? "" : `<button class="btn sm" data-act="card-ask"${live ? "" : " disabled"}>${ok ? "Replace card" : "Get card again"}</button>`}${payOwner() ? `<button class="btn sm ghost danger" data-act="card-remove">Remove</button>` : ""}`;
     top = `<div class="list"><div class="item static flow" id="card-row"><div class="main-col"><span class="t">${esc(cardLabel(c))}</span><span class="s" style="white-space:normal">${esc(sub)}</span></div><div class="r"><div class="row">${btns}</div></div></div></div>`;
   }
   let more = "";
@@ -11018,7 +11201,7 @@ function cardHTML(l) {
       <div class="row"><a class="btn primary" id="card-open" href="${esc(link.url)}" target="_blank" rel="noopener">Open card page</a>${quo ? `<a class="btn" id="card-text" href="${esc(quo)}"${tiTouch() ? "" : ` target="_blank" rel="noopener"`}>Text the link</a>` : ""}<button class="btn" data-act="card-copy">Copy link</button></div>`;
   }
   else if (!c) more = `<p class="note">The customer types their card once on Stripe's secure page, on your phone at the house or from a link you send. Nothing is charged when it's saved.</p><div class="row"><button class="btn primary" data-act="card-ask"${live ? "" : " disabled"}>Get card on file</button></div>`;
-  const err = l.cardErr && !asking ? `<div class="banner bad" role="status">Couldn't get the card page: ${esc(l.cardErr)}</div>` : "";
+  const err = l.cardErr && !asking && !removing ? `<div class="banner bad" role="status">${esc(l.cardErr)}</div>` : "";
   const why = live ? "" : `<div class="banner warn">${esc(payWhyNot())}</div>`;
   return `<section class="panel${c && !more && !err && !why ? " flush" : ""}" id="lead-card"><div class="panel-h"><h2>Card on file</h2>${test}</div>${why}${top}${err}${more}</section>`;
 }
@@ -11027,39 +11210,59 @@ function cardHTML(l) {
 function jobPayHTML(j, l) {
   if (!PAY_ON() || !j || j.kind !== "job" || !l || !["scheduled", "completed"].includes(j.status)) return "";
   const p = j.pay || {}, c = cardOf(l);
+  // charged already (its line is on its way back to Paid): nothing to tap
+  if (p.state === "paid") return `<span class="note" role="status">Card charged ${esc(money(p.amount, true))}</span>`;
   if (p.state === "queued") return `<span class="note" role="status">Charging ${esc(c ? cardLabel(c) : "the card")} ${esc(money(p.amount, true))}…</span>${payOwner() ? `<button class="btn sm" data-act="job-charge-stop" data-id="${esc(j.id)}">Don't charge</button>` : ""}`;
-  const bad = p.state === "failed" ? `<span class="pill due">Card didn't go through</span>` : "";
+  const unsure = p.state === "unsure", bad = p.state === "failed" ? `<span class="pill due">Card didn't go through</span>` : unsure ? `<span class="pill due">Look in Stripe first</span>` : "";
   if (!c || !payOwner() || !payLive()) return bad;
   // a visit that's still ahead has no Charge card: it shows on its day, or once the job is marked done
   if (!bad && j.status === "scheduled" && String(j.start || "").slice(0, 10) > today()) return "";
-  if (S.chargeAsk === j.id) return `<span class="note">Charge ${esc(cardLabel(c))} ${esc(money(j.amount, true))}?</span><button class="btn sm primary" data-act="job-charge-yes" data-id="${esc(j.id)}">Charge</button><button class="btn sm" data-act="job-charge-no">No</button>`;
+  if (S.chargeAsk === j.id) return `<span class="note">${unsure ? "Stripe is asked first whether it already went through. " : ""}Charge ${esc(cardLabel(c))} ${esc(money(j.amount, true))}?</span><button class="btn sm primary" data-act="job-charge-yes" data-id="${esc(j.id)}">Charge</button><button class="btn sm" data-act="job-charge-no">No</button>`;
   return `${bad}<button class="btn sm" data-act="job-charge" data-id="${esc(j.id)}">${bad ? "Try card again" : "Charge card"}</button>`;
 }
 // for the job's line: why the card didn't go through
-const jobPayNote = (j) => j && j.pay && j.pay.state === "failed" && ["scheduled", "completed"].includes(j.status) ? "card didn't go through" + (j.pay.err ? ": " + String(j.pay.err).replace(/\.$/, "") : "") : "";
-// asks the script to charge the card on file for this job (the owner's login only: private/ is the owner's)
+const jobPayNote = (j) => {
+  const p = (j && j.pay) || {}, open = !!j && ["scheduled", "completed"].includes(j.status);
+  if (p.extra && p.state === "paid") return `the card on file was charged ${money(p.amount, true)} as well: refund it in Stripe if it shouldn't have been`;
+  if (!open) return "";
+  return p.state === "failed" ? "card didn't go through" + (p.err ? ": " + String(p.err).replace(/\.$/, "") : "") : p.state === "unsure" ? "not sure the card was charged: look in Stripe, under Payments" : "";
+};
+// asks the script to charge the card on file for this job (the owner's login only: private/ is the owner's). It goes
+// straight to the database, and only if no charge for this job is waiting or with Stripe: that one is never replaced.
+const payErr = (code) => Object.assign(new Error(code), { code });
 async function payQueue(j, auto) {
+  const st = (j.pay || {}).state; if (st === "paid" || st === "queued") throw payErr("busy");
+  const id = "charge-" + j.id, cur = await GIC.restGet("private", id);
+  if (cur && cur.data.todo === true && ["queued", "charging"].includes(cur.data.state) && !cur.data.stop) throw payErr("busy");
   const amount = Math.round((+j.amount || 0) * 100) / 100, ask = new Date().toISOString();
-  await S.db.doc("private/charge-" + j.id).set({ kind: "charge", jobId: j.id, leadId: j.leadId || "", amount, ask, by: S.myId || "", auto: !!auto, wait: auto ? PAY_WAIT : 0, what: [j.service, planTag(j)].filter(Boolean).join(", ").slice(0, 200), state: "queued", todo: true });
+  const ok = await GIC.restSet("private", id, { kind: "charge", jobId: j.id, leadId: j.leadId || "", amount, ask, by: S.myId || "", auto: !!auto, wait: auto ? PAY_WAIT : 0, what: [j.service, planTag(j)].filter(Boolean).join(", ").slice(0, 200), state: "queued", todo: true }, cur ? { ifTime: cur.t } : { ifNew: true });
+  if (!ok) throw payErr("busy");
   await saveDoc("jobs", j.id, { pay: { state: "queued", amount, at: ask, ask, auto: !!auto, err: "" }, updatedAt: ask }, true).catch(() => {});
 }
-// takes a charge back while it's still waiting
+const payQueueSorry = (e) => e && e.code === "busy" ? "This visit's card is already being charged." : "Couldn't start the charge. Check your connection and try again.";
+// takes a charge back while it's still waiting. It's only "Not charged" once the database has agreed: the stop goes in
+// only if the request is still exactly as it was read, and the script can't pick up one that has changed.
 async function payUndo(jobId) {
   try {
-    const ref = S.db.doc("private/charge-" + jobId), d = await ref.get(), c = d.exists ? d.data() : null;
-    if (c && c.state !== "queued") { toast(c.state === "paid" ? "It already went through. If it shouldn't have, refund it in Stripe." : c.state === "charging" ? "Too late: it's with Stripe now." : "That charge already stopped.", 6000); return false; }
-    if (c) await ref.delete();
-    await saveDoc("jobs", jobId, { pay: null }, true);
-    toast("Not charged. Tap Charge card when you want to bill it."); return true;
-  } catch (e) { toast("Couldn't stop it. Check your connection and try again.", 6000); return false; }
+    for (let i = 0; i < 2; i++) {
+      const cur = await GIC.restGet("private", "charge-" + jobId), c = cur && cur.data;
+      if (c && c.state !== "queued") { toast(c.state === "paid" ? "It already went through. If it shouldn't have, refund it in Stripe." : c.state === "charging" ? "Too late: it's with Stripe now. If it shouldn't be charged, refund it in Stripe." : "That charge already stopped.", 7000); return false; }
+      if (c && !c.stop && !(await GIC.restSet("private", "charge-" + jobId, { stop: true, stopAt: new Date().toISOString() }, { mask: ["stop", "stopAt"], ifTime: cur.t }))) continue; // it changed just then: looked at again
+      await saveDoc("jobs", jobId, { pay: null }, true);
+      toast("Not charged. Tap Charge card when you want to bill it."); return true;
+    }
+    toast("Too late: it's with Stripe now. If it shouldn't be charged, refund it in Stripe.", 7000); return false;
+  } catch (e) { toast("Couldn't stop it: no connection, so the card may still be charged. Try again, or look in Stripe.", 9000); return false; }
 }
 // Job done on a plan visit, with the switch on: the card on file is charged about a minute later (true when it's
 // going to be, so the plain "Marked done" isn't shown)
 function payAfterDone(j) {
   const l = leadById(j.leadId), c = cardOf(l), cfg = S.payCfg;
   if (!PAY_ON() || !payOwner() || !payLive() || !cfg || !cfg.auto || j.kind !== "job" || !j.planId || !c || !(+j.amount >= 0.5) || +j.amount > cfg.max) return false;
+  // one that's waiting, went through, didn't go through or isn't settled is never charged over by Job done
+  if (["queued", "paid", "failed", "unsure"].includes((j.pay || {}).state)) return false;
   payQueue(j, true).then(() => { toast(`Marked done. Charging ${cardLabel(c)} ${money(j.amount, true)} in about a minute.`, PAY_UNDO_MS, { label: "Don't charge", fn: () => { payUndo(j.id).then(payRedraw); } }); payRedraw(); },
-    () => toast("Marked done. The card couldn't be charged from here: tap Charge card.", 7000));
+    (e) => toast(e && e.code === "busy" ? "Marked done. This visit's card is already being charged." : "Marked done. The card couldn't be charged from here: tap Charge card when you have a connection.", 7000));
   return true;
 }
 // where a paid plan visit leaves its customer: Scheduled while visits of the plan are still ahead, else Paid
@@ -11069,11 +11272,16 @@ function paidStage(j, l) {
 }
 // a job the script marked paid: its customer's stage and history, and its invoice, the same as Paid does by hand.
 // Done once, by the owner's CRM (pay.done).
-const payDoing = new Set();
+const payDoing = new Set(), payHealing = new Set();
 function paySweep() {
   if (!PAY_ON() || !S.db || !S.dataReady || !payOwner()) return;
   S.jobs.filter(j => j.kind === "job" && j.status === "paid" && j.pay && j.pay.state === "paid" && !j.pay.done && !payDoing.has(j.id)).forEach(j => {
     payDoing.add(j.id); payFinish(j).catch(() => {}).finally(() => setTimeout(() => payDoing.delete(j.id), 5000));
+  });
+  // a job the card paid for, put back to done or scheduled by a device that hadn't heard (a phone with no signal
+  // syncing late): it goes back to paid
+  S.jobs.filter(j => j.kind === "job" && ["scheduled", "completed"].includes(j.status) && j.pay && j.pay.state === "paid" && j.pay.pi && !j.pay.extra && !payHealing.has(j.id)).forEach(j => {
+    payHealing.add(j.id); saveDoc("jobs", j.id, { status: "paid", method: "Card on file", paidDate: j.paidDate || String(j.pay.at || "").slice(0, 10) || today(), updatedAt: new Date().toISOString() }, true).catch(() => {}).finally(() => setTimeout(() => payHealing.delete(j.id), 3000));
   });
 }
 async function payFinish(j) {
@@ -11091,7 +11299,8 @@ function payTodayHTML() {
   if (!PAY_ON() || !payOwner()) return "";
   const rows = S.jobs.filter(j => j.kind === "job" && ["scheduled", "completed"].includes(j.status)).map(j => {
     const l = leadById(j.leadId), st = (j.pay || {}).state; if (!l) return null;
-    return st === "failed" ? [j, l, "Card didn't go through" + (j.pay.err ? ": " + String(j.pay.err).replace(/\.$/, "") : "")] : st === "queued" ? [j, l, "Charging the card"] : j.status === "completed" && j.planId && cardOf(l) ? [j, l, "Done, card not charged yet"] : null;
+    return st === "paid" ? null : st === "failed" ? [j, l, "Card didn't go through" + (j.pay.err ? ": " + String(j.pay.err).replace(/\.$/, "") : "")] : st === "unsure" ? [j, l, "Not sure the card was charged. Look in Stripe, under Payments, before charging again"]
+      : st === "queued" ? [j, l, "Charging the card"] : j.status === "completed" && j.planId && cardOf(l) ? [j, l, "Done, card not charged yet"] : null;
   }).filter(Boolean);
   if (!rows.length) return "";
   return `<section class="panel flush" id="pay-today"><div class="panel-h"><h2>Cards</h2><span class="count">${plural(rows.length, "thing")}</span></div><div class="list">${rows.map(([j, l, what]) => `<div class="item static flow" data-pay-row="${esc(j.id)}"><div class="main-col"><span class="t"><button class="who" data-open-lead="${esc(l.id)}">${esc(leadName(l))}</button></span><span class="s" style="white-space:normal">${esc([what, j.service && j.service.length <= 40 ? j.service : "", planTag(j)].filter(Boolean).join(" · "))}</span></div>
@@ -11116,26 +11325,34 @@ if (PAY_ON()) {
       <p class="note">Keep a customer's card on file and charge it when a visit is done. Stripe holds the card and runs each charge, and the money goes to your bank account. The CRM never sees a card number. Stripe keeps about 2.9% plus 30¢ of each charge (<a href="https://stripe.com/pricing" target="_blank" rel="noopener">stripe.com/pricing</a> has today's rate).</p>
       ${now}
       ${step(1, "Open your Stripe account", `<p class="note">Sign up at <a href="https://dashboard.stripe.com/register" target="_blank" rel="noopener">stripe.com</a> with the business. Stripe asks about the business and for the bank account your money goes to. That part is between you and Stripe.</p>`)}
-      ${step(2, `Paste your Stripe key${done(c.has)}`, `<p class="note">In Stripe, open <b>Developers</b>, then <b>API keys</b> (or type “API keys” in Stripe's search box), and copy the <b>Secret key</b>. It starts with sk_. Paste it here. Only your login can see it, never your crew's. A key that starts with sk_test is Stripe's test mode, for trying it out with no real money.</p>
+      ${step(2, `Paste your Stripe key${done(c.has)}`, `<p class="note">In Stripe, open <b>Developers</b>, then <b>API keys</b> (or type “API keys” in Stripe's search box), and copy the <b>Secret key</b>. It starts with sk_. Paste it here. It goes straight to your texting script: this page never shows it again, and your crew's logins can't see it. A key that starts with sk_test is Stripe's test mode, for trying it out with no real money.</p>
         <div class="row"><input type="password" id="pay-key" placeholder="${c.has ? `Saved key ending in ${esc(c.last4)}` : "Paste the Secret key"}" autocomplete="off" spellcheck="false" style="flex:1 1 240px" aria-label="Stripe secret key"><button class="btn primary" data-act="pay-key-save">Save key</button>${c.has ? `<button class="btn ghost" data-act="pay-key-del">Remove</button>` : ""}</div>`)}
       ${step(3, "Get a card on file", `<p class="note">Open the customer, then <b>Quotes & jobs</b>, then <b>Get card on file</b>. They type their card on Stripe's secure page, on your phone or from a link you text them. After that, <b>Charge card</b> shows on their jobs.</p>`)}
       ${step(4, "Charging by itself", `<div class="row spread auto-sw"><span><b>Charge the card when I mark a plan visit done</b> <span class="pill ${c.auto ? "s-scheduled" : "s-lost"}">${c.auto ? "On" : "Off"}</span><br><span class="note">On: tapping Job done on a plan visit charges the card on file about a minute later, and you can stop it in that minute. Off: nothing is charged until you tap Charge card yourself. Only your login can charge a card.</span></span><button class="switch" role="switch" data-act="pay-auto" aria-checked="${c.auto}" aria-label="Charge the card when I mark a plan visit done"${c.has ? "" : " disabled"}><span class="knob" aria-hidden="true"></span></button></div>
         <label class="f">Largest single charge ($)<span class="row"><input type="number" id="pay-max" min="1" max="10000" step="1" value="${esc(c.max)}" style="max-width:140px" aria-label="Largest single charge in dollars"><button class="btn" data-act="pay-max-save">Save</button></span></label><p class="note">No charge can be more than this: a safety net against a typo. Refunds are done in Stripe.</p>`)}
     </section>`;
   };
-  const payCfgSave = (o) => S.db.doc("private/pay").update(o);
+  // the owner's settings go straight to the database (a switch flipped with no signal fails instead of flipping later)
+  const payCfgSave = (o) => GIC.restSet("private", "pay", o, { mask: Object.keys(o) });
   Object.assign(EXTRA_ACTS, {
     "pay-key-save": async (t) => {
       const el = $("#pay-key"), key = String(el ? el.value : "").trim();
       if (/^pk_/.test(key)) { toast("That's the Publishable key. Copy the Secret key instead (it starts with sk_).", 7000); return; }
       if (!/^(sk|rk)_(test|live)_[A-Za-z0-9]{10,}$/.test(key)) { toast("Paste the whole Secret key from Stripe. It starts with sk_.", 6000); return; }
       t.disabled = true;
-      try { await payCfgSave({ key, savedAt: new Date().toISOString(), by: S.myId || "" }); if (el) el.value = ""; toast("Key saved. Your script checks it with Stripe within a few minutes.", 6000); }
+      const savedAt = new Date().toISOString(), by = S.myId || "";
+      try {
+        // the key first, in its own document; then what this page shows about it (never the key)
+        await GIC.restSet("private", "paykey", { kind: "paykey", key, savedAt, by });
+        await payCfgSave({ has: true, last4: key.slice(-4), mode: payKeyMode(key), savedAt, by });
+        if (el) el.value = ""; toast("Key saved. Your script checks it with Stripe within a few minutes.", 6000);
+      }
       catch (e) { toast("Couldn't save the key. Check your connection and try again.", 6000); }
       finally { t.disabled = false; schedule(); }
     },
     "pay-key-del": async () => {
-      try { await payCfgSave({ key: "", auto: false, savedAt: new Date().toISOString(), by: S.myId || "" }); toast("Key removed. Nothing can be charged from the CRM now."); } catch (e) { toast("Couldn't remove the key. Check your connection and try again."); }
+      const savedAt = new Date().toISOString(), by = S.myId || "";
+      try { await GIC.restSet("private", "paykey", { kind: "paykey", key: "", savedAt, by }); await payCfgSave({ has: false, last4: "", mode: "", auto: false, savedAt, by }); toast("Key removed. Nothing can be charged from the CRM now."); } catch (e) { toast("Couldn't remove the key. Check your connection and try again."); }
       schedule();
     },
     "pay-auto": async () => {
@@ -11151,7 +11368,12 @@ if (PAY_ON()) {
     },
     "card-ask": async (t, l) => {
       if (!l) return; t.disabled = true;
-      try { await saveDoc("leads", l.id, { cardAsk: new Date().toISOString(), cardLink: null, cardErr: "" }, true); toast("Getting the secure card page ready. It shows here within a minute.", 5000); } catch (e) { t.disabled = false; }
+      const iso = new Date().toISOString();
+      try {
+        // replacing a card that's on file is the owner's to ask: the say-so goes where only the owner's login can write
+        if (cardOf(l)) { if (!payOwner()) return; await GIC.restSet("private", "cardask-" + l.id, { kind: "cardask", leadId: l.id, what: "replace", ask: iso, todo: true }); }
+        await saveDoc("leads", l.id, { cardAsk: iso, cardLink: null, cardErr: "" }, true); toast("Getting the secure card page ready. It shows here within a minute.", 5000);
+      } catch (e) { t.disabled = false; toast("Couldn't ask for the card page. Check your connection and try again.", 6000); }
       refreshLeadModal(true);
     },
     "card-copy": async (t, l) => { const k = cardLinkOf(l); if (k) await copy(k.url, "Card link"); },
@@ -11159,7 +11381,11 @@ if (PAY_ON()) {
     "card-remove-no": () => { S.cardSure = null; refreshLeadModal(true); },
     "card-remove-yes": async (t, l) => {
       S.cardSure = null; if (!l) return;
-      try { await saveDoc("leads", l.id, { cardAsk: "remove", cardErr: "" }, true); toast("Taking the card off file. It's gone within a minute.", 5000); } catch (e) {}
+      if (!payOwner()) return;
+      try {
+        await GIC.restSet("private", "cardask-" + l.id, { kind: "cardask", leadId: l.id, what: "remove", ask: new Date().toISOString(), todo: true });
+        await saveDoc("leads", l.id, { cardAsk: "remove", cardErr: "" }, true); toast("Taking the card off file. It's gone within a minute or two.", 5000);
+      } catch (e) { toast("Couldn't ask for that. Check your connection and try again.", 6000); }
       refreshLeadModal(true);
     },
     "job-charge": (t) => { S.chargeAsk = t.dataset.id; payRedraw(); },
@@ -11167,12 +11393,12 @@ if (PAY_ON()) {
     "job-charge-yes": async (t) => {
       const j = S.jobs.find(x => x.id === t.dataset.id), l = j && leadById(j.leadId), c = cardOf(l), max = (S.payCfg && S.payCfg.max) || PAY_MAX_DEFAULT;
       S.chargeAsk = null;
-      if (!j || !c || !payOwner() || !["scheduled", "completed"].includes(j.status)) { payRedraw(); return; }
+      if (!j || !c || !payOwner() || !["scheduled", "completed"].includes(j.status) || ["paid", "queued"].includes((j.pay || {}).state)) { payRedraw(); return; }
       if (!(+j.amount >= 0.5)) { toast("This job has no price to charge. Put the amount on the job first.", 6000); payRedraw(); return; }
       if (+j.amount > max) { toast(`That's more than the largest charge you allow (${money(max)}). Change it in Settings > Card payments.`, 8000); payRedraw(); return; }
       t.disabled = true;
       try { await payQueue(j, false); toast(`Charging ${cardLabel(c)} ${money(j.amount, true)}. It shows as paid here within a minute or two.`, 6000); }
-      catch (e) { toast("Couldn't start the charge. Check your connection and try again.", 6000); }
+      catch (e) { toast(payQueueSorry(e), 6000); }
       payRedraw();
     },
     "job-charge-stop": async (t) => { t.disabled = true; await payUndo(t.dataset.id); payRedraw(); },
