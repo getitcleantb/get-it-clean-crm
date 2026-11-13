@@ -7829,7 +7829,7 @@ function ibGo(id, leadId) {
 // with "Reply STOP to opt out." Blasts only send 8 AM to 8 PM Eastern (Florida's limits), and none in vacation mode.
 const TX_ON = () => STANDALONE && !!window.GIC;
 // 3: appointment reminders and re-clean texts (autotext.js). Texting works with 2; only the automatic texts need 3.
-const TEXT_SENDER_VERSION = 20, TEXT_SENDER_MIN = 2;
+const TEXT_SENDER_VERSION = 21, TEXT_SENDER_MIN = 2;
 const TX_STOP_LINE = "Reply STOP to opt out.";
 const TX_MAX = 1500; // characters in one text (Quo takes 1,600)
 S.texts = []; S.textBlasts = []; S.textRuns = {}; S.textSender = null; S.textOut = {}; S.textKey = null; S.textRulesOk = null;
@@ -8320,7 +8320,7 @@ if (TX_ON()) {
       <label class="f">Service<select id="tx-provider" aria-label="Texting service"><option value="quo" selected>Quo (formerly OpenPhone)</option></select></label>
       <p class="note">Texts go out from your Quo business number, and the answers come back into Email & Texts. A small script in your own Google account does the sending once a minute, so it keeps going when the CRM is closed and your Quo key stays off your crew's logins. Quo charges about 1¢ a text on top of your plan. Set it up once, on a computer.</p>
       ${st !== "none" ? `<p class="note">${s.number ? `Texting from <b>${esc(fmtPhone(s.number))}</b>. ` : ""}Last check ${esc(fmtWhen(new Date(s.lastRun)))}.${s.sentToday ? ` ${plural(s.sentToday, "text")} sent today.` : ""}${s.lastError ? ` <span class="pill due">Problem</span> ${esc(s.lastError)}` : ""}</p>${txBackfilling() ? `<p class="note">${esc(txBackfillNote())}</p>` : ""}` : ""}
-      ${st !== "none" && st !== "old" && (+s.version || 0) < TEXT_SENDER_VERSION ? `<div class="banner info">There's new code for the texting script. With it, new Facebook leads come into the CRM by themselves, from the Google Sheet that Facebook fills in (Settings > Facebook leads). Texting keeps working with the code you have now. To get it, do steps 4 and 5 again with <b>both</b> buttons in step 4 (the code and the settings). Google will ask you to allow one new thing, your Google Sheets: tap Allow.</div>` : ""}
+      ${st !== "none" && st !== "old" && (+s.version || 0) < TEXT_SENDER_VERSION ? `<div class="banner info">There's new code for the texting script. With it, a new Facebook lead's first text waits a few minutes so you can call them first, and stops if you log that you spoke with them (Settings > Facebook leads). Texting keeps working with the code you have now. To get it, do steps 4 and 5 again with <b>both</b> buttons in step 4 (the code and the settings), and tap Allow if Google asks.</div>` : ""}
       ${step(1, `Get your Quo API key${done(k ? k.has : null)}`, `<p class="note">In Quo on a computer, open Settings, then <b>API</b>, then <b>Generate API key</b> (only the Quo account owner or an admin sees it). Name it CRM, copy it, and paste it here. Quo also has to finish your US carrier registration (10DLC) before texts can go out this way. That's under Settings in Quo too.</p>
         <div class="row"><input type="password" id="tx-key" placeholder="${k && k.has ? `Saved key ending in ${esc(k.last4)}` : "Paste the API key"}" autocomplete="off" spellcheck="false" style="flex:1 1 240px" aria-label="Quo API key"><button class="btn primary" data-act="tx-key-save">Save key</button>${k && k.has ? `<button class="btn ghost" data-act="tx-key-del">Remove</button>` : ""}</div>`)}
       ${step(2, `Update your database rules${done(S.textRulesOk)}`, `<p class="note">${S.textRulesOk ? "Your rules are up to date: only you can read the key or start text blasts." : `Open the <a href="https://console.firebase.google.com/project/${esc(pid)}/firestore/rules" target="_blank" rel="noopener">Firebase rules page</a>, select everything there, paste the new rules over it, and tap Publish. The key can't be saved until this is done. (The same rules cover email blasts and the links in invoice texts.)`}</p>${S.textRulesOk ? "" : `<div class="row"><button class="btn" data-act="tx-copy-rules">Copy the rules</button></div>`}`)}
@@ -9411,9 +9411,12 @@ function textSender(PROJECT, VERSION, fsKit, SITE) {
     // the follow-up texts start only for a lead that's new to the CRM, has a number, and came in while they're on
     const why = dup ? "already in your CRM" + (dup.name || dup.company ? " as " + String(dup.name || dup.company) : "") : known ? "this number is already on a contact in your CRM" : !e ? "no phone number that can get texts" : x.noTime ? "the sheet doesn't say when this lead came in" : !on ? "the follow-up texts were off when this lead came in" : !fresh ? "it came in too long before the CRM saw it" : "";
     const where = [x.campaign_name, x.adset_name].filter(Boolean).join(" / ");
+    // Text 1 waits so the owner can call first: so many minutes after the form (10 unless changed), and never sooner
+    // than 5 minutes after the lead shows up in the CRM (the minute is rounded up, never down)
+    const first1 = () => { const w = AP.FB.wait(sw); return wall(new Date(Math.max((Date.parse(at) || now.getTime()) + w * 60000, now.getTime() + Math.min(5, w) * 60000) + (w ? 59000 : 0))); };
     const notes = [v.picks.length ? "Wants: " + v.picks.join(", ") : "", v.kind ? "Property: " + v.kind : "", v.timing ? "When: " + v.timing : ""].concat(v.extra, [x.ad_name ? "Ad: " + x.ad_name + (where ? " (" + where + ")" : "") : x.is_organic ? "Not from an ad (the form was shared or opened from the Page)" : "", f.name ? "Form: " + f.name : "", dup ? "Already in your CRM" + (dup.name || dup.company ? " as " + String(dup.name || dup.company) : "") + ", so no automatic texts went to them." : known ? "This number is already on a contact in your CRM, so no automatic texts went to them." : ""]).filter(Boolean).join("\n");
     const cut = fbCut;
-    const fb = { id: String(x.id), form: String(f.id), formName: cut(f.name, 60), ad: cut(x.ad_name, 200), adset: cut(x.adset_name, 200), campaign: cut(x.campaign_name, 200), platform: /^ig|insta/i.test(String(x.platform || "")) ? "ig" : "fb", at: at, picks: v.picks.slice(0, 12).map(p => cut(p, 80)), timing: cut(v.timing, 120), service: AP.FB.service(v.picks, ad && ad.service), n: 0, next: why ? "" : wall(now), stop: why, dup: dup ? dup.id : "" };
+    const fb = { id: String(x.id), form: String(f.id), formName: cut(f.name, 60), ad: cut(x.ad_name, 200), adset: cut(x.adset_name, 200), campaign: cut(x.campaign_name, 200), platform: /^ig|insta/i.test(String(x.platform || "")) ? "ig" : "fb", at: at, picks: v.picks.slice(0, 12).map(p => cut(p, 80)), timing: cut(v.timing, 120), service: AP.FB.service(v.picks, ad && ad.service), n: 0, next: why ? "" : first1(), stop: why, dup: dup ? dup.id : "" };
     const doc = { name: cut(v.name, 120), company: cut(v.company, 120), phone: cut(phone, 40), email: cut(v.email, 200), address: cut([v.address, v.address && v.state && v.address.indexOf(v.state) < 0 ? v.state : "", v.address && v.zip && v.address.indexOf(v.zip) < 0 ? v.zip : ""].filter(Boolean).join(", "), 300), city: cut(v.city, 80), type: type, source: FB_SRC, stage: "new", stageSince: day, services: AP.FB.services(v.picks, env.main().priceBook), value: 0, nextFollowUp: "", dnc: false, list: "leads", notes: cut(notes, 3000), createdAt: at, updatedAt: now.toISOString(), activity: [{ at: now.toISOString(), type: "created", text: "New Facebook lead" + (x.ad_name ? " from the ad " + cut(x.ad_name, 200) : "") }], fb: fb };
     const mark = () => {
       const m = env.inn(); m[key] = Date.parse(at) || now.getTime();
@@ -9781,6 +9784,9 @@ function textSender(PROJECT, VERSION, fsKit, SITE) {
     const l = chk.lead, phone = chk.phone, stage = String(l.stage || "new");
     if (l.fbOff === true) return stop("you turned them off for this lead");
     if (stage !== "new" && stage !== "contacted") return stop(stage === "lost" ? "marked Lost" : "moved to " + (FB_STAGE[stage] || stage));
+    // a call result that says the owner spoke with them (anything but No answer or Left voicemail): he takes it from there
+    const cr = String(l.lastDisposition || "").trim();
+    if (cr && !AP.FB.noReach(cr)) return stop("you logged the call result \u201c" + fbCut(cr, 40) + "\u201d");
     // they texted back since the form (anything at all): Elias takes it from there
     if (F.query("texts", [["phone", "EQUAL", phone]], 300).some(t => t.dir === "in" && String(t.at || "") > String(fb.at || ""))) return stop("they texted back");
     if (F.query("jobs", [["leadId", "EQUAL", l.id]], 30, ["status", "kind"]).some(j => j.status !== "canceled")) return stop("an estimate or job is booked");
@@ -10672,6 +10678,13 @@ function autoPlan() {
   const fbSlotText = (slots) => { const a = slots.map(w => FB_DOW[new Date(Date.UTC(+w.slice(0, 4), +w.slice(5, 7) - 1, +w.slice(8, 10))).getUTCDay()] + " at " + clock(mins(w))); return a.length > 1 ? a.slice(0, -1).join(", ") + " or " + a[a.length - 1] : a[0] || ""; };
   // the days after the first text that each one goes (the first is always right away)
   const FB_DAYS = [0, 1, 3, 7, 14, 30, 60, 90];
+  // Text 1 waits so the owner can call first (elias, 2026-11-13): this many minutes after the form was filled in, and
+  // never sooner than 5 minutes after the lead shows up in the CRM. 0 = right away.
+  const FB_WAIT = 10;
+  const fbWait = (sw) => { const w = sw ? sw.wait : null, n = w === "" || w == null ? FB_WAIT : Math.round(Number(w)); return n >= 0 && n <= 120 ? n : FB_WAIT; };
+  // a call result that means they were never reached: the texts carry on. Any other one means the owner spoke with
+  // them (or the number is wrong), and the texts stop.
+  const fbNoReach = (k) => /^(no answer|left voicemail)$/i.test(String(k || "").trim());
   const fbDays = (sw) => { const t = ((sw && sw.texts) || []).length || FB_DAYS.length, d = (sw && Array.isArray(sw.days) ? sw.days : FB_DAYS).map(x => Math.max(0, Math.round(+x || 0))), out = [0]; for (let i = 1; i < t; i++) out.push(Math.max(out[i - 1] + 1, d[i] != null ? d[i] : out[i - 1] + 30)); return out; };
   // the time of day the later ones go: when the first went, kept between 9 AM and 6 PM
   const fbHm = (w) => hhmm(Math.min(18 * 60, Math.max(9 * 60, mins(w))));
@@ -10688,7 +10701,7 @@ function autoPlan() {
   // the ads planned on 2026-11-12, by how their names start
   const FB_ADS = [{ match: "Roof", service: "roof soft wash", offer: "$100 off your driveway with a roof soft wash" }, { match: "Driveway A", service: "driveway and pool cage cleaning", offer: "$100 off driveway + pool cage + lanai" }, { match: "Driveway B", service: "driveway and pool cage cleaning", offer: "pool cage cleaned free" },
     { match: "Driveway C", service: "driveway cleaning", offer: "5 windows free with any driveway" }, { match: "Window A", service: "window cleaning", offer: "free screen cleaning" }, { match: "Window B", service: "window cleaning", offer: "10 interior windows free" }];
-  const FB = { service: fbService, services: fbServices, ad: fbAd, text: fbText, slots: fbSlots, slotText: fbSlotText, days: fbDays, hm: fbHm, nextAt: fbNextAt, DAYS: FB_DAYS, TEXTS: FB_TEXTS, ADS: FB_ADS };
+  const FB = { service: fbService, services: fbServices, ad: fbAd, text: fbText, slots: fbSlots, slotText: fbSlotText, days: fbDays, hm: fbHm, nextAt: fbNextAt, wait: fbWait, noReach: fbNoReach, WAIT: FB_WAIT, DAYS: FB_DAYS, TEXTS: FB_TEXTS, ADS: FB_ADS };
   return { addDay: addDay, addMonths: addMonths, mins: mins, clock: clock, remAt: remAt, remList: remList, remKey: remKey, remOk: remOk, remWhen: remWhen, remText: remText, sender: sender, SENDERS: SENDERS, first: first, place: place, isWindow: isWindow, rcGroup: rcGroup, rcFill: rcFill, rcBody: rcBody, rcNext: rcNext, rcMonths: rcMonths, rcDue: rcDue, rcText: rcText, rcJobs: rcJobs, leftover: leftover, FB: FB };
 }
 const AP = autoPlan();
@@ -11972,7 +11985,7 @@ if (PAY_ON()) {
 //   private/meta.sheets, .sheetAt   the sheets' ids (from the links pasted here) and when they were saved
 //   settings/blast-metasheet        the script's answer: { kind: "metasheet", ok, err, note, sheetAt, names, tabs, n, last }
 const FB_ON = () => TX_ON();
-const FB_VERSION = 19, FB_SHEET_VERSION = 20, FB_PAGE_ID = "109814877569295";
+const FB_VERSION = 19, FB_SHEET_VERSION = 20, FB_WAIT_VERSION = 21, FB_PAGE_ID = "109814877569295";
 S.fbCfg = null; S.fbStatus = null; S.fbSheet = null; S.fbDrip = null; S.fbAsk = false;
 const fbOwner = () => canEditBlast();
 function fbOnSettings(docs) {
@@ -12019,6 +12032,10 @@ const fbDripOn = () => !!(S.fbDrip && S.fbDrip.on === true);
 const fbTexts = () => { const t = S.fbDrip && Array.isArray(S.fbDrip.texts) && S.fbDrip.texts.length ? S.fbDrip.texts : AP.FB.TEXTS; return t.map(s => String(s || "")); };
 const fbAds = () => (S.fbDrip && Array.isArray(S.fbDrip.ads) ? S.fbDrip.ads : AP.FB.ADS).map(a => ({ match: String((a && a.match) || ""), service: String((a && a.service) || ""), offer: String((a && a.offer) || "") }));
 const fbDayList = () => AP.FB.days({ texts: fbTexts(), days: S.fbDrip && S.fbDrip.days });
+// how long Text 1 waits after the form, in minutes (10 unless changed)
+const fbWaitMin = () => AP.FB.wait(S.fbDrip);
+const fbFormWait = () => { const el = document.querySelector("#fb-form [data-fbw]"), n = el ? Math.round(Number(el.value)) : NaN; return el && String(el.value).trim() !== "" && n >= 0 && n <= 120 ? n : fbWaitMin(); };
+const fbWaitWords = (w) => w ? `${w === 1 ? "a minute" : w + " minutes"} after they fill in the form${w > 5 ? ", and never sooner than 5 minutes after the lead shows up here" : ""}` : "within a couple of minutes";
 const FB_WORDS = ["{greeting}", "{first}", "{source}", "{service}", "{offer}", "{times}"];
 const fbSample = { first: "Sam", h: 10, source: "Facebook", service: "driveway cleaning", offer: "an offer", times: "Monday at 9 AM" };
 // the part of the page that follows the script (the rest holds what's being typed, so it isn't redrawn under it)
@@ -12052,7 +12069,7 @@ function fbTopHTML() {
 function fbSwitchHTML() {
   const on = fbDripOn(), ready = (fbState() === "ok" && txState() !== "none") || on, num = (S.textSender || {}).number;
   return `<div class="row spread auto-sw"><span><b>Text new Facebook leads by themselves</b> <span class="pill ${on ? "s-scheduled" : "s-lost"}">${on ? "On" : "Off"}</span><br><span class="note">${on ? "Each new Facebook lead gets the texts below from your business number." : ready ? "Off: leads still come in, and nothing is texted to them by itself." : "Off. It can be turned on once Facebook is connected above."}</span></span><button class="switch" role="switch" data-act="fb-sw" aria-checked="${on}" aria-label="Text new Facebook leads by themselves"${ready ? "" : " disabled"}><span class="knob" aria-hidden="true"></span></button></div>
-    ${S.fbAsk && !on ? `<div class="banner warn stack"><span>Turn on the Facebook follow-up texts? Every new Facebook lead will be texted by itself from ${num ? esc(fmtPhone(num)) : "your business number"}, starting with Text 1 within a couple of minutes, with the wording showing below.</span><div class="row"><button class="btn sm primary" data-act="fb-sw-yes">Turn on</button><button class="btn sm ghost" data-act="fb-sw-no">Cancel</button></div></div>` : ""}
+    ${S.fbAsk && !on ? `<div class="banner warn stack"><span>Turn on the Facebook follow-up texts? Every new Facebook lead will be texted by itself from ${num ? esc(fmtPhone(num)) : "your business number"}, starting with Text 1 ${esc(fbWaitWords(fbFormWait()))}, with the wording showing below.</span><div class="row"><button class="btn sm primary" data-act="fb-sw-yes">Turn on</button><button class="btn sm ghost" data-act="fb-sw-no">Cancel</button></div></div>` : ""}
     ${vacIsOn() && on ? `<p class="note">Vacation mode is on, so these are on hold until you turn it off on Email & Texts.</p>` : ""}`;
 }
 function fbTopRefresh() {
@@ -12066,6 +12083,8 @@ function fbTopRefresh() {
 // what's typed in the form: { texts, days, ads } or { bad: why }
 function fbReadForm() {
   const texts = [...document.querySelectorAll("#fb-form [data-fbt]")].map(el => el.value.replace(/\s+$/, ""));
+  const wEl = document.querySelector("#fb-form [data-fbw]"), wRaw = wEl ? String(wEl.value).trim() : String(fbWaitMin()), wait = Math.round(Number(wRaw));
+  if (wRaw === "" || !(wait >= 0 && wait <= 120)) return { bad: "Text 1 needs a wait between 0 and 120 minutes. 0 sends it right away." };
   const days = [0].concat([...document.querySelectorAll("#fb-form [data-fbd]")].map(el => Math.round(Number(el.value))));
   const ads = [...document.querySelectorAll("#fb-form [data-fba]")].map(row => ({ match: $("[data-k='match']", row).value.trim(), service: $("[data-k='service']", row).value.trim(), offer: $("[data-k='offer']", row).value.trim() })).filter(a => a.match);
   if (!texts.length || !texts[0].trim()) return { bad: "Text 1 can't be blank: it's the one that goes right away." };
@@ -12074,7 +12093,7 @@ function fbReadForm() {
     const left = AP.leftover(AP.FB.text(texts[i], fbSample)); if (left) return { bad: `Text ${i + 1} has ${left} in it, which can't be filled in. Use ${FB_WORDS.join(", ")}.` };
   }
   for (let i = 1; i < days.length; i++) { if (!(days[i] >= 1 && days[i] <= 365)) return { bad: `Text ${i + 1} needs a day between 1 and 365.` }; if (days[i] <= days[i - 1]) return { bad: `Text ${i + 1} has to go on a later day than Text ${i}.` }; }
-  return { texts, days: days.slice(0, texts.length), ads };
+  return { texts, days: days.slice(0, texts.length), ads, wait };
 }
 const fbWhenLabel = (d) => d === 1 ? "the next day" : `day ${d}`;
 if (FB_ON()) {
@@ -12096,9 +12115,9 @@ if (FB_ON()) {
         <div class="row"><input type="password" id="fb-key" placeholder="${c.has ? `Saved key ending in ${esc(c.last4)}` : "Paste the key"}" autocomplete="off" spellcheck="false" style="flex:1 1 240px" aria-label="Facebook key"><button class="btn primary" data-act="fb-key-save">Save</button>${c.has ? `<button class="btn ghost" data-act="fb-key-del">Remove</button>` : ""}</div>`)}
       ${step(2, "Get told about each new lead", `<p class="note">Every new Facebook lead sends a notification to your phone: who it is, what they want cleaned and the city. Turn that on or off in Settings > Notifications. The lead is on Today under New leads, and tapping the notification opens it.</p>`)}
       ${step(3, "Follow-up texts", `<div id="fb-sw-box">${fbSwitchHTML()}</div>
-        <p class="note">While it's on, a new Facebook lead gets Text 1 within a couple of minutes, then the rest on the days you set, always between 8 AM and 8 PM (a lead at 10 PM gets Text 1 at 8 AM). The texts stop for good as soon as they text back anything at all, text STOP, get an estimate or job booked, are moved past Contacted (Lost included) or marked do not contact, or you tap Stop these texts on the lead. Vacation mode holds them. Only leads that come in while it's on get them, and someone who's already in your CRM gets none.</p>
+        <p class="note">While it's on, a new Facebook lead gets Text 1 after the wait you set on it (10 minutes after they fill in the form unless you change it, and never sooner than 5 minutes after the lead shows up here), so you can call them first. Then the rest go on the days you set, always between 8 AM and 8 PM (a lead at 10 PM gets Text 1 at 8 AM). If you reach them, log the call result on the lead: anything other than No answer or Left voicemail stops the texts. They also stop for good as soon as they text back anything at all, text STOP, get an estimate or job booked, are moved past Contacted (Lost included) or marked do not contact, or you tap Stop these texts on the lead. Vacation mode holds them. Only leads that come in while it's on get them, and someone who's already in your CRM gets none.</p>
         <p class="note">Words that fill themselves in: <b>{greeting}</b> Good morning, afternoon or evening · <b>{first}</b> their first name · <b>{source}</b> Facebook or Instagram, whichever they answered on · <b>{service}</b> what they asked for · <b>{offer}</b> the offer on the ad they answered · <b>{times}</b> your next three open estimate times from Google Calendar. A blank text is skipped, and so is one with {offer} when the ad isn't on the list below.</p>
-        ${texts.map((t, i) => `<div class="tpl"><div class="row spread"><b>Text ${i + 1}</b>${i === 0 ? `<span class="note">Right away</span>` : `<label class="row note">Day <input type="number" data-fbd min="1" max="365" step="1" value="${esc(days[i])}" style="width:84px" aria-label="Day Text ${i + 1} goes"></label>`}</div><textarea data-fbt rows="${t.length > 170 ? 4 : 3}" aria-label="Text ${i + 1}">${esc(t)}</textarea></div>`).join("")}
+        ${texts.map((t, i) => `<div class="tpl"><div class="row spread"><b>Text ${i + 1}</b>${i === 0 ? `<label class="row note">Minutes after the form <input type="number" data-fbw min="0" max="120" step="1" value="${esc(fbWaitMin())}" style="width:84px" aria-label="Minutes Text 1 waits after the form"></label>` : `<label class="row note">Day <input type="number" data-fbd min="1" max="365" step="1" value="${esc(days[i])}" style="width:84px" aria-label="Day Text ${i + 1} goes"></label>`}</div><textarea data-fbt rows="${t.length > 170 ? 4 : 3}" aria-label="Text ${i + 1}">${esc(t)}</textarea></div>`).join("")}
         <h3>Your ads and their offers</h3><p class="note">{offer} and, when the form doesn't say, {service} come from the ad the lead answered. Each row covers every ad whose name starts with those words (or, failing that, has them in it).</p>
         <div id="fb-ads" class="stack">${ads.map(adRow).join("")}</div>
         <div class="row"><button class="btn sm" data-act="fb-ad-add">Add an ad</button></div>
@@ -12153,14 +12172,14 @@ if (FB_ON()) {
     "fb-save": async (t) => {
       const f = fbReadForm(); if (f.bad) { toast(f.bad, 7000); return; }
       t.disabled = true;
-      try { await fbDripSave({ texts: f.texts, days: f.days, ads: f.ads }); toast(fbDripOn() ? "Saved. Texts from now on use this wording." : "Saved."); }
+      try { await fbDripSave({ texts: f.texts, days: f.days, ads: f.ads, wait: f.wait }); S.fbDrip = Object.assign({ kind: "fbdrip" }, S.fbDrip || {}, { texts: f.texts, days: f.days, ads: f.ads, wait: f.wait }); toast(fbDripOn() ? "Saved. Texts from now on use this wording." : "Saved."); }
       catch (e) { toast("Couldn't save. Check your connection and try again.", 6000); }
       finally { t.disabled = false; }
     },
     "fb-sw": async () => {
       if (!fbOwner()) return;
       if (!fbDripOn()) {
-        if ((+(S.textSender || {}).version || 0) < FB_VERSION) { toast("The texting script needs its new code first (Settings > Texting, steps 4 and 5)."); return; }
+        if ((+(S.textSender || {}).version || 0) < FB_WAIT_VERSION) { toast("The texting script needs its new code first (Settings > Texting, steps 4 and 5)."); return; }
         S.fbAsk = true; fbTopRefresh(); return;
       }
       try { await fbDripSave({ on: false, offAt: new Date().toISOString() }); S.fbDrip = Object.assign({}, S.fbDrip || {}, { on: false }); toast("Off. No more Facebook follow-up texts go out by themselves.", 5000); }
@@ -12171,7 +12190,7 @@ if (FB_ON()) {
     "fb-sw-yes": async (t) => {
       const f = fbReadForm(); if (f.bad) { toast(f.bad, 7000); return; }
       t.disabled = true; const now = new Date().toISOString();
-      try { await fbDripSave({ on: true, onAt: now, texts: f.texts, days: f.days, ads: f.ads }); S.fbDrip = Object.assign({ kind: "fbdrip" }, S.fbDrip || {}, { on: true, onAt: now, texts: f.texts, days: f.days, ads: f.ads }); S.fbAsk = false; toast("On. New Facebook leads get the follow-up texts.", 5000); }
+      try { await fbDripSave({ on: true, onAt: now, texts: f.texts, days: f.days, ads: f.ads, wait: f.wait }); S.fbDrip = Object.assign({ kind: "fbdrip" }, S.fbDrip || {}, { on: true, onAt: now, texts: f.texts, days: f.days, ads: f.ads, wait: f.wait }); S.fbAsk = false; toast("On. New Facebook leads get the follow-up texts.", 5000); }
       catch (e) { toast("Couldn't turn it on. Check your connection and try again.", 6000); }
       fbTopRefresh();
     },
