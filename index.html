@@ -2957,7 +2957,7 @@ function quoteEditorHTML() {
 }
 function quoteActsHTML() {
   const l = leadById(QD.leadId); const inv = isInvoice(QD);
-  const send = `<div class="qsec"><span class="lab">Send it</span><div class="actions"><button class="btn" data-act="q-pdf">Download PDF</button><button class="btn" data-act="q-png">Picture (to text)</button><button class="btn" data-act="q-email" ${l && l.dnc ? "disabled" : ""}>Email as Gmail draft</button>${inv && STANDALONE ? `<button class="btn" data-act="ti-open" ${l && l.dnc ? "disabled" : ""}>Text invoice</button>` : ""}</div>${l && l.dnc ? `<p class="note">${esc(leadName(l))} is marked do not contact, so emailing${inv ? " and texting are" : " is"} off.</p>` : ""}</div>`;
+  const send = `<div class="qsec"><span class="lab">Send it</span><div class="actions"><button class="btn" data-act="q-pdf">Download PDF</button><button class="btn" data-act="q-png">Picture (to text)</button><button class="btn" data-act="q-email" ${l && l.dnc ? "disabled" : ""}>Email as Gmail draft</button>${STANDALONE ? `<button class="btn" data-act="ti-open" ${l && l.dnc ? "disabled" : ""}>Text ${inv ? "invoice" : "estimate"}</button>` : ""}</div>${l && l.dnc ? `<p class="note">${esc(leadName(l))} is marked do not contact, so emailing${STANDALONE ? " and texting are" : " is"} off.</p>` : ""}</div>`;
   if (!QD.id) return send;
   const opts = inv ? [["draft", "Draft"], ["sent", "Sent"], ["paid", "Paid"]] : [["draft", "Draft"], ["sent", "Sent"], ["accepted", "Accepted"], ["declined", "Declined"]];
   const cur = QD.status || "draft";
@@ -7829,7 +7829,7 @@ function ibGo(id, leadId) {
 // with "Reply STOP to opt out." Blasts only send 8 AM to 8 PM Eastern (Florida's limits), and none in vacation mode.
 const TX_ON = () => STANDALONE && !!window.GIC;
 // 3: appointment reminders and re-clean texts (autotext.js). Texting works with 2; only the automatic texts need 3.
-const TEXT_SENDER_VERSION = 21, TEXT_SENDER_MIN = 2;
+const TEXT_SENDER_VERSION = 22, TEXT_SENDER_MIN = 2;
 const TX_STOP_LINE = "Reply STOP to opt out.";
 const TX_MAX = 1500; // characters in one text (Quo takes 1,600)
 S.texts = []; S.textBlasts = []; S.textRuns = {}; S.textSender = null; S.textOut = {}; S.textKey = null; S.textRulesOk = null;
@@ -8320,7 +8320,7 @@ if (TX_ON()) {
       <label class="f">Service<select id="tx-provider" aria-label="Texting service"><option value="quo" selected>Quo (formerly OpenPhone)</option></select></label>
       <p class="note">Texts go out from your Quo business number, and the answers come back into Email & Texts. A small script in your own Google account does the sending once a minute, so it keeps going when the CRM is closed and your Quo key stays off your crew's logins. Quo charges about 1¢ a text on top of your plan. Set it up once, on a computer.</p>
       ${st !== "none" ? `<p class="note">${s.number ? `Texting from <b>${esc(fmtPhone(s.number))}</b>. ` : ""}Last check ${esc(fmtWhen(new Date(s.lastRun)))}.${s.sentToday ? ` ${plural(s.sentToday, "text")} sent today.` : ""}${s.lastError ? ` <span class="pill due">Problem</span> ${esc(s.lastError)}` : ""}</p>${txBackfilling() ? `<p class="note">${esc(txBackfillNote())}</p>` : ""}` : ""}
-      ${st !== "none" && st !== "old" && (+s.version || 0) < TEXT_SENDER_VERSION ? `<div class="banner info">There's new code for the texting script. With it, a new Facebook lead's first text waits a few minutes so you can call them first, and stops if you log that you spoke with them (Settings > Facebook leads). Texting keeps working with the code you have now. To get it, do steps 4 and 5 again with <b>both</b> buttons in step 4 (the code and the settings), and tap Allow if Google asks.</div>` : ""}
+      ${st !== "none" && st !== "old" && (+s.version || 0) < TEXT_SENDER_VERSION ? `<div class="banner info">There's new code for the texting script. With it, a booking you make the day before gets no reminder at 6 PM, only the one the morning of. Texting keeps working with the code you have now. To get it, do steps 4 and 5 again with <b>both</b> buttons in step 4 (the code and the settings), and tap Allow if Google asks.</div>` : ""}
       ${step(1, `Get your Quo API key${done(k ? k.has : null)}`, `<p class="note">In Quo on a computer, open Settings, then <b>API</b>, then <b>Generate API key</b> (only the Quo account owner or an admin sees it). Name it CRM, copy it, and paste it here. Quo also has to finish your US carrier registration (10DLC) before texts can go out this way. That's under Settings in Quo too.</p>
         <div class="row"><input type="password" id="tx-key" placeholder="${k && k.has ? `Saved key ending in ${esc(k.last4)}` : "Paste the API key"}" autocomplete="off" spellcheck="false" style="flex:1 1 240px" aria-label="Quo API key"><button class="btn primary" data-act="tx-key-save">Save key</button>${k && k.has ? `<button class="btn ghost" data-act="tx-key-del">Remove</button>` : ""}</div>`)}
       ${step(2, `Update your database rules${done(S.textRulesOk)}`, `<p class="note">${S.textRulesOk ? "Your rules are up to date: only you can read the key or start text blasts." : `Open the <a href="https://console.firebase.google.com/project/${esc(pid)}/firestore/rules" target="_blank" rel="noopener">Firebase rules page</a>, select everything there, paste the new rules over it, and tap Publish. The key can't be saved until this is done. (The same rules cover email blasts and the links in invoice texts.)`}</p>${S.textRulesOk ? "" : `<div class="row"><button class="btn" data-act="tx-copy-rules">Copy the rules</button></div>`}`)}
@@ -9266,7 +9266,9 @@ function textSender(PROJECT, VERSION, fsKit, SITE) {
       // on Google Calendar: its time there (none when it's gone from there, or the calendar can't be read)
       const start = j.eventId ? (g && g[id]) || "" : String(j.start || "").slice(0, 16);
       if (!/^\d{4}-\d\d-\d\dT\d\d:\d\d$/.test(start) || start <= nowW) continue;
-      for (const [k, at] of AP.remList(j.kind === "visit" ? "visit" : "job", start)) {
+      // made (or moved in the CRM) the day before or later: nothing at 6 PM the evening before
+      const made = Date.parse(j.movedAt || j.createdAt || ""), booked = made ? wall(new Date(made)).slice(0, 10) : "";
+      for (const [k, at] of AP.remList(j.kind === "visit" ? "visit" : "job", start, booked)) {
         if (at > nowW || !AP.remOk(at) || wmin(nowW) - wmin(at) > 60) continue;
         const tid = "texts/r-" + id + "-" + (k === "job" ? "eve-" : k === "jobHead" ? "day-" : "") + start.replace(/\D/g, "");
         if (F.get(tid)) continue;
@@ -10570,13 +10572,19 @@ function autoPlan() {
   const hhmm = (m) => p2(Math.floor(m / 60)) + ":" + p2(m % 60);
   const clock = (m) => { const h = Math.floor(m / 60), mi = m % 60; return (h % 12 || 12) + (mi ? ":" + p2(mi) : "") + (h < 12 ? " AM" : " PM"); };
   // start and the answers: Eastern wall time, "YYYY-MM-DDTHH:MM"
-  const remAt = (start) => { const d = start.slice(0, 10), m = mins(start); return m < 600 ? addDay(d, -1) + "T18:00" : d + "T" + hhmm(m - 120); };
+  // booked: the day the booking was made, or last moved in the CRM, when that's known. One made the day before, or
+  // later (elias, 2026-11-13: "if anyone gets added the day before a job, they don't get a message at 6 p.m., only
+  // the morning of"), gets nothing at 6 PM the evening before, since they were only just spoken to: a job keeps its
+  // heads-up the day of, and a morning estimate gets its one reminder the morning of instead (1 hour before, at 8 AM
+  // if that's earlier, and none when it starts by 8). Texting script version 22.
+  const remLate = (start, booked) => !!booked && String(booked).slice(0, 10) >= addDay(start.slice(0, 10), -1);
+  const remAt = (start, booked) => { const d = start.slice(0, 10), m = mins(start); if (m >= 600) return d + "T" + hhmm(m - 120); if (!remLate(start, booked)) return addDay(d, -1) + "T18:00"; const h = Math.max(480, m - 60); return h < m ? d + "T" + hhmm(h) : ""; };
   // texts only go 8 AM to 8 PM
   const remOk = (at) => mins(at) >= 480 && mins(at) < 1200;
   // a job: the evening before ("job"), and the heads-up the day of ("jobHead")
-  const remJob = (start) => { const d = start.slice(0, 10), m = mins(start), h = Math.max(480, m < 600 ? m - 60 : m - 120); return [["job", addDay(d, -1) + "T18:00"]].concat(h < m ? [["jobHead", d + "T" + hhmm(h)]] : []); };
+  const remJob = (start, booked) => { const d = start.slice(0, 10), m = mins(start), h = Math.max(480, m < 600 ? m - 60 : m - 120); return (remLate(start, booked) ? [] : [["job", addDay(d, -1) + "T18:00"]]).concat(h < m ? [["jobHead", d + "T" + hhmm(h)]] : []); };
   // every reminder a booking gets: [which text, when]
-  const remList = (kind, start) => kind === "visit" ? [["visit", remAt(start)]] : remJob(start);
+  const remList = (kind, start, booked) => kind === "visit" ? [remAt(start, booked)].filter(Boolean).map(at => ["visit", at]) : remJob(start, booked);
   // "today" or "tomorrow", to match when it goes (an estimate's own time, when that's not given)
   const remDay = (start, at) => (at || remAt(start)).slice(0, 10) < start.slice(0, 10) ? "tomorrow" : "today";
   const remWhen = (start, at) => remDay(start, at) + " at " + clock(mins(start));
@@ -10702,12 +10710,14 @@ function autoPlan() {
   const FB_ADS = [{ match: "Roof", service: "roof soft wash", offer: "$100 off your driveway with a roof soft wash" }, { match: "Driveway A", service: "driveway and pool cage cleaning", offer: "$100 off driveway + pool cage + lanai" }, { match: "Driveway B", service: "driveway and pool cage cleaning", offer: "pool cage cleaned free" },
     { match: "Driveway C", service: "driveway cleaning", offer: "5 windows free with any driveway" }, { match: "Window A", service: "window cleaning", offer: "free screen cleaning" }, { match: "Window B", service: "window cleaning", offer: "10 interior windows free" }];
   const FB = { service: fbService, services: fbServices, ad: fbAd, text: fbText, slots: fbSlots, slotText: fbSlotText, days: fbDays, hm: fbHm, nextAt: fbNextAt, wait: fbWait, noReach: fbNoReach, WAIT: FB_WAIT, DAYS: FB_DAYS, TEXTS: FB_TEXTS, ADS: FB_ADS };
-  return { addDay: addDay, addMonths: addMonths, mins: mins, clock: clock, remAt: remAt, remList: remList, remKey: remKey, remOk: remOk, remWhen: remWhen, remText: remText, sender: sender, SENDERS: SENDERS, first: first, place: place, isWindow: isWindow, rcGroup: rcGroup, rcFill: rcFill, rcBody: rcBody, rcNext: rcNext, rcMonths: rcMonths, rcDue: rcDue, rcText: rcText, rcJobs: rcJobs, leftover: leftover, FB: FB };
+  return { addDay: addDay, addMonths: addMonths, mins: mins, clock: clock, remAt: remAt, remLate: remLate, remList: remList, remKey: remKey, remOk: remOk, remWhen: remWhen, remText: remText, sender: sender, SENDERS: SENDERS, first: first, place: place, isWindow: isWindow, rcGroup: rcGroup, rcFill: rcFill, rcBody: rcBody, rcNext: rcNext, rcMonths: rcMonths, rcDue: rcDue, rcText: rcText, rcJobs: rcJobs, leftover: leftover, FB: FB };
 }
 const AP = autoPlan();
 S.autoText = null; S.autoAsk = "";
 const autoOn = (k) => !!(S.autoText && S.autoText[k] === true);
 // the texting script that can send them: re-clean texts by service from version 5, two job reminders from version 6
+// the texting script that leaves out the 6 PM text for a booking made the day before (version 22)
+const remSkipReady = () => !!(S.textSender && (+S.textSender.version || 0) >= 22);
 const autoReady = (k) => !!(S.textSender && (+S.textSender.version || 0) >= (k === "reclean" ? 5 : 6));
 const wallOf = (s) => { const d = parseD(s); return d ? ymd(d) + "T" + pad(d.getHours()) + ":" + pad(d.getMinutes()) : ""; };
 const wallNow = () => wallOf(new Date().toISOString());
@@ -10719,7 +10729,10 @@ function remPlanned(rem) {
   return rangeItems(today(), addDays(3)).filter(e => e.src === "crm" && (e.kind === "job" || e.kind === "visit") && !e.allDay && String(e.start || "").length > 10)
     .flatMap(e => { const j = byId.get(e.id) || {}, l = leadById(e.leadId), start = wallOf(e.start), kind = e.kind === "visit" ? "visit" : "job"; if (!start) return [];
       const no0 = ["completed", "paid", "canceled"].includes(j.status) ? "done" : j.noRemind ? "Turned off" : !l ? "No customer on it" : l.dnc ? "Do not contact" : !leadPhone(l) ? "No cell number" : typeof txBlocked === "function" && txBlocked(leadPhone(l)) ? "Texts to them are off" : "";
-      return AP.remList(kind, start).map(([k, at]) => ({ e, l, start, at, k, kind, no: no0 || (!AP.remOk(at) ? "Too late at night" : ""), body: l ? AP.remText(rem[k], { first: AP.first(l), start, at, sender: AP.sender(j, sendersOf(settings())) }) : "" })); })
+      // made or moved the day before: nothing at 6 PM (once the texting script has the code that skips it), said on its line
+      const booked = remSkipReady() ? wallOf(j.movedAt || j.createdAt || "").slice(0, 10) : "", late = AP.remLate(start, booked) && (kind === "job" || AP.mins(start) < 600);
+      return (late && !no0 ? [{ e, l, start, at: AP.addDay(start.slice(0, 10), -1) + "T18:00", k: "eve", kind, no: j.movedAt ? "moved the day before" : "booked the day before", body: "" }] : [])
+        .concat(AP.remList(kind, start, booked).map(([k, at]) => ({ e, l, start, at, k, kind, no: no0 || (!AP.remOk(at) ? "Too late at night" : ""), body: l ? AP.remText(rem[k], { first: AP.first(l), start, at, sender: AP.sender(j, sendersOf(settings())) }) : "" }))); })
     .filter(x => x.no !== "done" && x.at > now && x.start > now).sort((a, b) => a.at.localeCompare(b.at));
 }
 function rcPlanned(rc) {
@@ -10765,7 +10778,7 @@ function autoHTML(st) {
   // one line for each booking, with its texts on it (a job has two: the evening before and the heads-up), so a customer
   // shows once (elias, 2026-11-04: Jerry Collins was listed twice)
   const books = []; rp.forEach(x => { const b = books.find(y => y.e.id === x.e.id); if (b) b.xs.push(x); else books.push({ e: x.e, l: x.l, kind: x.kind, start: x.start, xs: [x] }); });
-  const remOne = (x) => x.no ? `${x.no}: no ${x.k === "jobHead" ? "heads-up" : "reminder"}` : `${x.k === "jobHead" ? "Heads-up" : "Reminder"} ${atText(x.at)}`;
+  const remOne = (x) => x.k === "eve" ? `Nothing at 6 PM (${x.no})` : x.no ? `${x.no}: no ${x.k === "jobHead" ? "heads-up" : "reminder"}` : `${x.k === "jobHead" ? "Heads-up" : "Reminder"} ${atText(x.at)}`;
   const remSub = (b) => b.xs.length > 1 && b.xs.every(x => x.no && x.no === b.xs[0].no) ? `${b.xs[0].no}: no reminders` : b.xs.map(remOne).join(" · ");
   const remRows = books.slice(0, lim).map(b => `<div class="item static flow"><div class="main-col"><span class="t">${esc(b.l ? leadName(b.l) : b.e.title)} · ${b.kind === "visit" ? "Estimate" : "Job"} ${esc(atText(b.start))}</span><span class="s">${esc(remSub(b))}</span></div>${canEditBlast() && byJob(b.e.id) ? `<button class="btn sm ghost" data-act="rem-skip" data-id="${esc(b.e.id)}">${byJob(b.e.id).noRemind ? "Send it" : "Don't send"}</button>` : ""}</div>`).join("");
   const rcRows = rcp.up.slice(0, lim).map(x => `<div class="item static flow"><div class="main-col"><span class="t">${esc(leadName(x.l))} · ${esc(fmtD(x.due, { weekday: "short", month: "short", day: "numeric", year: x.due.slice(0, 4) !== today().slice(0, 4) ? "numeric" : undefined }))} at 10 AM</span><span class="s">${esc(x.j.service || "Job")} paid ${esc(fmtD(String(x.j.paidDate || x.j.start).slice(0, 10)))} · ${esc(RC_G.find(g => g[0] === AP.rcGroup(x.j.service, rc))[1].split(":")[0])}, ${AP.rcMonths(x.j, rc)} months</span></div></div>`).join("");
@@ -10773,7 +10786,7 @@ function autoHTML(st) {
   const prev = (s) => `<div class="tm-msgs short"><div class="tm-b out"><div class="tm-txt">${esc(s)}</div></div></div>`;
   return `<section class="panel" id="auto-top">${autoTopHTML()}</section>
   <section class="panel"><div class="panel-h"><h2>Appointment reminders</h2></div>
-    <p class="note">For every estimate and job on your calendar with a customer who has a cell number. Jobs get two: one at 6 PM the evening before, and a heads-up the day of, 1 hour before a job that starts before 10 AM and 2 hours before a later one (never before 8 AM). Estimates get one, 2 hours before; if it starts before 10 AM, at 6 PM the evening before instead. If you move it in Google Calendar, the reminders move with it. Canceled ones get none. {first} is their first name, {time} the time it starts (like 8:30 AM), and {day} says “today” or “tomorrow” by itself, to match when the text goes out.</p>
+    <p class="note">For every estimate and job on your calendar with a customer who has a cell number. Jobs get two: one at 6 PM the evening before, and a heads-up the day of, 1 hour before a job that starts before 10 AM and 2 hours before a later one (never before 8 AM). Estimates get one, 2 hours before; if it starts before 10 AM, at 6 PM the evening before instead. A booking you make the day before gets nothing at 6 PM, only the one the morning of (a morning estimate gets its reminder 1 hour before instead). If you move it in Google Calendar, the reminders move with it. Canceled ones get none. {first} is their first name, {time} the time it starts (like 8:30 AM), and {day} says “today” or “tomorrow” by itself, to match when the text goes out.</p>
     ${[["job", "Jobs: the evening before"], ["jobHead", "Jobs: heads-up the day of"], ["visit", "Estimates"]].map(([k, t]) => `<div class="tpl" data-rem="${k}"><b>${t}</b><textarea data-rk="body" rows="3" aria-label="${esc(t)} reminder">${esc(rem[k])}</textarea>${warn(rem[k], ["{first}", "{sender}", "{day}", "{time}", "{when}", "{greeting}"])}</div>`).join("")}
     <div class="sub-h">{sender}: who the reminder is from</div>
     <p class="note">Elias or Tarik: whichever of you is on the job's crew (both: whoever booked it), or whoever booked the estimate. Anything else, like a job only AL is on, and bookings made before this say Elias.</p>
@@ -10882,7 +10895,13 @@ async function autoSave(k, on) {
 // typed from my.quo.com/?handlerUrl=sms:<number>?body=<message> (its own handler for sms: links; tried on his Quo, nothing
 // sent). So on a computer Send invoice opens that in a new tab and copies the picture: Ctrl+V (or Cmd+V), then Enter.
 // Nothing is sent from the CRM anymore (the message going out first, then Open Quo, is gone).
+// Nov 13 (elias): "right now estimates don't send through Quo, which is an issue. I want it to be able to send through
+// Quo." So an estimate has Text estimate, the same box: Send estimate opens Quo with the message typed and the picture
+// copied, and he pastes and sends there. The CRM sends nothing. (An estimate never had a link, and gets none.)
 const TI_MAX = 900000; // a Firestore document holds 1 MB
+// "invoice" or "estimate": what the box is for
+const tiW = (q) => isInvoice(q || (TI && TI.q) || QD) ? "invoice" : "estimate";
+const tiCap = (q) => { const w = tiW(q); return w[0].toUpperCase() + w.slice(1); };
 let TI = null; // the text box: { q (the editor copy it's for), qid, ready, err, body, sig, file (the picture), url (to show it) }
 // keys of links from before (none are made now), pictures being made, deleted invoices, and pictures put up for Quo
 const tiKeys = {}, tiBusy = {}, tiGone = new Set(), tiPicKeys = {};
@@ -10908,9 +10927,10 @@ function tiSame(was, q) {
   const l = leadById(q.leadId);
   return !!l && [l.name, l.company].some(n => n && "~" + tiNorm(n) === was);
 }
-const TI_CHANGED = "The invoice changed. Tap Text invoice again to text the new one.";
+const tiChanged = (q) => `The ${tiW(q)} changed. Tap Text ${tiW(q)} again to text the new one.`;
 function tiBody(q, l) {
   const first = (l && String(l.name || "").trim().split(/\s+/)[0]) || "there", tot = money(quoteTotals(q).total, true);
+  if (!isInvoice(q)) return `Hi ${first}, this is ${BUSINESS.owner} with ${BUSINESS.name}. Thank you for the opportunity! Here's your estimate for ${tot}. Let me know if you have any questions, and just reply here when you're ready to get on the schedule.`;
   return `Hi ${first}, this is ${BUSINESS.owner} with ${BUSINESS.name}. Thank you for your business! Here's your ${q.status === "paid" ? "paid invoice" : "invoice"} for ${tot}:`;
 }
 // a picture of the invoice small enough for a picture text: carriers turn down big ones (elias's first two came back
@@ -10992,22 +11012,22 @@ function tiGoHTML(phone) {
   if (bl) return `<p class="note">${esc(bl)} Don't text them from your phone either.</p>`;
   if (!tiTouch()) {
     const cp = (main) => `<button class="btn${main ? " primary" : ""}" data-act="ti-copy">Copy picture</button><button class="btn" data-act="ti-dl">Download picture</button>`;
-    return `<a class="btn primary" id="ti-web" href="${esc(tiQuoNew(to))}" target="_blank" rel="noopener">Send invoice</a>${cp()}`;
+    return `<a class="btn primary" id="ti-web" href="${esc(tiQuoNew(to))}" target="_blank" rel="noopener">Send ${tiW()}</a>${cp()}`;
   }
   const p = tiPicState(), share = tiCanShare() ? `<button class="btn" data-act="ti-share">Share picture</button>` : "";
   if (p === "wait") return `<button class="btn primary" id="ti-wait" disabled>Getting the picture ready…</button>${share}`;
-  return `<a class="btn primary" id="ti-quo" href="${esc(tiQuoLink(to))}">Send invoice</a>${share}`;
+  return `<a class="btn primary" id="ti-quo" href="${esc(tiQuoLink(to))}">Send ${tiW()}</a>${share}`;
 }
 // what the buttons do, as things stand
 function tiHow() {
   if (!tiTouch()) {
     const mac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || "") ? "⌘V" : "Ctrl+V";
-    return `Send invoice opens Quo in a new tab with this message typed to their number, and copies the picture. Click in the message box, press ${mac} to add the picture, then Enter.`;
+    return `Send ${tiW()} opens Quo in a new tab with this message typed to their number, and copies the picture. Click in the message box, press ${mac} to add the picture, then Enter.`;
   }
   const p = tiPicState(), more = tiCanShare() ? " Share picture sends it another way (Messages, or Save Image to your photos)." : "";
   if (p === "wait") return "Getting the picture ready for Quo. It takes up to a minute.";
-  if (p === "ready") return "Send invoice opens Quo with this message and the picture attached. Tap Send there. If the picture isn't on it, hold your finger on the message box, tap Paste, then Send.";
-  return `${TI && TI.picErr && TI.picErr !== "late" ? `Couldn't attach the picture for you (${TI.picErr}). ` : TI && TI.picErr ? "The picture wasn't ready in time. " : ""}Send invoice copies the picture and opens Quo with this message to their number. Then hold your finger on the message box, tap Paste to add the picture, and tap Send.${more}`;
+  if (p === "ready") return `Send ${tiW()} opens Quo with this message and the picture attached. Tap Send there. If the picture isn't on it, hold your finger on the message box, tap Paste, then Send.`;
+  return `${TI && TI.picErr && TI.picErr !== "late" ? `Couldn't attach the picture for you (${TI.picErr}). ` : TI && TI.picErr ? "The picture wasn't ready in time. " : ""}Send ${tiW()} copies the picture and opens Quo with this message to their number. Then hold your finger on the message box, tap Paste to add the picture, and tap Send.${more}`;
 }
 function tiPaint() {
   if (!TI || !QD || TI.q !== QD) return;
@@ -11018,18 +11038,18 @@ function tiPaint() {
 function tiBoxHTML() {
   if (!TI || !QD || TI.q !== QD) return "";
   const l = leadById(QD.leadId), ph = tiPhone(QD, l);
-  const head = `<div class="row spread"><b>Text the invoice</b><button class="btn sm ghost" data-act="ti-close">Cancel</button></div>`;
+  const w = tiW(QD), head = `<div class="row spread"><b>Text the ${w}</b><button class="btn sm ghost" data-act="ti-close">Cancel</button></div>`;
   if (TI.err) return `<div class="panel stack ti-box">${head}<p class="note">${esc(TI.err)}</p></div>`;
-  if (!TI.ready) return `<div class="panel stack ti-box">${head}<p class="note">Making the picture of the invoice…</p></div>`;
+  if (!TI.ready) return `<div class="panel stack ti-box">${head}<p class="note">Making the picture of the ${w}…</p></div>`;
   const where = ph ? (l && !l.phoneBad && leadPhone(l) === ph ? `The number on ${esc(leadName(l))}'s lead.` : "The number in Bill To.") + (l && l.phoneBad ? ` The one on ${esc(leadName(l))}'s lead is marked wrong.` : "")
-    : l && l.phoneBad ? `The number on ${esc(leadName(l))}'s lead is marked wrong. Type the right one.` : `No cell number on ${l ? esc(leadName(l)) + "'s lead" : "this invoice"}. Type theirs.`;
+    : l && l.phoneBad ? `The number on ${esc(leadName(l))}'s lead is marked wrong. Type the right one.` : `No cell number on ${l ? esc(leadName(l)) + "'s lead" : "this " + w}. Type theirs.`;
   const how = tiHow();
   return `<div class="panel stack ti-box">${head}
     <label class="f">To<input type="tel" id="ti-phone" value="${esc(ph ? fmtPhone(ph) : "")}" placeholder="Their cell number"></label>
     <p class="note">${where}</p>
     <label class="f">Message<textarea id="ti-body" rows="4">${esc(TI.body)}</textarea></label>
-    <img id="ti-pic" src="${esc(TI.url)}" alt="Picture of invoice ${esc(QD.number || "")}" style="width:100%;max-width:440px;border:1px solid var(--line);border-radius:8px">
-    <p class="note">The picture of the invoice goes with the message. No link.</p>
+    <img id="ti-pic" src="${esc(TI.url)}" alt="Picture of ${w} ${esc(QD.number || "")}" style="width:100%;max-width:440px;border:1px solid var(--line);border-radius:8px">
+    <p class="note">The picture of the ${w} goes with the message. No link.</p>
     <div class="row" id="ti-go">${tiGoHTML(ph)}</div>
     <p class="note" id="ti-how">${esc(how)}</p>
   </div>`;
@@ -11040,13 +11060,14 @@ function tiSyncStatus() { const live = QD && tiLive(QD); if (live && live.status
 EXTRA_ACTS["ti-open"] = async (t) => {
   readQuoteHeader();
   const l0 = leadById(QD.leadId); if (l0 && l0.dnc) { toast(`${leadName(l0)} is marked do not contact`); return; }
-  if (QD.id && tiBusy[QD.id]) { toast("Still making the picture of the invoice."); return; }
+  if (QD.id && tiBusy[QD.id]) { toast(`Still making the picture of the ${tiW(QD)}.`); return; }
   t.disabled = true;
   try {
     // saved first: a customer typed under Customer is added (or matched), and the picture is of what's saved
     const q = QD;
-    if (!(await saveQuote(true)) || q !== QD || !q.id || !isInvoice(q)) return;
-    if (S.dirty) { toast("The invoice changed while it was saving. Tap Text invoice again."); return; }
+    if (!(await saveQuote(true)) || q !== QD || !q.id) return;
+    const w = tiW(q);
+    if (S.dirty) { toast(`The ${w} changed while it was saving. Tap Text ${w} again.`); return; }
     const qid = q.id, l = leadById(q.leadId);
     if (l && l.dnc) { toast(`${leadName(l)} is marked do not contact`); return; }
     if (tiBusy[qid]) return;
@@ -11055,10 +11076,11 @@ EXTRA_ACTS["ti-open"] = async (t) => {
       tiSyncStatus(); if (TI) tiDrop();
       const snap = tiSnap(q), mine = TI = { q, qid, ready: false, err: "", body: tiBody(snap, l), sig: tiSig(snap), file: null, url: "" }; tiRefresh();
       try {
-        const c = await renderCanvas(1.25, snap), blob = await new Promise((res, rej) => c.toBlob(b => b ? res(b) : rej(new Error("Couldn't make the picture of the invoice. Try again.")), "image/png"));
-        mine.file = new File([blob], `Get It Clean invoice ${snap.number || ""}.png`.replace(/ \.png$/, ".png"), { type: "image/png" }); mine.url = URL.createObjectURL(blob); mine.ready = true;
-      } catch (e) { mine.err = (e && e.message) || "Couldn't make the picture of the invoice. Try again."; }
-      if (TI === mine) { tiRefresh(); if (mine.ready && tiPicOn()) tiPicStart(mine, snap); } else if (mine.url) URL.revokeObjectURL(mine.url);
+        const c = await renderCanvas(1.25, snap), blob = await new Promise((res, rej) => c.toBlob(b => b ? res(b) : rej(new Error(`Couldn't make the picture of the ${w}. Try again.`)), "image/png"));
+        mine.file = new File([blob], `Get It Clean ${w} ${snap.number || ""}.png`.replace(/ \.png$/, ".png"), { type: "image/png" }); mine.url = URL.createObjectURL(blob); mine.ready = true;
+      } catch (e) { mine.err = (e && e.message) || `Couldn't make the picture of the ${w}. Try again.`; }
+      // (the picture put on the web for Quo to attach is an invoice thing; an estimate is always pasted)
+      if (TI === mine) { tiRefresh(); if (mine.ready && tiPicOn() && isInvoice(snap)) tiPicStart(mine, snap); } else if (mine.url) URL.revokeObjectURL(mine.url);
     } finally { delete tiBusy[qid]; }
   } finally { t.disabled = false; }
 };
@@ -11070,11 +11092,11 @@ async function tiSent(msg) {
   const sl = QD === q ? $("#modal #q-status-line") : null; if (sl) sl.textContent = msg;
 }
 // checked before anything leaves: the box is for the invoice as it's saved now
-const tiOk = () => { if (!TI || !TI.ready || !QD || TI.q !== QD) return false; if (tiStale()) { tiDrop(TI_CHANGED); return false; } return true; };
+const tiOk = () => { if (!TI || !TI.ready || !QD || TI.q !== QD) return false; if (tiStale()) { tiDrop(tiChanged(TI.q)); return false; } return true; };
 EXTRA_ACTS["ti-share"] = async () => {
   if (!tiOk()) return;
   try { await navigator.share({ files: [TI.file], text: TI.body }); }
-  catch (er) { if (er && er.name === "AbortError") return; toast("Couldn't open the share sheet. Use Send invoice instead."); return; }
+  catch (er) { if (er && er.name === "AbortError") return; toast(`Couldn't open the share sheet. Use Send ${tiW()} instead.`); return; }
   await tiSent("Shared. If you picked Save Image, attach it to the message in Quo.");
 };
 EXTRA_ACTS["ti-copy"] = async () => {
@@ -11086,9 +11108,11 @@ EXTRA_ACTS["ti-dl"] = async () => { if (!tiOk()) return; await saveFile(TI.file.
 // the editor was closed while the text was saving: marked Sent from what's saved, as the Sent button does
 async function tiMarkSent(qid) {
   const q = S.quotes.find(x => x.id === qid); if (!q || (q.status || "draft") !== "draft") return;
-  const now = new Date().toISOString(); await saveDoc("quotes", qid, { status: "sent", updatedAt: now }, true);
+  const now = new Date().toISOString(), inv = isInvoice(q);
+  // (an estimate marked Sent: follow-ups running from before stop, as the Sent button does)
+  await saveDoc("quotes", qid, Object.assign({ status: "sent", updatedAt: now }, inv ? {} : efuSentPatch(q, now)), true);
   const l = leadById(q.leadId); if (!l) return;
-  const upd = { activity: activity(l, "quote", `Invoice ${q.number} sent`), updatedAt: now }; if (isOutreach(l)) Object.assign(upd, PROMOTE());
+  const upd = { activity: activity(l, "quote", `${inv ? "Invoice" : "Estimate"} ${q.number} sent`), updatedAt: now }; if (isOutreach(l)) Object.assign(upd, PROMOTE());
   await saveDoc("leads", l.id, upd, true);
 }
 // Send invoice on a phone: the picture is copied in the tap itself (a phone only allows it then), and Quo opens as the link's own tap
@@ -11120,7 +11144,7 @@ document.addEventListener("change", (e) => { if (TI && e.target && ["q-lead", "q
 // link), put on someone else the old link stops, and a box opened before the change closes
 async function tiResync(q) {
   if (!q || !q.id || q !== QD || !isInvoice(q) || !STANDALONE || S.dirty) return;
-  if (TI && TI.q === q && tiSig(q) !== TI.sig) tiDrop(TI_CHANGED);
+  if (TI && TI.q === q && tiSig(q) !== TI.sig) tiDrop(tiChanged(q));
   try { const snap = tiSnap(q), key = await tiCurrentKey(snap); if (key) await tiPublish(snap, key); } catch (e) {}
 }
 // a deleted invoice: its link stops working (one being made right now, or saved from another device, included)
@@ -11649,7 +11673,7 @@ Object.assign(EXTRA_ACTS, {
     const mins = Math.max(15, Math.round((new Date(j.end) - new Date(j.start)) / 60000) || 60), e = new Date(start); e.setMinutes(e.getMinutes() + mins);
     const end = `${ymd(e)}T${pad(e.getHours())}:${pad(e.getMinutes())}:00`, what = j.kind === "visit" ? "Estimate" : "Job";
     t.disabled = true;
-    try { await saveDoc("jobs", j.id, { start, end, movedFrom: j.start, updatedAt: new Date().toISOString() }, true); } catch (er) { t.disabled = false; return; }
+    try { const at = new Date().toISOString(); await saveDoc("jobs", j.id, { start, end, movedFrom: j.start, movedAt: at, updatedAt: at }, true); } catch (er) { t.disabled = false; return; }
     let cal = "";
     if (j.eventId) {
       if (calBusiness()) { try { await GC().patchEvent(j.eventId, { start, end }, j.calendarId); cal = " and on your Google Calendar"; } catch (er) { cal = ". Google Calendar didn't take the change, so move it there too"; } }
