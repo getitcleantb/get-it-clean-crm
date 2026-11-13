@@ -7829,7 +7829,7 @@ function ibGo(id, leadId) {
 // with "Reply STOP to opt out." Blasts only send 8 AM to 8 PM Eastern (Florida's limits), and none in vacation mode.
 const TX_ON = () => STANDALONE && !!window.GIC;
 // 3: appointment reminders and re-clean texts (autotext.js). Texting works with 2; only the automatic texts need 3.
-const TEXT_SENDER_VERSION = 22, TEXT_SENDER_MIN = 2;
+const TEXT_SENDER_VERSION = 23, TEXT_SENDER_MIN = 2;
 const TX_STOP_LINE = "Reply STOP to opt out.";
 const TX_MAX = 1500; // characters in one text (Quo takes 1,600)
 S.texts = []; S.textBlasts = []; S.textRuns = {}; S.textSender = null; S.textOut = {}; S.textKey = null; S.textRulesOk = null;
@@ -8320,7 +8320,7 @@ if (TX_ON()) {
       <label class="f">Service<select id="tx-provider" aria-label="Texting service"><option value="quo" selected>Quo (formerly OpenPhone)</option></select></label>
       <p class="note">Texts go out from your Quo business number, and the answers come back into Email & Texts. A small script in your own Google account does the sending once a minute, so it keeps going when the CRM is closed and your Quo key stays off your crew's logins. Quo charges about 1¢ a text on top of your plan. Set it up once, on a computer.</p>
       ${st !== "none" ? `<p class="note">${s.number ? `Texting from <b>${esc(fmtPhone(s.number))}</b>. ` : ""}Last check ${esc(fmtWhen(new Date(s.lastRun)))}.${s.sentToday ? ` ${plural(s.sentToday, "text")} sent today.` : ""}${s.lastError ? ` <span class="pill due">Problem</span> ${esc(s.lastError)}` : ""}</p>${txBackfilling() ? `<p class="note">${esc(txBackfillNote())}</p>` : ""}` : ""}
-      ${st !== "none" && st !== "old" && (+s.version || 0) < TEXT_SENDER_VERSION ? `<div class="banner info">There's new code for the texting script. With it, a booking you make the day before gets no reminder at 6 PM, only the one the morning of. Texting keeps working with the code you have now. To get it, do steps 4 and 5 again with <b>both</b> buttons in step 4 (the code and the settings), and tap Allow if Google asks.</div>` : ""}
+      ${st !== "none" && st !== "old" && (+s.version || 0) < TEXT_SENDER_VERSION ? `<div class="banner info">There's new code for the texting script. With it, a booking you make the day before gets no reminder at 6 PM, only the one the morning of, and a new Facebook lead shows up within a minute all day. Texting keeps working with the code you have now. To get it, do steps 4 and 5 again with <b>both</b> buttons in step 4 (the code and the settings), and tap Allow if Google asks.</div>` : ""}
       ${step(1, `Get your Quo API key${done(k ? k.has : null)}`, `<p class="note">In Quo on a computer, open Settings, then <b>API</b>, then <b>Generate API key</b> (only the Quo account owner or an admin sees it). Name it CRM, copy it, and paste it here. Quo also has to finish your US carrier registration (10DLC) before texts can go out this way. That's under Settings in Quo too.</p>
         <div class="row"><input type="password" id="tx-key" placeholder="${k && k.has ? `Saved key ending in ${esc(k.last4)}` : "Paste the API key"}" autocomplete="off" spellcheck="false" style="flex:1 1 240px" aria-label="Quo API key"><button class="btn primary" data-act="tx-key-save">Save key</button>${k && k.has ? `<button class="btn ghost" data-act="tx-key-del">Remove</button>` : ""}</div>`)}
       ${step(2, `Update your database rules${done(S.textRulesOk)}`, `<p class="note">${S.textRulesOk ? "Your rules are up to date: only you can read the key or start text blasts." : `Open the <a href="https://console.firebase.google.com/project/${esc(pid)}/firestore/rules" target="_blank" rel="noopener">Firebase rules page</a>, select everything there, paste the new rules over it, and tap Publish. The key can't be saved until this is done. (The same rules cover email blasts and the links in invoice texts.)`}</p>${S.textRulesOk ? "" : `<div class="row"><button class="btn" data-act="tx-copy-rules">Copy the rules</button></div>`}`)}
@@ -9562,10 +9562,12 @@ function textSender(PROJECT, VERSION, fsKit, SITE) {
     sh.miss = 0; sh.told = "";
     Object.keys(sh.tabs).forEach(k => { if (!live[k]) delete sh.tabs[k]; });
     if (sh.lost && now.getTime() - (sh.lostAt || 0) > 3 * DAY) { sh.lost = 0; sh.lostAt = 0; }
-    // reading a sheet takes the script's time, and Google gives a script about 90 minutes of it a day: when a read is
-    // slow, or the day has been a busy one, it looks less often
-    const ms = Date.now() - t0, ran = st.runDay === when(now).day ? st.runMs || 0 : 0, busy = ran > 55 * 60000;
-    if (full) { /* more rows are waiting: the next run carries on */ } else if (busy || ms > 6000) CACHE.put("fbshoff", "1", 270); else if (ran > 40 * 60000 || ms > 2500) CACHE.put("fbshoff", "1", 110);
+    // reading a sheet takes the script's time: when a read is slow, or the day has been far busier than usual, it looks
+    // less often. (Version 23: elias's script runs 8 to 10 seconds a minute, about 2 hours a day, and Google's own
+    // record shows no day cut short for it in the week to 2026-11-13, so the old marks of 40 and 55 minutes only made a
+    // new lead land up to 5 minutes late every afternoon, when he wants to call it right away.)
+    const ms = Date.now() - t0, ran = st.runDay === when(now).day ? st.runMs || 0 : 0, busy = ran > 240 * 60000;
+    if (full) { /* more rows are waiting: the next run carries on */ } else if (busy || ms > 8000) CACHE.put("fbshoff", "1", 270); else if (ran > 180 * 60000 || ms > 5000) CACHE.put("fbshoff", "1", 110);
     say(true, "", [!tabs.length ? "The sheet is open, but it has no leads yet. Facebook adds a row for each new lead." : "", busy ? "The texting script has had a busy day, so the sheet is checked every 5 minutes for now." : "",
       sh.lost ? sh.lost + (sh.lost === 1 ? " row" : " rows") + " couldn't be saved. Look in the sheet for any that are missing here." : ""].filter(Boolean).join(" "));
     save();
