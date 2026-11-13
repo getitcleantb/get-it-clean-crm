@@ -1969,6 +1969,8 @@ function schedule() { if (renderQueued) return; renderQueued = true; requestAnim
   if (bankFocus()) { bankHeld = true; return; }
   // price, drip and text forms don't depend on live data, so a data update doesn't redraw them mid-typing
   if (S.view === "settings" && ["prices", "drips", "texts"].includes(S.setTab) && $("#view [data-act='save-settings']")) { renderNav(); return; }
+  // Facebook leads holds its texts while they're typed: only the part that follows the script is redrawn (meta.js)
+  if (S.view === "settings" && S.setTab === "meta" && $("#view #fb-form")) { renderNav(); if (typeof fbTopRefresh === "function") fbTopRefresh(); return; }
   render(); }); }
 const after = {};
 const VIEWS = {};
@@ -2041,7 +2043,7 @@ VIEWS.today = () => {
   return `
   ${pageHead(`${greeting()}, Elias`, new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }), `<button class="btn hide-mob" data-act="new-lead">+ New lead</button><button class="btn primary" data-act="new-quote">+ New quote</button>`)}
   ${noDbBanner()}
-  ${vacIsOn() ? `<div class="banner warn spread"><span>Vacation mode is on: no email blasts, text blasts, reminders, re-clean texts or drip messages are going out. (The HOA follow-up emails Claude sends still go unless you ask Claude to pause them.)</span><button class="btn sm" data-nav="email">Turn it off</button></div>` : ""}
+  ${vacIsOn() ? `<div class="banner warn spread"><span>Vacation mode is on: no email blasts, text blasts, reminders, re-clean texts, Facebook follow-up texts or drip messages are going out. (The HOA follow-up emails Claude sends still go unless you ask Claude to pause them.)</span><button class="btn sm" data-nav="email">Turn it off</button></div>` : ""}
   ${kpiStrip([["Paid this month", money(k.monthRev, k.cts), `${money(k.ytdRev, k.cts)} this year`], ["Jobs accepted", money(k.accV), `${plural(k.acc.length, "job")} waiting for completion`], ["Open quotes", money(k.openQv, k.cts), `${plural(k.openQ.length, "quote")} out`], ["Jobs completed", money(k.owedV, k.cts), `${[k.owedInv.length ? plural(k.owedInv.length, "invoice") : "", k.owedJobs.length || !k.owedInv.length ? plural(k.owedJobs.length, "job") : ""].filter(Boolean).join(", ")} waiting on payment`]])}
   <div class="today-grid">
     <div class="col-stack">
@@ -2413,7 +2415,7 @@ const LEAD_TABS = {
       showFu ? `<span class="pill ${ds === "over" ? "over" : ds === "due" ? "due" : ""}">Follow up ${esc(fmtD(l.nextFollowUp, { weekday: "short", month: "short", day: "numeric" }))}</span>` : "",
       nx ? `<span class="pill s-visit">${nx.kind === "visit" ? "Estimate" : "Job"} ${esc(fmtDT(nx.start))}</span>` : "",
       ef ? `<span class="pill s-selling">Estimate follow-up ${esc(fmtDT(ef.at))}</span>` : "",
-      pl ? `<span class="pill s-paid">Plan: ${esc(planEveryLabel(pl.every).toLowerCase())}</span>` : ""].filter(Boolean).join("");
+      pl ? `<span class="pill s-paid">Plan: ${esc(planEveryLabel(pl.every).toLowerCase())}</span>` : "", typeof fbLeadPill === "function" ? fbLeadPill(l) : ""].filter(Boolean).join("");
     const logged = S.dispoMsg && S.dispoMsg.leadId === l.id ? `<div class="logged" role="status"><span>${esc(S.dispoMsg.text)}</span>${S.lastDispo && S.lastDispo.leadId === l.id && S.lastDispo.stamp === l.updatedAt ? `<button class="btn sm" data-act="undo-dispo">Undo</button>` : ""}</div>` : "";
     return `${leadBanners(l)}
     ${isOutreach(l) ? `<div class="banner info spread"><span>Outreach contact, not a lead yet. They move to Leads when they reply or you schedule an estimate.</span><button class="btn sm" data-act="promote">They replied, move to Leads</button></div>` : ""}
@@ -2452,6 +2454,7 @@ const LEAD_TABS = {
       : `<div class="pad note">${due.length ? "Nothing else coming up for this stage." : "No more drip messages for this stage."}</div>`;
     return `${due.length ? `<section class="panel flush"><div class="panel-h"><h2>Due now</h2><span class="note">Drip for ${esc(STAGE_LABEL[l.stage] || "this stage")}</span></div><div class="list">${due.map(x => dripRow(x, true)).join("")}</div></section>` : ""}
       <section class="panel flush"><div class="panel-h"><h2>Text messages</h2>${l.phone ? `<span class="note">To ${esc(l.phone)}</span>` : ""}</div>${texts}</section>
+      ${typeof fbLeadHTML === "function" ? fbLeadHTML(l) : ""}
       <section class="panel"><div class="panel-h"><h2>Email</h2></div>${email}</section>
       ${mailHistHTML(l)}
       <section class="panel flush"><div class="panel-h"><h2>${due.length ? "Coming up" : "Drip for " + esc(STAGE_LABEL[l.stage] || "this stage")}</h2>${isOutreach(l) ? "" : `<button class="btn sm" data-act="drip-toggle">${l.dripOff ? "Turn drip on" : "Turn drip off"}</button>`}</div>${drip}</section>`;
@@ -4970,7 +4973,7 @@ VIEWS.settings = () => {
   else if (tab === "sources") body = `<section class="panel flush"><div class="panel-h"><h2>Lead sources and connections</h2></div><div class="list">
     <div class="item static"><div class="main-col"><span class="t">Upload a spreadsheet</span><span class="s">CSV or Excel from any source, on the Leads tab</span></div><div class="r"><span class="pill s-scheduled">Ready</span></div></div>
     <div class="item static flow"><div class="main-col"><span class="t">Angi</span><span class="s">${angiRow[1]}</span></div><div class="r"><span class="row"><span class="pill ${angiRow[0][0]}">${angiRow[0][1]}</span>${STANDALONE && window.GIC ? `<button class="btn sm" data-stab="angi">${angiRow[2]}</button>` : ""}</span></div></div>
-    <div class="item static"><div class="main-col"><span class="t">Facebook / Meta lead ads</span><span class="s">New lead form entries come in once the lead forwarding is set up</span></div><div class="r"><span class="pill s-quoted">Setting up</span></div></div>
+    ${typeof fbConnRow === "function" && FB_ON() ? fbConnRow() : `<div class="item static"><div class="main-col"><span class="t">Facebook / Meta lead ads</span><span class="s">New lead form entries come in once the lead forwarding is set up</span></div><div class="r"><span class="pill s-quoted">Setting up</span></div></div>`}
     <div class="item static flow"><div class="main-col"><span class="t">Google Calendar</span><span class="s">${esc(calText)}</span></div><div class="r"><span class="row"><span class="pill ${calPill[0]}">${calPill[1]}</span>${calBtn}</span></div></div>
     <div class="item static flow"><div class="main-col"><span class="t">Gmail</span><span class="s">${esc(mailText)}</span></div><div class="r"><span class="row"><span class="pill ${mailPill[0]}">${mailPill[1]}</span>${mailBtn}</span></div></div>
     ${TX_ON() ? (() => { const st = txState(), p = { none: ["s-lost", "Not set up"], old: ["due", "Needs the new code"], stale: ["due", "Not checking in"], error: ["due", "Has a problem"], ok: ["s-scheduled", "Connected"] }[st]; return `<div class="item static flow"><div class="main-col"><span class="t">Texting (Quo)</span><span class="s">${st === "none" ? "Text from your business number, get texts back, and send text blasts. Paste your Quo API key to connect it." : esc(S.textSender && S.textSender.number ? "Texting from " + fmtPhone(S.textSender.number) : "Texting through Quo")}</span></div><div class="r"><span class="row"><span class="pill ${p[0]}">${p[1]}</span>${window.GIC.me() && window.GIC.me().isOwner ? `<button class="btn sm" data-stab="texting">${st === "none" ? "Set up" : "Open"}</button>` : ""}</span></div></div>`; })() : ""}
@@ -6007,7 +6010,7 @@ function vacRowHTML() {
   if (!BL_ON()) return "";
   const on = vacOn(), own = canEditBlast(), since = on && S.vacation.at ? fmtD(ymd(new Date(S.vacation.at)), { weekday: "short", month: "short", day: "numeric" }) : "";
   const sw = `<button class="switch" role="switch" data-act="vac-toggle" aria-checked="${on}" aria-label="Vacation mode"${own && !vacBusy ? "" : " disabled"}><span class="knob" aria-hidden="true"></span></button>`;
-  return `<div class="vac${on ? " on" : ""}" role="group" aria-label="Vacation mode"><div class="vac-t"><b>Vacation mode${on ? ` is on${since ? ` since ${esc(since)}` : ""}` : ""}</b><span class="note">${on ? "No email blasts, text blasts, drip messages, appointment reminders or re-clean texts go out. Emails and texts you send yourself still go." : "Your off switch for automatic messages: every email blast, text blast, drip message, appointment reminder and re-clean text stops until you turn it off."} ${VAC_HOA}${own ? "" : " Only Elias can change it."}</span></div>${sw}</div>`;
+  return `<div class="vac${on ? " on" : ""}" role="group" aria-label="Vacation mode"><div class="vac-t"><b>Vacation mode${on ? ` is on${since ? ` since ${esc(since)}` : ""}` : ""}</b><span class="note">${on ? "No email blasts, text blasts, drip messages, appointment reminders, re-clean texts or Facebook follow-up texts go out. Emails and texts you send yourself still go." : "Your off switch for automatic messages: every email blast, text blast, drip message, appointment reminder, re-clean text and Facebook follow-up text stops until you turn it off."} ${VAC_HOA}${own ? "" : " Only Elias can change it."}</span></div>${sw}</div>`;
 }
 // whether the database rules that keep blasts owner-only are published (an old set doesn't let anyone read rulesv).
 // Checked again on Settings > Email blasts and before Start, so publishing them shows without a reload.
@@ -7826,7 +7829,7 @@ function ibGo(id, leadId) {
 // with "Reply STOP to opt out." Blasts only send 8 AM to 8 PM Eastern (Florida's limits), and none in vacation mode.
 const TX_ON = () => STANDALONE && !!window.GIC;
 // 3: appointment reminders and re-clean texts (autotext.js). Texting works with 2; only the automatic texts need 3.
-const TEXT_SENDER_VERSION = 18, TEXT_SENDER_MIN = 2;
+const TEXT_SENDER_VERSION = 19, TEXT_SENDER_MIN = 2;
 const TX_STOP_LINE = "Reply STOP to opt out.";
 const TX_MAX = 1500; // characters in one text (Quo takes 1,600)
 S.texts = []; S.textBlasts = []; S.textRuns = {}; S.textSender = null; S.textOut = {}; S.textKey = null; S.textRulesOk = null;
@@ -7856,6 +7859,7 @@ function txOnSettings(docs) {
   S.pastClients = docs.find(d => d.id === "blast-pastclients" && d.kind === "textseq") || null;
   S.pastRun = docs.find(d => d.id === "blast-pastclientsrun" && d.kind === "textseqrun") || null;
   if (typeof payOnSettings === "function") payOnSettings(docs);
+  if (typeof fbOnSettings === "function") fbOnSettings(docs); // Facebook leads (meta.js)
   if (typeof pcRefresh === "function" && typeof PCD !== "undefined" && PCD && $("#modal #pc-acts")) pcRefresh();
   // everyone on it done: finished (the script marks it; this is in case its last run didn't)
   if (canEditBlast() && S.db) S.textBlasts.filter(b => ["running", "paused"].includes(b.status) && !txFinishing.has(b.id) && txRun(b).finishedAt && txNums(b).total && !txNums(b).left).forEach(b => {
@@ -8316,7 +8320,7 @@ if (TX_ON()) {
       <label class="f">Service<select id="tx-provider" aria-label="Texting service"><option value="quo" selected>Quo (formerly OpenPhone)</option></select></label>
       <p class="note">Texts go out from your Quo business number, and the answers come back into Email & Texts. A small script in your own Google account does the sending once a minute, so it keeps going when the CRM is closed and your Quo key stays off your crew's logins. Quo charges about 1¢ a text on top of your plan. Set it up once, on a computer.</p>
       ${st !== "none" ? `<p class="note">${s.number ? `Texting from <b>${esc(fmtPhone(s.number))}</b>. ` : ""}Last check ${esc(fmtWhen(new Date(s.lastRun)))}.${s.sentToday ? ` ${plural(s.sentToday, "text")} sent today.` : ""}${s.lastError ? ` <span class="pill due">Problem</span> ${esc(s.lastError)}` : ""}</p>${txBackfilling() ? `<p class="note">${esc(txBackfillNote())}</p>` : ""}` : ""}
-      ${st !== "none" && st !== "old" && (+s.version || 0) < TEXT_SENDER_VERSION ? `<div class="banner info">There's new code for the texting script. With it, the CRM can keep a customer's card on file and charge it (Settings > Card payments). Texting keeps working with the code you have now. To get it, do steps 4 and 5 again, and allow it if Google asks.</div>` : ""}
+      ${st !== "none" && st !== "old" && (+s.version || 0) < TEXT_SENDER_VERSION ? `<div class="banner info">There's new code for the texting script. With it, new Facebook leads come into the CRM by themselves (Settings > Facebook leads), and the CRM can keep a customer's card on file and charge it (Settings > Card payments). Texting keeps working with the code you have now. To get it, do steps 4 and 5 again, and allow it if Google asks.</div>` : ""}
       ${step(1, `Get your Quo API key${done(k ? k.has : null)}`, `<p class="note">In Quo on a computer, open Settings, then <b>API</b>, then <b>Generate API key</b> (only the Quo account owner or an admin sees it). Name it CRM, copy it, and paste it here. Quo also has to finish your US carrier registration (10DLC) before texts can go out this way. That's under Settings in Quo too.</p>
         <div class="row"><input type="password" id="tx-key" placeholder="${k && k.has ? `Saved key ending in ${esc(k.last4)}` : "Paste the API key"}" autocomplete="off" spellcheck="false" style="flex:1 1 240px" aria-label="Quo API key"><button class="btn primary" data-act="tx-key-save">Save key</button>${k && k.has ? `<button class="btn ghost" data-act="tx-key-del">Remove</button>` : ""}</div>`)}
       ${step(2, `Update your database rules${done(S.textRulesOk)}`, `<p class="note">${S.textRulesOk ? "Your rules are up to date: only you can read the key or start text blasts." : `Open the <a href="https://console.firebase.google.com/project/${esc(pid)}/firestore/rules" target="_blank" rel="noopener">Firebase rules page</a>, select everything there, paste the new rules over it, and tap Publish. The key can't be saved until this is done. (The same rules cover email blasts and the links in invoice texts.)`}</p>${S.textRulesOk ? "" : `<div class="row"><button class="btn" data-act="tx-copy-rules">Copy the rules</button></div>`}`)}
@@ -9317,6 +9321,351 @@ function textSender(PROJECT, VERSION, fsKit, SITE) {
     return r !== true;
   }
 
+  // ---- Facebook leads (meta.js; version 19) ----
+  // New entries on the Facebook Page's lead forms come into the CRM as New leads (leads/meta-<Facebook's id>), each
+  // with a notification. The script asks Facebook's Graph API for them with the key the owner pasted in Settings >
+  // Facebook leads (private/metakey, which no browser reads back): the Page's active forms, then each form's leads
+  // since the last look (a 2-hour overlap, and Facebook's ids keep one from coming in twice). Facebook allows 4,800
+  // calls a day for each lead the Page got in the last 90 days, so it looks every minute once there are a few leads and
+  // less often before that, and it slows down when Facebook's own meter (the usage header) runs high.
+  // Then, only while the owner has the switch on (settings/blast-fbdrip, which only the owner can change), the lead gets
+  // the follow-up texts: the first right away, the rest on their days, 8 AM to 8 PM. They stop for good on any text
+  // back, STOP, a booked estimate or job, a stage past Contacted, do not contact, or when turned off on the lead.
+  // Vacation mode holds them. A lead that was already in the CRM (same phone or email, or a number on any contact)
+  // gets none. An entry is brought in once, ever (private/fbin), so a lead deleted in the CRM stays deleted. A problem
+  // here never stops the texting.
+  const GRAPH = "https://graph.facebook.com/v26.0/", FB_SRC = "Facebook / Meta ads";
+  const FB_STD = /^(full_name|first_name|last_name|email|work_email|phone_number|phone|work_phone_number|street_address|city|state|province|zip_code|post_code|country|company_name|job_title|date_of_birth|dob|gender|marital_status|relationship_status|military_status)$/i;
+  const FB_STAGE = { working: "Working", estimate: "Estimate booked", selling: "Selling", followup: "Follow up", scheduled: "Won / Scheduled", completed: "Done", paid: "Paid", rebook: "Rebook later" };
+  // what's asked for on each lead: everything, then less when Facebook turns the fuller list down (a key that can't see
+  // the ads still gets the leads, without the ad's name, so the texts skip the offer)
+  const FB_SETS = ["id,created_time,ad_id,ad_name,adset_name,campaign_name,form_id,field_data,is_organic,platform", "id,created_time,ad_id,ad_name,adset_name,campaign_name,form_id,field_data", "id,created_time,form_id,field_data"];
+  function graph(tok, path) {
+    let r; try { r = UrlFetchApp.fetch(GRAPH + path, { method: "get", headers: { Authorization: "Bearer " + tok }, muteHttpExceptions: true }); } catch (e) { return { code: 0, json: {}, err: { code: 0, message: String((e && e.message) || e) }, use: 0, wait: 0 }; }
+    let json = {}; try { json = JSON.parse(r.getContentText() || "{}"); } catch (e) {}
+    // Facebook's meter for this Page: how much of the day's allowance is used (%), and minutes until it's open again
+    let use = 0, wait = 0;
+    try { const h = r.getHeaders() || {}, k = Object.keys(h).filter(x => x.toLowerCase() === "x-business-use-case-usage")[0], u = k ? JSON.parse(h[k]) : {}; Object.keys(u).forEach(id => [].concat(u[id]).forEach(x => { use = Math.max(use, +x.call_count || 0, +x.total_cputime || 0, +x.total_time || 0); wait = Math.max(wait, +x.estimated_time_to_regain_access || 0); })); } catch (e) {}
+    const code = r.getResponseCode();
+    return { code: code, json: json, err: json.error || (code >= 400 ? { code: code >= 500 ? 2 : -1, message: "error " + code } : null), use: use, wait: wait };
+  }
+  // what went wrong: token (the key is no good), limit (slow down), perm (the key isn't allowed), retry (no answer), other
+  const fbKind = (e) => { const c = e ? +e.code || 0 : -2; return !e ? "" : c === 190 || c === 102 ? "token" : [4, 17, 32, 341, 613, 80001, 80004, 80005].indexOf(c) >= 0 ? "limit" : c === 10 || c === 3 || c === 294 || (c >= 200 && c <= 299) ? "perm" : c === 0 || c === 1 || c === 2 ? "retry" : "other"; };
+  // cut to length without leaving half of an emoji behind (the database turns that down)
+  const fbCut = (t, n) => String(t == null ? "" : t).slice(0, n).replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "");
+  const fbSaid = (e, key) => String((e && (e.error_user_msg || e.message)) || "").split(key || "\u0000").join("(key)").replace(/EAA[A-Za-z0-9_\-]{20,}/g, "(key)").replace(/\s+/g, " ").slice(0, 200);
+  const fbIso = (s) => { const t = Date.parse(String(s || "").replace(/([+-]\d\d)(\d\d)$/, "$1:$2")); return t ? new Date(t).toISOString() : ""; };
+  const phoneForms = (d) => { const a = d.slice(0, 3), b = d.slice(3, 6), c = d.slice(6), fm = "(" + a + ") " + b + "-" + c; return [d, "1" + d, "+1" + d, a + "-" + b + "-" + c, fm, "(" + a + ")" + b + "-" + c, a + "." + b + "." + c, a + " " + b + " " + c, "+1 " + a + "-" + b + "-" + c, "+1 " + fm, "1-" + a + "-" + b + "-" + c, "+1 " + a + " " + b + " " + c]; };
+  function fbPush(st, title, body, link) {
+    try { const p = F.get("private/push"), devs = p && p.kind === "push" ? Object.keys(p.devices || {}).filter(id => p.devices[id] && p.devices[id].token) : []; if (devs.length && p.leads !== false) pushOut(st, p, devs, title, body, link); } catch (e) {}
+  }
+  // what the CRM shows in Settings > Facebook leads (saved when it changes)
+  function fbStatus(o) {
+    const doc = Object.assign({ kind: "meta", version: VERSION }, o), sig = JSON.stringify(doc);
+    if (prop("fbsig", "") === sig) return;
+    F.put("settings/blast-meta", Object.assign({ at: new Date().toISOString() }, doc)); setProp("fbsig", sig);
+  }
+  // a lead form's answers, by what each question is: the standard ones by Facebook's own names, the form's own
+  // questions by the words in their label (q: the form's question names → labels)
+  function fbFields(fd, q) {
+    const v = { picks: [], extra: [] }, nice = (s) => { s = String(s).replace(/_/g, " ").replace(/\s+/g, " ").trim().replace(/\bhoa\b/gi, "HOA"); return s ? s[0].toUpperCase() + s.slice(1) : ""; };
+    [].concat(fd || []).forEach(f => {
+      if (!f || !f.name) return;
+      const key = String(f.name), k = key.toLowerCase(), vals = [].concat(f.values || []).map(x => String(x == null ? "" : x).trim()).filter(Boolean); if (!vals.length) return;
+      const label = String((q && (q[key] || q[k])) || nice(key)), both = (k.replace(/_/g, " ") + " " + label).toLowerCase(), one = vals.join(", ");
+      if (k === "full_name") v.name = one; else if (k === "first_name") v.fn = one; else if (k === "last_name") v.ln = one;
+      else if (/^(phone_number|phone|work_phone_number)$/.test(k)) v.phone = v.phone || one;
+      else if (/^(email|work_email)$/.test(k)) v.email = v.email || one.toLowerCase();
+      else if (k === "city") v.city = one; else if (k === "state" || k === "province") v.state = one; else if (k === "zip_code" || k === "post_code") v.zip = one;
+      else if (k === "company_name") v.company = one;
+      else if (k === "street_address" || /address/.test(both)) v.address = v.address || one;
+      else if (/clean|service|what do you need/.test(both)) vals.forEach(x => x.split(/\s*[,;|]\s*/).forEach(y => { if (y.trim()) v.picks.push(nice(y)); }));
+      else if (/\bhome\b|rental|business|hoa\b/.test(both)) v.kind = nice(one);
+      else if (/\bwhen\b|how soon|timing|timeline/.test(both)) v.timing = nice(one);
+      else v.extra.push(label.replace(/\s*[?:]\s*$/, "") + ": " + nice(one));
+    });
+    if (!v.name) v.name = [v.fn, v.ln].filter(Boolean).join(" ");
+    if (v.address && !v.city) { const seg = v.address.split(",").map(s => s.trim()).filter(Boolean); if (seg.length > 1 && !/\d/.test(seg[1])) v.city = seg[1]; }
+    return v;
+  }
+  // another lead with this phone or email (a customer already in the CRM, or the same person on a second form)
+  function fbDup(selfId, phone, email) {
+    const d = digits(phone).slice(-10), pick = (list) => list.filter(l => l.id !== selfId)[0] || null;
+    let hit = d.length === 10 && phone ? pick(F.query("leads", [["phone", "IN", phoneForms(d)]], 5, ["name", "company"])) : null;
+    if (!hit && email) hit = pick(F.query("leads", [["email", "EQUAL", email]], 5, ["name", "company"]));
+    return hit;
+  }
+  // one entry → a New lead. true when it's new here, false when it was here already.
+  function fbMake(x, f, at, now, env, st) {
+    const id = "meta-" + x.id, key = "L" + x.id;
+    // one that was brought in before never comes in again, even after it's deleted in the CRM
+    if (env.inn()[key]) return false;
+    const v = fbFields(x.field_data, f.q), e = e164(v.phone), day = when(now).day;
+    const d10 = e ? e.slice(2) : "", phone = e ? "(" + d10.slice(0, 3) + ") " + d10.slice(3, 6) + "-" + d10.slice(6) : String(v.phone || "");
+    const sw = env.sw(), ad = AP.FB.ad(sw && Array.isArray(sw.ads) ? sw.ads : AP.FB.ADS, x.ad_name), kind = String(v.kind || "").toLowerCase();
+    const type = /rental|manage|tenant/.test(kind) ? "Property manager" : /hoa|condo/.test(kind) && !/business/.test(kind) ? "HOA / Condo" : /business|commercial|hoa|store|office/.test(kind) ? "Commercial" : "Residential";
+    const dup = fbDup(id, e, v.email), fresh = now.getTime() - Date.parse(at) < 13 * 3600000, on = !!(sw && sw.kind === "fbdrip" && sw.on === true);
+    // the number is on a contact however it's written there (the CRM keeps that list, and its do not contact numbers)
+    const tb = e && !dup ? env.tb() : {}, known = !!(e && !dup && ((tb.crm || {})[pkey(e)] || (tb.nums || {})[pkey(e)]));
+    // the follow-up texts start only for a lead that's new to the CRM, has a number, and came in while they're on
+    const why = dup ? "already in your CRM" + (dup.name || dup.company ? " as " + String(dup.name || dup.company) : "") : known ? "this number is already on a contact in your CRM" : !e ? "no phone number that can get texts" : !on ? "the follow-up texts were off when this lead came in" : !fresh ? "it came in too long before the CRM saw it" : "";
+    const where = [x.campaign_name, x.adset_name].filter(Boolean).join(" / ");
+    const notes = [v.picks.length ? "Wants: " + v.picks.join(", ") : "", v.kind ? "Property: " + v.kind : "", v.timing ? "When: " + v.timing : ""].concat(v.extra, [x.ad_name ? "Ad: " + x.ad_name + (where ? " (" + where + ")" : "") : x.is_organic ? "Not from an ad (the form was shared or opened from the Page)" : "", f.name ? "Form: " + f.name : "", dup ? "Already in your CRM" + (dup.name || dup.company ? " as " + String(dup.name || dup.company) : "") + ", so no automatic texts went to them." : known ? "This number is already on a contact in your CRM, so no automatic texts went to them." : ""]).filter(Boolean).join("\n");
+    const cut = fbCut;
+    const fb = { id: String(x.id), form: String(f.id), formName: cut(f.name, 60), ad: cut(x.ad_name, 200), adset: cut(x.adset_name, 200), campaign: cut(x.campaign_name, 200), platform: /^ig|insta/i.test(String(x.platform || "")) ? "ig" : "fb", at: at, picks: v.picks.slice(0, 12).map(p => cut(p, 80)), timing: cut(v.timing, 120), service: AP.FB.service(v.picks, ad && ad.service), n: 0, next: why ? "" : wall(now), stop: why, dup: dup ? dup.id : "" };
+    const doc = { name: cut(v.name, 120), company: cut(v.company, 120), phone: cut(phone, 40), email: cut(v.email, 200), address: cut([v.address, v.address && v.state && v.address.indexOf(v.state) < 0 ? v.state : "", v.address && v.zip && v.address.indexOf(v.zip) < 0 ? v.zip : ""].filter(Boolean).join(", "), 300), city: cut(v.city, 80), type: type, source: FB_SRC, stage: "new", stageSince: day, services: AP.FB.services(v.picks, env.main().priceBook), value: 0, nextFollowUp: "", dnc: false, list: "leads", notes: cut(notes, 3000), createdAt: at, updatedAt: now.toISOString(), activity: [{ at: now.toISOString(), type: "created", text: "New Facebook lead" + (x.ad_name ? " from the ad " + cut(x.ad_name, 200) : "") }], fb: fb };
+    const mark = () => {
+      const m = env.inn(); m[key] = Date.parse(at) || now.getTime();
+      try {
+        const ks = Object.keys(m);
+        // past 15,000 the oldest third goes (they're years old by then, and long out of Facebook's own list)
+        if (ks.length > 15000) { ks.sort((a, b) => m[a] - m[b]).slice(0, 5000).forEach(k => { delete m[k]; }); F.put("private/fbin", { kind: "fbin", ids: m }); }
+        else F.patch("private/fbin", { kind: "fbin", ids: { [key]: m[key] } }, ["kind", "ids." + key]);
+      } catch (err) { console.error("Facebook leads, the list of entries brought in: " + err); }
+    };
+    if (!F.create("leads/" + id, doc)) { mark(); return false; }
+    mark();
+    if (fb.next) CACHE.remove("fbnx");
+    // a notification for one that just came in (not for older ones brought in when the key is first pasted)
+    if (now.getTime() - Date.parse(at) < DAY) fbPush(st, "New Facebook lead", [doc.name || phone || "Someone", fb.picks.slice(0, 3).join(", "), doc.city, dup || known ? "already in your CRM" : ""].filter(Boolean).join(" · "), leadLink(id));
+    return true;
+  }
+  function fbLeads(st, now, force) {
+    if (!force && CACHE.get("fboff")) return;
+    let kd = null; if (!force) { try { kd = JSON.parse(CACHE.get("fbkey") || "null"); } catch (e) {} }
+    if (!kd) {
+      // what the page saved about the key is looked at every 2 minutes; the key itself is read only when it's a new one
+      const c = F.get("private/meta") || {}, has = c.has === true, at = String(c.savedAt || "");
+      let k = null; try { k = JSON.parse(CACHE.get("fbk") || "null"); } catch (e) {}
+      if (has && (force || !k || k.keyAt !== at)) { const d = F.get("private/metakey"); k = { key: d ? String(d.key || "").trim() : "", keyAt: at }; CACHE.put("fbk", JSON.stringify(k), 21600); }
+      kd = { key: has && k ? k.key : "", keyAt: has ? at : "", page: String(c.pageId || "").replace(/\D/g, ""), forms: String(c.forms || "").split(/\D+/).filter(Boolean).slice(0, 10) };
+      CACHE.put("fbkey", JSON.stringify(kd), 120);
+    }
+    // no key: nothing to do, and it looks again in 2 minutes (a key that was taken out is forgotten here too)
+    if (!kd.key) { CACHE.put("fboff", "1", 120); CACHE.remove("fbk"); CACHE.remove("fbpt"); if (prop("fbsig", "")) fbStatus({ ok: false, err: "", keyAt: "" }); return; }
+    const fb = prop("fb", {}); let forms = prop("fbforms", []);
+    const was = JSON.stringify([fb, forms]);
+    const say = (ok, err, slow, note) => fbStatus({ ok: ok, err: err || "", note: note || "", slow: !!slow, keyAt: kd.keyAt, page: fb.name || "", forms: forms.filter(f => !f.closing).map(f => f.name || f.id).slice(0, 12), n: fb.n || 0, last: fb.last || "", noAds: (fb.set || 0) >= 2 || (fb.noad || 0) >= 2 });
+    // saved only when something changed; a property holds 9 KB, so the forms' question labels go first if it's ever tight
+    const save = () => {
+      if (JSON.stringify([fb, forms]) === was) return;
+      let fs = forms; for (let i = fs.length - 1; i >= 0 && JSON.stringify(fs).length > 8000; i--) { fs = fs.slice(); fs[i] = Object.assign({}, fs[i], { q: {} }); }
+      setProp("fb", fb); setProp("fbforms", fs);
+    };
+    if (!kd.page) { say(false, "Add your Facebook Page's ID in Settings > Facebook leads."); CACHE.put("fboff", "1", 120); return; }
+    if (fb.keyAt !== kd.keyAt || fb.page !== kd.page) {
+      fb.keyAt = kd.keyAt; fb.page = kd.page; fb.formsAt = 0; fb.miss = 0; fb.told = ""; fb.set = 0; fb.noad = 0; CACHE.remove("fbpt");
+      // the first time: what came in over the week before the key was pasted comes in too
+      if (!fb.since) fb.since = new Date((Date.parse(kd.keyAt) || now.getTime()) - 7 * DAY).toISOString();
+    }
+    // a call that failed: what the CRM says, how long before it tries again, and one notification when leads have stopped
+    const bad = (r) => {
+      const k = fbKind(r.err), said = fbSaid(r.err, kd.key);
+      if (k === "retry") { fb.miss = (fb.miss || 0) + 1; if (fb.miss >= 10) say(false, "Couldn't reach Facebook to check for new leads. It keeps trying."); save(); return; }
+      if (k === "limit") { CACHE.put("fboff", "1", Math.min(60, Math.max(5, Math.ceil(r.wait || 0))) * 60); say(true, "", true); save(); return; }
+      const err = k === "token" ? "Facebook didn't accept the key. It may have expired or been removed. Make a new one and paste it in Settings > Facebook leads."
+        : k === "perm" ? "The key isn't allowed to read this Page's lead forms. Facebook said: " + said : "Facebook said: " + (said || "error " + r.code);
+      // the Page's own key came from the pasted one: it's fetched again on the next try
+      CACHE.remove("fbpt"); CACHE.put("fboff", "1", 300); say(false, err);
+      if (fb.told !== k) { fb.told = k; fbPush(st, "Facebook leads aren't coming in", err, "./?open=fbleads"); }
+      save();
+    };
+    // the Page's own key, when the pasted one belongs to a person or a system user (kept 6 hours)
+    let pt = null; try { pt = JSON.parse(CACHE.get("fbpt") || "null"); } catch (e) {}
+    if (!pt || pt.keyAt !== kd.keyAt || pt.page !== kd.page) {
+      const r = graph(kd.key, kd.page + "?fields=" + encodeURIComponent("name,access_token")), k = fbKind(r.err);
+      if (k === "token" || k === "retry" || k === "limit") return bad(r);
+      // a key that can't read the Page itself may still read its forms: it's tried as it is
+      pt = { keyAt: kd.keyAt, page: kd.page, tok: String((!r.err && r.json.access_token) || kd.key) }; fb.name = String((!r.err && r.json.name) || fb.name || "");
+      CACHE.put("fbpt", JSON.stringify(pt), 21600);
+    }
+    let use = 0;
+    // the forms, looked up again every 10 minutes (and the fuller list of lead details is tried again then)
+    if (force || !fb.formsAt || now.getTime() - fb.formsAt > 10 * 60000) {
+      let list = null;
+      if (kd.forms.length) list = kd.forms.map(id => ({ id: id, name: "", status: "ACTIVE" }));
+      else {
+        // every page of the Page's forms (archived ones are listed too, and a Page's forms only ever add up)
+        list = []; let after = "", full = true;
+        for (let pg = 0; pg < 6; pg++) {
+          const ask = (flds) => graph(pt.tok, kd.page + "/leadgen_forms?limit=50&fields=" + encodeURIComponent(flds) + (after ? "&after=" + encodeURIComponent(after) : ""));
+          let r = ask(full ? "id,name,status,created_time,questions{key,label,type}" : "id,name,status");
+          if (r.err && full && fbKind(r.err) === "other") { full = false; r = ask("id,name,status"); }
+          if (r.err) return bad(r);
+          use = Math.max(use, r.use); [].concat(r.json.data || []).forEach(x => list.push(x));
+          after = String((((r.json.paging || {}).cursors || {}).after) || ""); if (!(r.json.paging || {}).next || !after) break;
+        }
+      }
+      const old = {}; forms.forEach(f => { old[f.id] = f; });
+      const act = list.filter(f => f && /^\d+$/.test(String(f.id || "")) && (!f.status || String(f.status).toUpperCase() === "ACTIVE")).sort((a, b) => String(b.created_time || "").localeCompare(String(a.created_time || "")));
+      fb.more = Math.max(0, act.length - 12);
+      forms = act.slice(0, 12).map(f => {
+        // the form's own questions (Facebook's standard ones are known by their names)
+        const q = {}; [].concat((f.questions && f.questions.data) || f.questions || []).forEach(x => { if (x && x.key && x.label && !FB_STD.test(String(x.key)) && Object.keys(q).length < 8) q[String(x.key).slice(0, 80)] = String(x.label).slice(0, 80); });
+        return { id: String(f.id), name: fbCut(f.name || (old[f.id] || {}).name, 60), q: Object.keys(q).length ? q : (old[f.id] || {}).q || {}, hi: (old[f.id] || {}).hi || "" };
+      });
+      // a form that was being watched and isn't active anymore (archived) gets one last look, for what came in since
+      Object.keys(old).forEach(id => { if (!forms.some(f => f.id === id) && forms.length < 16) forms.push(Object.assign({}, old[id], { closing: true })); });
+      fb.formsAt = now.getTime(); if (fb.set && now.getTime() - (fb.setAt || 0) > DAY) fb.set = 0;
+    }
+    const seenAll = prop("fbseen", {}), seenWas = JSON.stringify(seenAll);
+    // looked up once a run, and only when there's a new entry: the settings, the switch, the CRM's own list of every
+    // number on a contact, and the entries that were brought in before
+    const env = (() => { let m = null, s, tb = null, inn = null; return { main: () => m || (m = F.get("settings/main") || {}), sw: () => s !== undefined ? s : (s = F.get("settings/blast-fbdrip") || null), tb: () => tb || (tb = F.get("settings/blast-textblock") || {}), inn: () => inn || (inn = (F.get("private/fbin") || {}).ids || {}) }; })();
+    let made = 0, fail = null;
+    for (const f of forms) {
+      const seen = seenAll[f.id] && typeof seenAll[f.id] === "object" ? seenAll[f.id] : {};
+      const lo = Math.floor(Math.max(Date.parse(fb.since) || 0, (Date.parse(f.hi || "") || 0) - 2 * 3600000) / 1000), got = [];
+      const q = "&limit=50&filtering=" + encodeURIComponent(JSON.stringify([{ field: "time_created", operator: "GREATER_THAN", value: lo }]));
+      let after = "", r = null;
+      for (let pg = 0; pg < 4; pg++) {
+        const ask = (i) => graph(pt.tok, f.id + "/leads?fields=" + encodeURIComponent(FB_SETS[i]) + q + (after ? "&after=" + encodeURIComponent(after) : ""));
+        r = ask(fb.set || 0);
+        for (let i = (fb.set || 0) + 1; r.err && i < FB_SETS.length && ["perm", "other"].indexOf(fbKind(r.err)) >= 0; i++) { const r2 = ask(i); if (!r2.err) { fb.set = i; fb.setAt = now.getTime(); r = r2; } }
+        if (r.err) break;
+        use = Math.max(use, r.use); [].concat(r.json.data || []).forEach(x => got.push(x));
+        after = String((((r.json.paging || {}).cursors || {}).after) || ""); if (!(r.json.paging || {}).next || !after) break;
+      }
+      if (r && r.err) {
+        const k = fbKind(r.err);
+        // an archived form that can't be read anymore is let go
+        if (f.closing && (k === "perm" || k === "other")) { f.gone = true; continue; }
+        fail = r; if (k === "token" || k === "limit") break; continue;
+      }
+      // what this look returned is what the next one can return again, so those are the ids remembered for this form
+      const back = {}; let stuck = false;
+      got.map(x => ({ x: x, at: fbIso(x && x.created_time) })).filter(o => o.x && /^\d+$/.test(String(o.x.id || "")) && o.at).sort((a, b) => a.at.localeCompare(b.at)).forEach(o => {
+        const id = String(o.x.id);
+        back[id] = Date.parse(o.at);
+        if (!seen[id] && o.at > fb.since) {
+          // a key that can't see the ads gets the entries without them, and nothing else says so
+          if (o.x.ad_name) fb.noad = 0; else if (o.x.is_organic === false) fb.noad = (fb.noad || 0) + 1;
+          // (a look-up that fails here is the database's trouble, not this entry's: the whole look is tried again)
+          env.inn(); env.sw(); env.main();
+          try {
+            if (fbMake(o.x, f, o.at, now, env, st)) { made++; fb.n = (fb.n || 0) + 1; if (o.at > String(fb.last || "")) fb.last = o.at; }
+            if (fb.bad && fb.bad[id]) delete fb.bad[id];
+          } catch (e) {
+            // one entry that can't be saved doesn't hold up the others: it's tried again for half an hour (the form's
+            // place is kept until then, so Facebook keeps handing it back), then left out with a notification
+            console.error("Facebook lead " + id + ": " + e);
+            const b = fb.bad && typeof fb.bad === "object" && Object.keys(fb.bad).length < 30 ? fb.bad : (fb.bad = {}); b[id] = b[id] || now.getTime();
+            if (now.getTime() - b[id] < 30 * 60000) { delete back[id]; stuck = true; }
+            else { delete b[id]; fb.lost = (fb.lost || 0) + 1; fb.lostAt = now.getTime(); fbPush(st, "A Facebook lead couldn't be saved", "One form entry couldn't be brought into the CRM. Look for it in Meta's Leads Center.", "./?open=fbleads"); }
+          }
+        }
+        if (!stuck && o.at > String(f.hi || "")) f.hi = o.at;
+      });
+      seenAll[f.id] = back; if (f.closing) f.gone = true;
+    }
+    forms = forms.filter(f => !f.gone);
+    Object.keys(seenAll).forEach(id => { if (!forms.some(f => f.id === id)) delete seenAll[id]; });
+    // no more than 200 ids in all, the newest (past that, the list of entries brought in still keeps one from coming in twice)
+    const ids = []; Object.keys(seenAll).forEach(fid => Object.keys(seenAll[fid]).forEach(id => ids.push([fid, id, seenAll[fid][id]])));
+    if (ids.length > 200) ids.sort((a, b) => b[2] - a[2]).slice(200).forEach(x => { delete seenAll[x[0]][x[1]]; });
+    if (JSON.stringify(seenAll) !== seenWas) setProp("fbseen", seenAll);
+    if (fail) return bad(fail);
+    fb.miss = 0; fb.told = "";
+    // how often it can look: half of Facebook's daily allowance (4,800 for each lead in the last 90 days, counted here
+    // as the leads brought in), and slower when Facebook's meter runs high
+    // and no more than about 4,500 looks a day in all, whatever the number of forms (Google caps the script's own calls)
+    const live = forms.filter(f => !f.closing);
+    // the note about an entry that couldn't be saved stays up for 3 days
+    if (fb.lost && now.getTime() - (fb.lostAt || 0) > 3 * DAY) { fb.lost = 0; fb.lostAt = 0; }
+    const need = Math.max(1, live.length) * 1440, room = Math.min(4500, 2400 * Math.max(1, fb.n || 0));
+    let every = Math.min(15, Math.max(1, Math.ceil(need / room))); if (use >= 90) every = 15; else if (use >= 75) every = Math.max(every, 5); else if (use >= 50) every = Math.max(every, 2);
+    if (every > 1) CACHE.put("fboff", "1", every * 60 - 30);
+    say(true, "", use >= 75, [!live.length ? "Facebook shows no active lead forms on this Page yet. Leads start coming in within about 10 minutes of a form going live."
+      : fb.more ? "Only the 12 newest active forms are watched. Archive the forms you no longer use in Meta." : live.length > 3 ? "With " + live.length + " active forms it checks every " + every + " minutes. Archive the forms you no longer use in Meta to make it faster." : "",
+      fb.lost ? fb.lost + (fb.lost === 1 ? " form entry" : " form entries") + " couldn't be saved. Look in Meta's Leads Center for any that are missing here." : ""].filter(Boolean).join(" ")); save();
+  }
+  // the open estimate times for {times}, from the business Google Calendar and the CRM's bookings; false when the
+  // calendar can't be read (the text then says "this week")
+  function fbTimes(now) {
+    try {
+      const nowW = wall(now), day = nowW.slice(0, 10), busy = [], ok = (s) => /^\d{4}-\d\d-\d\dT\d\d:\d\d/.test(s);
+      CalendarApp.getDefaultCalendar().getEvents(now, new Date(now.getTime() + 16 * DAY)).forEach(ev => {
+        let free = false; try { free = /TRANSPARENT/i.test(String(ev.getTransparency())); } catch (e) {}
+        if (!free) busy.push([wall(ev.getStartTime()), wall(ev.getEndTime())]);
+      });
+      F.query("jobs", [["start", "GREATER_THAN_OR_EQUAL", day], ["start", "LESS_THAN", AP.addDay(day, 16)]], 300, ["start", "end", "status"]).forEach(j => {
+        const s = String(j.start || "").slice(0, 16), e = String(j.end || "").slice(0, 16); if (j.status === "canceled" || !ok(s)) return;
+        busy.push([s, ok(e) && e > s ? e : s.slice(0, 11) + p2(Math.min(23, +s.slice(11, 13) + 1)) + s.slice(13)]);
+      });
+      return AP.FB.slots(busy, nowW, 3);
+    } catch (e) { return false; }
+  }
+  function fbDrip(cfg, st, now, ctx) {
+    const w = when(now), m = w.h * 60 + w.mi;
+    // a note from an earlier day (the calendar couldn't be read) doesn't stay up
+    if (st.fbErr && st.fbErrDay !== w.day) st.fbErr = "";
+    if (m < 8 * 60 || m >= 20 * 60) return;
+    if (!st.backfilled || held(st, now, cfg) || limited(st, now)) return;
+    // only once this run has read every new text from Quo (an answer or a STOP that isn't in yet can't stop anything)
+    if (!st.lastSync || now.getTime() - Date.parse(st.lastSync) > 5 * 60000) return;
+    // when nothing is due it isn't asked again for a few minutes (a new lead clears this, so its first text goes at once)
+    const nowW = wall(now), nx = CACHE.get("fbnx"); if (nx && nx > nowW) return;
+    const later = (mins) => wall(new Date(now.getTime() + mins * 60000));
+    const due = F.query("leads", [["fb.next", "GREATER_THAN_OR_EQUAL", "2000-01-01"], ["fb.next", "LESS_THAN_OR_EQUAL", nowW]], 30);
+    if (!due.length) {
+      // the soonest one still to come (they come back in order of fb.next), looked at again in 5 minutes at most
+      const soon = F.query("leads", [["fb.next", "GREATER_THAN", nowW]], 1, ["fb"])[0], at = String((soon && soon.fb && soon.fb.next) || "");
+      CACHE.put("fbnx", at && at < later(5) ? at : later(5), 300); return;
+    }
+    const sw = F.get("settings/blast-fbdrip");
+    // switched off: the ones that are due wait, and it looks again in 2 minutes
+    if (!sw || sw.kind !== "fbdrip" || sw.on !== true) { st.fbErr = ""; CACHE.put("fbnx", later(2), 120); return; }
+    // vacation mode (Email & Texts) holds these too
+    const vac = F.get("settings/blast-pause"); if (vac && vac.kind === "pause" && vac.on === true) { CACHE.put("fbnx", later(2), 120); return; }
+    if (st.fbDay !== w.day) { st.fbDay = w.day; st.fbSent = 0; }
+    st.fbErr = "";
+    const note = (s) => { st.fbErr = s; st.fbErrDay = w.day; };
+    let times, n = 0; const slots = () => { if (times === undefined) { times = fbTimes(now); if (times === false) note("The texting script couldn't read your Google Calendar, so a follow-up text said \u201cthis week\u201d instead of open times."); } return times; };
+    for (const l of due) {
+      // a safety net: no more than 80 of these in a day
+      if ((st.fbSent || 0) >= 80) { note("80 Facebook follow-up texts went out today, so the rest wait until tomorrow."); return; }
+      const r = fbOne(cfg, st, now, ctx, sw, l, nowW, slots, note);
+      if (r === false) return;
+      if (r === true && ++n >= 5) return;
+    }
+  }
+  // a first name goes into a text only when it reads like one (the form's name box takes anything a stranger types)
+  const fbFirst = (l) => { const n = AP.first(l); return /^(?:(?:Mr|Mrs|Ms|Miss|Dr)\. )?[A-Za-z\u00C0-\u024F][A-Za-z\u00C0-\u024F'\u2019\-]{0,19}$/.test(n) ? n : ""; };
+  // the next text for one lead: true when it went, false to stop this run, "" when it was skipped or the series ended
+  function fbOne(cfg, st, now, ctx, sw, l0, nowW, slots, note) {
+    const fb = l0.fb || {}, texts = (Array.isArray(sw.texts) && sw.texts.length ? sw.texts : AP.FB.TEXTS).map(s => String(s || "")), N = texts.length, k = (+fb.n || 0) + 1;
+    const set = (o) => F.patch("leads/" + l0.id, { fb: o }, Object.keys(o).map(x => "fb." + x));
+    const stop = (why) => { if (why !== "lead removed") set({ next: "", stop: why, stopAt: now.toISOString() }); return ""; };
+    if (k > N) { set({ next: "", done: true }); return ""; }
+    const chk = blockedWhy({ k: "", phone: "", leadId: l0.id, lookup: true }, ctx);
+    if (typeof chk === "string") return stop(chk);
+    const l = chk.lead, phone = chk.phone, stage = String(l.stage || "new");
+    if (l.fbOff === true) return stop("you turned them off for this lead");
+    if (stage !== "new" && stage !== "contacted") return stop(stage === "lost" ? "marked Lost" : "moved to " + (FB_STAGE[stage] || stage));
+    // they texted back since the form (anything at all): Elias takes it from there
+    if (F.query("texts", [["phone", "EQUAL", phone]], 300).some(t => t.dir === "in" && String(t.at || "") > String(fb.at || ""))) return stop("they texted back");
+    if (F.query("jobs", [["leadId", "EQUAL", l.id]], 30, ["status", "kind"]).some(j => j.status !== "canceled")) return stop("an estimate or job is booked");
+    if (k === 1 && now.getTime() - (Date.parse(fb.at || "") || 0) > 13 * 3600000) return stop("the first text couldn't go out in time");
+    const tpl = texts[k - 1], ad = AP.FB.ad(Array.isArray(sw.ads) ? sw.ads : AP.FB.ADS, fb.ad), offer = String((ad && ad.offer) || "").trim();
+    // a blank text, or one about an offer when the ad has none, is passed over
+    const skip = !tpl.trim() || (/\{offer\}/.test(tpl) && !offer);
+    if (!skip) {
+      const tm = /\{times\}/.test(tpl) ? slots() : null;
+      const body = AP.FB.text(tpl, { first: fbFirst(l), h: when(now).h, source: fb.platform === "ig" ? "Instagram" : "Facebook", service: fb.service || AP.FB.service(fb.picks, ad && ad.service), offer: offer, times: tm ? AP.FB.slotText(tm) : "" });
+      // tried again in half an hour, so one that can't go doesn't hold up the others
+      if (AP.leftover(body)) { note("A Facebook follow-up text didn't go out: its text has " + AP.leftover(body) + " in it (Settings > Facebook leads)."); set({ next: wall(new Date(now.getTime() + 30 * 60000)) }); return ""; }
+      // the checks can take a while: still between 8 AM and 8 PM?
+      const t2 = when(new Date()), m2 = t2.h * 60 + t2.mi; if (m2 < 8 * 60 || m2 >= 20 * 60) return false;
+      const r = autoSend(cfg, st, now, ctx, "texts/fb-" + l.id + "-" + k, phone, body, l, "fbdrip", "Facebook follow-up text " + k + " of " + N + " sent");
+      if (r === false) return false;
+      if (r !== true && r.failed) return stop("a text to this number didn't go through");
+      if (r !== true) st.fbSent = (st.fbSent || 0) + 1;
+    }
+    const hm = fb.hm || AP.FB.hm(nowW), next = AP.FB.nextAt(nowW, k, sw, hm);
+    set(Object.assign({ n: k, last: now.toISOString(), next: next, hm: hm }, fb.first ? {} : { first: now.toISOString() }, next ? {} : { done: true }));
+    return skip ? "" : true;
+  }
+
   // ---- card on file and charging (pay.js) ----
   // Stripe keeps the cards and runs the charges, with the key the owner pasted (private/paykey). This makes the secure
   // page a customer types a card on when the CRM asks for one (a lead's cardAsk), watches for the card, and runs the
@@ -9641,7 +9990,7 @@ function textSender(PROJECT, VERSION, fsKit, SITE) {
     const d = digits(p).replace(/^1(?=\d{10}$)/, ""); if (d.length !== 10) return p;
     const a = d.slice(0, 3), b = d.slice(3, 6), c = d.slice(6), fm = "(" + a + ") " + b + "-" + c;
     try {
-      const l = F.query("leads", [["phone", "IN", [d, "1" + d, "+1" + d, a + "-" + b + "-" + c, fm, "(" + a + ")" + b + "-" + c, a + "." + b + "." + c, a + " " + b + " " + c, "+1 " + a + "-" + b + "-" + c, "+1 " + fm, "1-" + a + "-" + b + "-" + c, "+1 " + a + " " + b + " " + c]]], 5, ["name", "company"])
+      const l = F.query("leads", [["phone", "IN", phoneForms(d)]], 5, ["name", "company"])
         .find(x => x.name || x.company);
       if (l) return String(l.name || l.company);
       // someone on the past clients list
@@ -9680,6 +10029,7 @@ function textSender(PROJECT, VERSION, fsKit, SITE) {
       expireQueued(now);
       try { pics(now); } catch (e) { console.error("Invoice pictures: " + e); }
       try { pay(st, now, force); } catch (e) { console.error("Card payments: " + e); }
+      try { fbLeads(st, now, force); } catch (e) { console.error("Facebook leads: " + e); }
       const cfg = config(force);
       if (!cfg.key) throw new Error("Add your Quo API key in the CRM (Settings > Texting).");
       if (cfg.err) throw new Error(cfg.err);
@@ -9693,6 +10043,7 @@ function textSender(PROJECT, VERSION, fsKit, SITE) {
       pushes(st, now, ctx);
       if (!st.backfilled) { backfill(cfg, st, now, ctx); if (st.backfilled) st.backfilledPn = cfg.pn; }
       pollDelivery(cfg, now);
+      try { fbDrip(cfg, st, now, ctx); } catch (e) { console.error("Facebook follow-up texts: " + e); }
       blasts(cfg, st, now, ctx);
       pastClients(cfg, st, now, ctx);
       autoTexts(cfg, st, now, ctx);
@@ -9709,8 +10060,8 @@ function textSender(PROJECT, VERSION, fsKit, SITE) {
   }
   // what the CRM shows in Settings > Texting: saved when something changed, and every 10 minutes
   function checkIn(st, now, force) {
-    const doc = { kind: "textsender", version: VERSION, scriptId: scriptId(), account: me(), lastRun: now.toISOString(), lastSync: st.lastSync || "", number: st.number || "", phoneNumberId: st.pn || "", lastError: st.lastError || "", autoError: st.autoErr || "", pushError: st.pushErr || "", lastErrorAt: st.lastError ? st.lastErrorAt || now.toISOString() : "", limitUntil: st.limitUntil || "", limitMsg: st.limitUntil ? st.limitMsg || "" : "", vacation: !!st.vacation, sentToday: st.sentToday || 0, day: st.day || "", backfilled: st.backfilled || "", backfillDone: st.bf ? st.bf.done || 0 : 0, backfillTotal: st.bf ? st.bf.total || 0 : 0 };
-    const sig = JSON.stringify([doc.version, doc.number, doc.lastError, doc.autoError, doc.pushError, doc.limitUntil, doc.vacation, doc.sentToday, doc.backfilled, doc.backfillDone]), ci = prop("ci", {});
+    const doc = { kind: "textsender", version: VERSION, scriptId: scriptId(), account: me(), lastRun: now.toISOString(), lastSync: st.lastSync || "", number: st.number || "", phoneNumberId: st.pn || "", lastError: st.lastError || "", autoError: st.autoErr || "", fbError: st.fbErr || "", pushError: st.pushErr || "", lastErrorAt: st.lastError ? st.lastErrorAt || now.toISOString() : "", limitUntil: st.limitUntil || "", limitMsg: st.limitUntil ? st.limitMsg || "" : "", vacation: !!st.vacation, sentToday: st.sentToday || 0, day: st.day || "", backfilled: st.backfilled || "", backfillDone: st.bf ? st.bf.done || 0 : 0, backfillTotal: st.bf ? st.bf.total || 0 : 0 };
+    const sig = JSON.stringify([doc.version, doc.number, doc.lastError, doc.autoError, doc.fbError, doc.pushError, doc.limitUntil, doc.vacation, doc.sentToday, doc.backfilled, doc.backfillDone]), ci = prop("ci", {});
     if (!force && ci.sig === sig && now.getTime() - (ci.at || 0) < 10 * 60000) return;
     F.put("settings/blast-textsender", doc);
     setProp("ci", { sig: sig, at: now.getTime() });
@@ -10144,7 +10495,58 @@ function autoPlan() {
     list.forEach(j => { if (!j || !j.leadId || j.status === "paid" || j.status === "canceled") return; const cur = by.get(j.leadId); if (cur && String(j.start || "").slice(0, 10) >= cur.d) by.delete(j.leadId); });
     const out = new Map(); by.forEach((v, k) => out.set(k, v.j)); return out;
   }
-  return { addDay: addDay, addMonths: addMonths, mins: mins, clock: clock, remAt: remAt, remList: remList, remKey: remKey, remOk: remOk, remWhen: remWhen, remText: remText, sender: sender, SENDERS: SENDERS, first: first, place: place, isWindow: isWindow, rcGroup: rcGroup, rcFill: rcFill, rcBody: rcBody, rcNext: rcNext, rcMonths: rcMonths, rcDue: rcDue, rcText: rcText, rcJobs: rcJobs, leftover: leftover };
+  // ---- Facebook leads (meta.js): what the follow-up texts fill in and when they go ----
+  // {service} from what they picked on the lead form: one pick "driveway cleaning", a few "driveway, pool cage and roof
+  // cleaning"; nothing picked, "Other" or more than 3: the ad's own service words, else "power washing"
+  const FB_SVC = [[/drive|side ?walk|concrete/i, "driveway", "driveway cleaning", /^drive/i, "Driveway"], [/pool|cage|lanai|screen/i, "pool cage", "pool cage cleaning", /pool cage|lanai/i, "Pool cage / lanai"], [/paver/i, "paver", "paver cleaning", /paver(?!.*seal)/i, "Pavers clean"],
+    [/roof/i, "roof", "roof soft wash", /roof/i, "Roof cleaning"], [/window/i, "window", "window cleaning", /window/i, "Window cleaning"], [/hou[sc]e|soft ?wash|siding/i, "house", "house wash", /hou[sc]e/i, "House soft wash"]];
+  const fbPicks = (picks) => { const got = []; [].concat(picks || []).forEach(p => { const x = FB_SVC.find(v => v[0].test(String(p))); if (x && got.indexOf(x) < 0) got.push(x); }); return got; };
+  const fbService = (picks, fallback) => { const got = fbPicks(picks); if (!got.length || got.length > 3) return String(fallback || "").trim() || "power washing"; if (got.length === 1) return got[0][2]; const n = got.map(x => x[1]); return n.slice(0, -1).join(", ") + " and " + n[n.length - 1] + " cleaning"; };
+  // the lead's Services, by the names in the price book (Settings > Prices) when it has them
+  const fbServices = (picks, book) => fbPicks(picks).map(x => { const b = [].concat(book || []).map(v => String((v && v.name) || "")).find(n => x[3].test(n)); return b || x[4]; });
+  // which row of the ads table an ad's name falls under: the first whose words the name starts with, or else the
+  // first whose words are anywhere in it ("Driveway B - driveway and cage" is Driveway B's, not Driveway A's)
+  const fbAd = (ads, name) => { const n = String(name || "").trim().toLowerCase(), rows = [].concat(ads || []).filter(a => a && String(a.match || "").trim()), at = (a) => n.indexOf(String(a.match).trim().toLowerCase()); return (n && (rows.find(a => at(a) === 0) || rows.find(a => at(a) > 0))) || null; };
+  // o: { first, h (the Eastern hour it goes), source (Facebook or Instagram), service, offer, times }. With no real name, "Hi {first}," and
+  // "{greeting} {first}," open with the greeting alone and a text that starts "{first}, " starts without it.
+  const fbText = (body, o) => {
+    const g = greet(o.h == null ? 9 : o.h); let s = String(body || "");
+    if (!o.first) s = hiFirst(s, g).replace(/\{greeting\}[ ,]*\{first\}\s*,?/g, g + ",").replace(/(^|[.!?]\s+|\n)\{first\}\s*,\s*(\w)/g, (m, a, c) => a + c.toUpperCase());
+    return s.replace(/\{greeting\}/g, g).replace(/\{first\}/g, () => o.first || "there").replace(/\{source\}/g, () => o.source || "Facebook").replace(/\{service\}/g, () => o.service || "power washing").replace(/\{offer\}/g, () => o.offer || "").replace(/\{times\}/g, () => o.times || "this week").replace(/[ \t]+$/gm, "").replace(/\s+$/, "");
+  };
+  // open times for an estimate, like the CRM's own {times}: from tomorrow for two weeks, no Sundays, one a day at 9, 11,
+  // 1, 3 or 5, an hour each. busy: [[start, end]] and nowW in Eastern wall time ("YYYY-MM-DDTHH:MM").
+  const fbSlots = (busy, nowW, n) => {
+    const out = [], hours = [9, 11, 13, 15, 17], day0 = String(nowW).slice(0, 10);
+    for (let d = 1; d <= 14 && out.length < n; d++) {
+      const day = addDay(day0, d); if (new Date(Date.UTC(+day.slice(0, 4), +day.slice(5, 7) - 1, +day.slice(8, 10))).getUTCDay() === 0) continue;
+      const k = out.length % hours.length, order = hours.slice(k).concat(hours.slice(0, k));
+      for (const h of order) { const a = day + "T" + p2(h) + ":00", b = day + "T" + p2(h + 1) + ":00"; if (!busy.some(x => x[0] < b && x[1] > a)) { out.push(a); break; } }
+    }
+    return out;
+  };
+  const FB_DOW = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const fbSlotText = (slots) => { const a = slots.map(w => FB_DOW[new Date(Date.UTC(+w.slice(0, 4), +w.slice(5, 7) - 1, +w.slice(8, 10))).getUTCDay()] + " at " + clock(mins(w))); return a.length > 1 ? a.slice(0, -1).join(", ") + " or " + a[a.length - 1] : a[0] || ""; };
+  // the days after the first text that each one goes (the first is always right away)
+  const FB_DAYS = [0, 1, 3, 7, 14, 30, 60, 90];
+  const fbDays = (sw) => { const t = ((sw && sw.texts) || []).length || FB_DAYS.length, d = (sw && Array.isArray(sw.days) ? sw.days : FB_DAYS).map(x => Math.max(0, Math.round(+x || 0))), out = [0]; for (let i = 1; i < t; i++) out.push(Math.max(out[i - 1] + 1, d[i] != null ? d[i] : out[i - 1] + 30)); return out; };
+  // the time of day the later ones go: when the first went, kept between 9 AM and 6 PM
+  const fbHm = (w) => hhmm(Math.min(18 * 60, Math.max(9 * 60, mins(w))));
+  // when the one after the kth goes, counted from the day the kth went (so a late one never bunches up with the next)
+  const fbNextAt = (dayW, k, sw, hm) => { const d = fbDays(sw); return k >= d.length ? "" : addDay(String(dayW).slice(0, 10), Math.max(1, d[k] - d[k - 1])) + "T" + (hm || "10:00"); };
+  const FB_TEXTS = ["{greeting} {first}, this is Elias with Get It Clean Tampa Bay. I just got your request through {source} for the {service}. I would be more than happy to come out and give you a free in-person estimate. What day and time works best for you?",
+    "Hey {first}, not sure if you saw my message, but I'd be happy to schedule a time to take a look and give you a free in-person estimate. I have availability {times}.",
+    "Hi {first}, just a reminder the {offer} deal is still on this month. Want me to swing by for a quick free estimate? Takes about 10 minutes.",
+    "Hi {first}, following up on the {service}. I have a few openings coming up, {times}. Want me to stop by for a free estimate?",
+    "Hey {first}, still thinking about getting the {service} done? No pressure. Reply with any questions and I'll get you a price.",
+    "Hi {first}, it's Elias with Get It Clean Tampa Bay. Checking in on the {service}. If now's not a good time, just let me know when to reach back out.",
+    "{first}, hope all is well. We're booking next month now. Want me to save you a spot for the {service}?",
+    "Hi {first}, last check-in from me. If you ever want that {service} done, just text this number and I'll take care of you. Reply STOP to opt out."];
+  // the ads planned on 2026-11-12, by how their names start
+  const FB_ADS = [{ match: "Roof", service: "roof soft wash", offer: "$100 off your driveway with a roof soft wash" }, { match: "Driveway A", service: "driveway and pool cage cleaning", offer: "$100 off driveway + pool cage + lanai" }, { match: "Driveway B", service: "driveway and pool cage cleaning", offer: "pool cage cleaned free" },
+    { match: "Driveway C", service: "driveway cleaning", offer: "5 windows free with any driveway" }, { match: "Window A", service: "window cleaning", offer: "free screen cleaning" }, { match: "Window B", service: "window cleaning", offer: "10 interior windows free" }];
+  const FB = { service: fbService, services: fbServices, ad: fbAd, text: fbText, slots: fbSlots, slotText: fbSlotText, days: fbDays, hm: fbHm, nextAt: fbNextAt, DAYS: FB_DAYS, TEXTS: FB_TEXTS, ADS: FB_ADS };
+  return { addDay: addDay, addMonths: addMonths, mins: mins, clock: clock, remAt: remAt, remList: remList, remKey: remKey, remOk: remOk, remWhen: remWhen, remText: remText, sender: sender, SENDERS: SENDERS, first: first, place: place, isWindow: isWindow, rcGroup: rcGroup, rcFill: rcFill, rcBody: rcBody, rcNext: rcNext, rcMonths: rcMonths, rcDue: rcDue, rcText: rcText, rcJobs: rcJobs, leftover: leftover, FB: FB };
 }
 const AP = autoPlan();
 S.autoText = null; S.autoAsk = "";
@@ -10640,6 +11042,7 @@ if (TX_ON()) {
       ${script}
       ${pushRow("texts", "New texts", "When a customer texts your business number: who it is and what they wrote.")}
       ${pushRow("deals", "Closed deals", "When a lead moves to Won / Scheduled: who closed it (EL, AL or TL), the customer and the amount.")}
+      ${typeof fbState === "function" && fbState() !== "none" ? pushRow("leads", "New Facebook leads", "When someone fills in the form on one of your Facebook or Instagram ads: who it is, what they want cleaned and the city.") : ""}
       ${typeof payState === "function" && payState() !== "none" ? pushRow("cards", "Card payments", "When a customer saves a card on file, and when a card is charged or doesn't go through.") : ""}
       <h3>This device</h3>${device}
       ${ui.msg ? `<div class="banner ${ui.bad ? "bad" : "good"}" role="status">${esc(ui.msg)}</div>` : ""}${testNote ? `<p class="note" role="status">${testNote}</p>` : ""}
@@ -10662,7 +11065,7 @@ if (TX_ON()) {
     },
     "push-kind": async (t) => {
       const k = t.dataset.k, on = !(S.push && S.push[k] === false);
-      try { await pushSave(x => { x[k] = !on; }); toast(`${k === "texts" ? "New texts" : k === "cards" ? "Card payments" : "Closed deals"}: notifications ${on ? "off" : "on"}`); schedule(); } catch (e) { toast("Couldn't save. Check your internet connection and try again."); }
+      try { await pushSave(x => { x[k] = !on; }); toast(`${k === "texts" ? "New texts" : k === "cards" ? "Card payments" : k === "leads" ? "New Facebook leads" : "Closed deals"}: notifications ${on ? "off" : "on"}`); schedule(); } catch (e) { toast("Couldn't save. Check your internet connection and try again."); }
     },
     "push-test": async () => {
       // the texting script sends it, so it has to have the new code first (a button that does nothing reads as broken)
@@ -10672,12 +11075,13 @@ if (TX_ON()) {
   });
 }
 // Tapping a notification opens the CRM on it: ?open=text&p=+1727... (that conversation), ?open=lead&id=... (that
-// lead) or ?open=notify (Settings > Notifications). The open CRM gets it from sw.js; a new one has it in its address.
+// lead), ?open=notify (Settings > Notifications) or ?open=fbleads (Settings > Facebook leads). The open CRM gets it from sw.js; a new one has it in its address.
 function pushOpen(q) {
   const what = q.get("open"); if (!what) return;
   if (what === "text" && q.get("p")) txOpen(q.get("p"));
   else if (what === "lead" && q.get("id")) { const id = q.get("id"); if (S.dataReady && leadById(id)) openLead(id); else { S.pendingOpen = id; S.pendingOpenTab = null; } }
   else if (what === "notify") { S.view = "settings"; S.setTab = "notify"; closeModal(); render(); }
+  else if (what === "fbleads") { S.view = "settings"; S.setTab = "meta"; closeModal(); render(); }
 }
 if (TX_ON()) {
   try { const q = new URLSearchParams(location.search); if (q.get("open")) { history.replaceState(null, "", location.pathname + location.hash); setTimeout(() => pushOpen(q), 0); } } catch (e) {}
@@ -11403,6 +11807,216 @@ if (PAY_ON()) {
     },
     "job-charge-stop": async (t) => { t.disabled = true; await payUndo(t.dataset.id); payRedraw(); },
   });
+}
+// ---------- FACEBOOK LEADS (elias, 2026-11-12): Meta lead forms into the CRM, then follow-up texts ----------
+// New entries on the Facebook Page's lead forms (Facebook and Instagram ads) come in as New leads, source "Facebook /
+// Meta ads", each with a notification. The texting script (version 19) fetches them from Facebook once a minute or
+// two with the key pasted here, so it works with the CRM closed. Then, only while the owner has the switch on, each
+// new lead gets the follow-up texts from the business number: the first right away, the rest on their days, 8 AM to
+// 8 PM. They stop for good on any text back, STOP, a booked estimate or job, a stage past Contacted (Lost included),
+// do not contact, or when turned off on the lead; vacation mode holds them. Someone already in the CRM gets none.
+//   private/metakey        { kind: "metakey", key, savedAt, by }: the Facebook key. Written here, never read here.
+//   private/meta           { kind: "meta", has, last4, pageId, savedAt, by }: what this page shows about it
+//   settings/blast-meta    the script's answer: { kind: "meta", ok, err, note, slow, keyAt, page, forms, n, last, noAds }
+//   settings/blast-fbdrip  { kind: "fbdrip", on, onAt, texts[], days[], ads[{ match, service, offer }] }: the switch and
+//                          the wording (owner only, like every settings/blast-* document)
+//   leads/meta-<id>.fb     { id, form, formName, ad, adset, campaign, at, picks, timing, service, n, next, first, last,
+//                          hm, stop, stopAt, done, dup }: the script's own record of the series; fbOff (set here) stops it
+// The switch is off until the owner turns it on, and the key and the switch go straight to the database (GIC.restSet),
+// never through this device's queue of unsent writes.
+const FB_ON = () => TX_ON();
+const FB_VERSION = 19, FB_PAGE_ID = "109814877569295";
+S.fbCfg = null; S.fbStatus = null; S.fbDrip = null; S.fbAsk = false;
+const fbOwner = () => canEditBlast();
+function fbOnSettings(docs) {
+  S.fbStatus = docs.find(d => d.id === "blast-meta" && d.kind === "meta") || null;
+  S.fbDrip = docs.find(d => d.id === "blast-fbdrip" && d.kind === "fbdrip") || null;
+  fbTopRefresh();
+}
+let fbUnsub = null;
+function fbListen() {
+  if (fbUnsub || !S.db || !FB_ON() || !fbOwner()) return;
+  fbUnsub = S.db.doc("private/meta").onSnapshot(d => {
+    const x = d.exists ? d.data() || {} : {};
+    S.fbCfg = { has: x.has === true, last4: String(x.last4 || ""), pageId: String(x.pageId || ""), savedAt: x.savedAt || "" };
+    if (S.view === "settings" && S.setTab === "meta" && !$("#view #fb-form")) render(); else fbTopRefresh();
+  }, () => {});
+}
+// where the connection stands: none (no key), old (the script needs the new code), check (the script hasn't tried the
+// key yet), bad (Facebook turned it down), ok
+function fbState() {
+  const s = S.fbStatus, c = S.fbCfg, v = +((S.textSender || {}).version) || 0;
+  if (c ? !c.has : !(s && s.keyAt)) return "none";
+  if (v < FB_VERSION) return "old";
+  if (!s || !s.keyAt || (c && s.keyAt !== c.savedAt)) return "check";
+  return s.ok ? "ok" : "bad";
+}
+const fbDripOn = () => !!(S.fbDrip && S.fbDrip.on === true);
+const fbTexts = () => { const t = S.fbDrip && Array.isArray(S.fbDrip.texts) && S.fbDrip.texts.length ? S.fbDrip.texts : AP.FB.TEXTS; return t.map(s => String(s || "")); };
+const fbAds = () => (S.fbDrip && Array.isArray(S.fbDrip.ads) ? S.fbDrip.ads : AP.FB.ADS).map(a => ({ match: String((a && a.match) || ""), service: String((a && a.service) || ""), offer: String((a && a.offer) || "") }));
+const fbDayList = () => AP.FB.days({ texts: fbTexts(), days: S.fbDrip && S.fbDrip.days });
+const FB_WORDS = ["{greeting}", "{first}", "{source}", "{service}", "{offer}", "{times}"];
+const fbSample = { first: "Sam", h: 10, source: "Facebook", service: "driveway cleaning", offer: "an offer", times: "Monday at 9 AM" };
+// the part of the page that follows the script (the rest holds what's being typed, so it isn't redrawn under it)
+function fbTopHTML() {
+  const st = fbState(), s = S.fbStatus || {}, ts = txState(), c = S.fbCfg || {};
+  const pill = { none: ["s-lost", "Not connected"], old: ["due", "Needs the new code"], check: ["s-quoted", "Checking the key"], bad: ["due", "Has a problem"], ok: ["s-scheduled", "Connected"] }[st];
+  let now = "";
+  if (ts === "none") now = `<div class="banner warn" role="status">Facebook leads come in through your texting script, so texting has to be set up first (Settings > Texting).</div>`;
+  else if (st === "old") now = `<div class="banner warn" role="status">One more step on a computer: your texting script needs its new code before it can fetch Facebook leads. In Settings > Texting, do steps 4 and 5 again. Texting keeps working the same.</div>`;
+  else if (st === "none") now = "";
+  else if (ts === "stale") now = `<div class="banner warn" role="status">Your texting script isn't checking in, so Facebook leads aren't coming in right now (Settings > Texting).</div>`;
+  else if (st === "check") now = `<div class="banner info" role="status">Your script is checking the key with Facebook. That takes a few minutes.</div>`;
+  else if (st === "bad") now = `<div class="banner bad" role="status">${esc(s.err || "Facebook didn't accept the key.")}</div>`;
+  else now = `<div class="banner good" role="status">Connected${s.page ? " to " + esc(s.page) : ""}. ${(s.forms || []).length ? `Watching ${plural(s.forms.length, "lead form")}: ${esc(s.forms.join(", "))}.${s.note ? " " + esc(s.note) : ""}` : esc(s.note || "No lead forms yet.")} ${s.n ? `${plural(s.n, "lead")} brought in so far${s.last ? ", the latest " + esc(fmtWhen(new Date(s.last))) : ""}.` : "No leads yet."}${s.slow ? " Facebook asked the CRM to check less often for now, so a new lead can take a few extra minutes." : ""}${s.noAds ? " The key can't see which ad a lead came from, so texts about an offer are skipped." : ""}</div>`;
+  const fe = (S.textSender || {}).fbError;
+  return `<div class="panel-h"><h2>Facebook leads</h2><span class="pill ${pill[0]}">${pill[1]}</span></div>
+    <p class="note">When someone fills in the form on one of your Facebook or Instagram ads, they show up here as a New lead within a minute or two, with a notification on your phone. Your texting script fetches them, so it works with the CRM closed.</p>
+    ${now}${fe ? `<div class="banner warn" role="status">${esc(fe)}</div>` : ""}
+    <span hidden id="fb-top-state" data-st="${st}" data-has="${c.has ? 1 : 0}"></span>`;
+}
+function fbSwitchHTML() {
+  const on = fbDripOn(), ready = (fbState() === "ok" && txState() !== "none") || on, num = (S.textSender || {}).number;
+  return `<div class="row spread auto-sw"><span><b>Text new Facebook leads by themselves</b> <span class="pill ${on ? "s-scheduled" : "s-lost"}">${on ? "On" : "Off"}</span><br><span class="note">${on ? "Each new Facebook lead gets the texts below from your business number." : ready ? "Off: leads still come in, and nothing is texted to them by itself." : "Off. It can be turned on once Facebook is connected above."}</span></span><button class="switch" role="switch" data-act="fb-sw" aria-checked="${on}" aria-label="Text new Facebook leads by themselves"${ready ? "" : " disabled"}><span class="knob" aria-hidden="true"></span></button></div>
+    ${S.fbAsk && !on ? `<div class="banner warn stack"><span>Turn on the Facebook follow-up texts? Every new Facebook lead will be texted by itself from ${num ? esc(fmtPhone(num)) : "your business number"}, starting with Text 1 within a couple of minutes, with the wording showing below.</span><div class="row"><button class="btn sm primary" data-act="fb-sw-yes">Turn on</button><button class="btn sm ghost" data-act="fb-sw-no">Cancel</button></div></div>` : ""}
+    ${vacIsOn() && on ? `<p class="note">Vacation mode is on, so these are on hold until you turn it off on Email & Texts.</p>` : ""}`;
+}
+function fbTopRefresh() {
+  if (S.view !== "settings" || S.setTab !== "meta") return;
+  const top = $("#fb-top"), sw = $("#fb-sw-box"), was = $("#fb-top-state");
+  // the key step shows Done / Remove by whether a key is saved: that part is redrawn only when it changes
+  if (top && was && (was.dataset.has === "1") !== !!(S.fbCfg && S.fbCfg.has)) { render(); return; }
+  if (top) top.innerHTML = fbTopHTML();
+  if (sw) sw.innerHTML = fbSwitchHTML();
+}
+// what's typed in the form: { texts, days, ads } or { bad: why }
+function fbReadForm() {
+  const texts = [...document.querySelectorAll("#fb-form [data-fbt]")].map(el => el.value.replace(/\s+$/, ""));
+  const days = [0].concat([...document.querySelectorAll("#fb-form [data-fbd]")].map(el => Math.round(Number(el.value))));
+  const ads = [...document.querySelectorAll("#fb-form [data-fba]")].map(row => ({ match: $("[data-k='match']", row).value.trim(), service: $("[data-k='service']", row).value.trim(), offer: $("[data-k='offer']", row).value.trim() })).filter(a => a.match);
+  if (!texts.length || !texts[0].trim()) return { bad: "Text 1 can't be blank: it's the one that goes right away." };
+  for (let i = 0; i < texts.length; i++) {
+    if (texts[i].length > 1000) return { bad: `Text ${i + 1} is too long. Keep it under 1,000 characters.` };
+    const left = AP.leftover(AP.FB.text(texts[i], fbSample)); if (left) return { bad: `Text ${i + 1} has ${left} in it, which can't be filled in. Use ${FB_WORDS.join(", ")}.` };
+  }
+  for (let i = 1; i < days.length; i++) { if (!(days[i] >= 1 && days[i] <= 365)) return { bad: `Text ${i + 1} needs a day between 1 and 365.` }; if (days[i] <= days[i - 1]) return { bad: `Text ${i + 1} has to go on a later day than Text ${i}.` }; }
+  return { texts, days: days.slice(0, texts.length), ads };
+}
+const fbWhenLabel = (d) => d === 1 ? "the next day" : `day ${d}`;
+if (FB_ON()) {
+  ["fb-key", "fb-page"].forEach(id => LIVE_IDS.add(id));
+  SET_TABS.splice(SET_TABS.length - 1, 0, ["meta", "Facebook leads"]);
+  window.addEventListener("gic-signed-in", () => { setTimeout(fbListen, 0); setTimeout(fbListen, 2000); });
+  SET_EXTRA.meta = () => {
+    if (!fbOwner()) return `<section class="panel"><p class="note">Only the owner can set up Facebook leads.</p></section>`;
+    fbListen();
+    const c = S.fbCfg || { has: false, last4: "", pageId: "" }, texts = fbTexts(), days = fbDayList(), ads = fbAds();
+    const step = (n, title, body) => `<div class="tpl"><b>${n}. ${title}</b>${body}</div>`;
+    const done = (ok) => ` <span class="pill ${ok ? "s-scheduled" : ""}">${ok ? "Done" : "Not yet"}</span>`;
+    const adRow = (a) => `<div class="row" data-fba><input type="text" data-k="match" value="${esc(a.match)}" placeholder="How the ad's name starts" style="flex:1 1 150px" aria-label="How the ad's name starts"><input type="text" data-k="service" value="${esc(a.service)}" placeholder="What it's for" style="flex:1 1 170px" aria-label="What the ad is for"><input type="text" data-k="offer" value="${esc(a.offer)}" placeholder="The offer" style="flex:2 1 220px" aria-label="The ad's offer"><button class="btn sm ghost" data-act="fb-ad-rm" aria-label="Remove this ad">Remove</button></div>`;
+    return `<section class="panel" id="fb-form"><div id="fb-top">${fbTopHTML()}</div>
+      ${step(1, `Connect your Facebook Page${done(c.has)}`, `<p class="note">Paste the key for your Facebook Page (a long code that usually starts with EAA). It goes straight to your texting script: this page never shows it again, and your crew's logins can't see it.</p>
+        <label class="f">Facebook Page ID<input type="text" id="fb-page" inputmode="numeric" value="${esc(c.pageId || FB_PAGE_ID)}" style="max-width:260px" autocomplete="off" aria-label="Facebook Page ID"></label>
+        <div class="row"><input type="password" id="fb-key" placeholder="${c.has ? `Saved key ending in ${esc(c.last4)}` : "Paste the key"}" autocomplete="off" spellcheck="false" style="flex:1 1 240px" aria-label="Facebook key"><button class="btn primary" data-act="fb-key-save">Save</button>${c.has ? `<button class="btn ghost" data-act="fb-key-del">Remove</button>` : ""}</div>`)}
+      ${step(2, "Get told about each new lead", `<p class="note">Every new Facebook lead sends a notification to your phone: who it is, what they want cleaned and the city. Turn that on or off in Settings > Notifications. The lead is on Today under New leads, and tapping the notification opens it.</p>`)}
+      ${step(3, "Follow-up texts", `<div id="fb-sw-box">${fbSwitchHTML()}</div>
+        <p class="note">While it's on, a new Facebook lead gets Text 1 within a couple of minutes, then the rest on the days you set, always between 8 AM and 8 PM (a lead at 10 PM gets Text 1 at 8 AM). The texts stop for good as soon as they text back anything at all, text STOP, get an estimate or job booked, are moved past Contacted (Lost included) or marked do not contact, or you tap Stop these texts on the lead. Vacation mode holds them. Only leads that come in while it's on get them, and someone who's already in your CRM gets none.</p>
+        <p class="note">Words that fill themselves in: <b>{greeting}</b> Good morning, afternoon or evening · <b>{first}</b> their first name · <b>{source}</b> Facebook or Instagram, whichever they answered on · <b>{service}</b> what they asked for · <b>{offer}</b> the offer on the ad they answered · <b>{times}</b> your next three open estimate times from Google Calendar. A blank text is skipped, and so is one with {offer} when the ad isn't on the list below.</p>
+        ${texts.map((t, i) => `<div class="tpl"><div class="row spread"><b>Text ${i + 1}</b>${i === 0 ? `<span class="note">Right away</span>` : `<label class="row note">Day <input type="number" data-fbd min="1" max="365" step="1" value="${esc(days[i])}" style="width:84px" aria-label="Day Text ${i + 1} goes"></label>`}</div><textarea data-fbt rows="${t.length > 170 ? 4 : 3}" aria-label="Text ${i + 1}">${esc(t)}</textarea></div>`).join("")}
+        <h3>Your ads and their offers</h3><p class="note">{offer} and, when the form doesn't say, {service} come from the ad the lead answered. Each row covers every ad whose name starts with those words (or, failing that, has them in it).</p>
+        <div id="fb-ads" class="stack">${ads.map(adRow).join("")}</div>
+        <div class="row"><button class="btn sm" data-act="fb-ad-add">Add an ad</button></div>
+        <div class="row"><button class="btn primary" data-act="fb-save">Save texts</button><button class="btn ghost" data-act="fb-reset">Start over from the saved ones</button></div>`)}
+    </section>`;
+  };
+  const fbCfgSave = (o) => GIC.restSet("private", "meta", o, { mask: Object.keys(o) });
+  // the switch and the wording, straight to the database (a tap with no signal fails instead of turning it on later)
+  const fbDripSave = (o) => GIC.restSet("settings", "blast-fbdrip", Object.assign({ kind: "fbdrip", by: S.myId || "", updatedAt: new Date().toISOString() }, o), { mask: ["kind", "by", "updatedAt"].concat(Object.keys(o)) });
+  Object.assign(EXTRA_ACTS, {
+    "fb-key-save": async (t) => {
+      const el = $("#fb-key"), key = String(el ? el.value : "").trim(), pid = String(($("#fb-page") || {}).value || "").replace(/\s/g, "");
+      if (!/^\d{5,20}$/.test(pid)) { toast("Type your Facebook Page's ID: the long number, not the Page's name.", 6000); return; }
+      if (!key && !(S.fbCfg && S.fbCfg.has)) { toast("Paste the key first."); return; }
+      if (key && !/^[A-Za-z0-9_|.\-]{40,1000}$/.test(key)) { toast("That doesn't look like a Facebook key. Copy the whole code, with no spaces.", 6000); return; }
+      t.disabled = true;
+      const savedAt = new Date().toISOString(), by = S.myId || "";
+      try {
+        if (key) {
+          // the key first, in its own document; then what this page shows about it (never the key)
+          await GIC.restSet("private", "metakey", { kind: "metakey", key, savedAt, by });
+          await fbCfgSave({ kind: "meta", has: true, last4: key.slice(-4), pageId: pid, savedAt, by });
+          if (el) el.value = ""; toast("Key saved. Your script checks it with Facebook within a few minutes.", 6000);
+        } else { await fbCfgSave({ kind: "meta", pageId: pid }); toast("Page ID saved."); }
+      }
+      catch (e) { toast("Couldn't save. Check your connection and try again.", 6000); }
+      finally { t.disabled = false; fbTopRefresh(); }
+    },
+    "fb-key-del": async () => {
+      const savedAt = new Date().toISOString(), by = S.myId || "";
+      try { await GIC.restSet("private", "metakey", { kind: "metakey", key: "", savedAt, by }); await fbCfgSave({ kind: "meta", has: false, last4: "", savedAt, by }); toast("Key removed. Facebook leads stop coming in.", 5000); } catch (e) { toast("Couldn't remove the key. Check your connection and try again."); }
+      fbTopRefresh();
+    },
+    "fb-ad-add": () => { const box = $("#fb-ads"); if (box) box.insertAdjacentHTML("beforeend", `<div class="row" data-fba><input type="text" data-k="match" placeholder="How the ad's name starts" style="flex:1 1 150px" aria-label="How the ad's name starts"><input type="text" data-k="service" placeholder="What it's for" style="flex:1 1 170px" aria-label="What the ad is for"><input type="text" data-k="offer" placeholder="The offer" style="flex:2 1 220px" aria-label="The ad's offer"><button class="btn sm ghost" data-act="fb-ad-rm" aria-label="Remove this ad">Remove</button></div>`); },
+    "fb-ad-rm": (t) => { const row = t.closest("[data-fba]"); if (row) row.remove(); },
+    "fb-reset": () => { S.fbAsk = false; render(); },
+    "fb-save": async (t) => {
+      const f = fbReadForm(); if (f.bad) { toast(f.bad, 7000); return; }
+      t.disabled = true;
+      try { await fbDripSave({ texts: f.texts, days: f.days, ads: f.ads }); toast(fbDripOn() ? "Saved. Texts from now on use this wording." : "Saved."); }
+      catch (e) { toast("Couldn't save. Check your connection and try again.", 6000); }
+      finally { t.disabled = false; }
+    },
+    "fb-sw": async () => {
+      if (!fbOwner()) return;
+      if (!fbDripOn()) {
+        if ((+(S.textSender || {}).version || 0) < FB_VERSION) { toast("The texting script needs its new code first (Settings > Texting, steps 4 and 5)."); return; }
+        S.fbAsk = true; fbTopRefresh(); return;
+      }
+      try { await fbDripSave({ on: false, offAt: new Date().toISOString() }); S.fbDrip = Object.assign({}, S.fbDrip || {}, { on: false }); toast("Off. No more Facebook follow-up texts go out by themselves.", 5000); }
+      catch (e) { toast("Couldn't turn it off. Check your connection and try again.", 6000); }
+      fbTopRefresh();
+    },
+    // it sends the wording that's showing: that's saved together with the switch
+    "fb-sw-yes": async (t) => {
+      const f = fbReadForm(); if (f.bad) { toast(f.bad, 7000); return; }
+      t.disabled = true; const now = new Date().toISOString();
+      try { await fbDripSave({ on: true, onAt: now, texts: f.texts, days: f.days, ads: f.ads }); S.fbDrip = Object.assign({ kind: "fbdrip" }, S.fbDrip || {}, { on: true, onAt: now, texts: f.texts, days: f.days, ads: f.ads }); S.fbAsk = false; toast("On. New Facebook leads get the follow-up texts.", 5000); }
+      catch (e) { toast("Couldn't turn it on. Check your connection and try again.", 6000); }
+      fbTopRefresh();
+    },
+    "fb-sw-no": () => { S.fbAsk = false; fbTopRefresh(); },
+    // on a lead: no more of these texts for them (it doesn't come back on)
+    "fb-lead-stop": async (t, l) => {
+      if (!l || !l.fb) return;
+      await saveDoc("leads", l.id, { fbOff: true, activity: activity(l, "note", "Facebook follow-up texts stopped for this lead"), updatedAt: new Date().toISOString() }, true);
+      toast("Stopped. They won't get any more of the Facebook follow-up texts."); refreshLeadModal(true);
+    }
+  });
+}
+// ---- on a lead ----
+// where a Facebook lead's follow-up texts stand, in words
+function fbLeadLine(l) {
+  const fb = l && l.fb; if (!fb) return "";
+  const n = +fb.n || 0, N = fbTexts().length, sent = n ? `${n} of ${N} went out. ` : "";
+  if (fb.done) return `All ${n} follow-up texts went out.`;
+  if (l.fbOff) return `${sent}You stopped them for this lead.`;
+  if (fb.stop) return n ? `${sent}Then they stopped: ${fb.stop}.` : `None went out: ${fb.stop}.`;
+  if (!fb.next) return "";
+  const d = parseD(fb.next), when = d ? fmtDT(fb.next) : "";
+  return `${n ? sent : "None yet. "}${!fbDripOn() ? "The follow-up texts are switched off, so the next one waits until you turn them on (Settings > Facebook leads)." : vacIsOn() ? "Vacation mode is holding the next one." : when ? `Text ${n + 1} goes ${fb.next <= wallNow() ? "within a few minutes" : when}.` : ""}`;
+}
+function fbLeadHTML(l) {
+  if (!FB_ON() || !l || !l.fb) return "";
+  const fb = l.fb, live = !!fb.next && !fb.stop && !fb.done && !l.fbOff, line = fbLeadLine(l);
+  const from = [fb.ad ? "Ad: " + fb.ad : "", fb.formName ? "Form: " + fb.formName : ""].filter(Boolean).join(" · ");
+  return `<section class="panel"><div class="panel-h"><h2>Facebook follow-up texts</h2>${live ? `<button class="btn sm" data-act="fb-lead-stop">Stop these texts</button>` : ""}</div>
+    ${line ? `<p class="note">${esc(line)}</p>` : ""}${from ? `<p class="note">${esc(from)}</p>` : ""}</section>`;
+}
+const fbLeadPill = (l) => { const fb = l && l.fb; if (!FB_ON() || !fb || !fb.next || fb.stop || fb.done || l.fbOff || !fbDripOn()) return ""; return `<span class="pill s-selling">Facebook texts ${+fb.n || 0} of ${fbTexts().length}</span>`; };
+// Settings > Connections
+function fbConnRow() {
+  const st = fbState(), p = { none: ["s-lost", "Not connected"], old: ["due", "Needs the new code"], check: ["s-quoted", "Checking the key"], bad: ["due", "Has a problem"], ok: ["s-scheduled", "Connected"] }[st], s = S.fbStatus || {};
+  return `<div class="item static flow"><div class="main-col"><span class="t">Facebook / Meta lead ads</span><span class="s">${st === "ok" ? `${s.n ? plural(s.n, "lead") + " brought in" : "Connected. New form entries come in as New leads"}${fbDripOn() ? " · follow-up texts on" : ""}` : "New entries on your Facebook and Instagram lead forms come in as New leads"}</span></div><div class="r"><span class="row"><span class="pill ${p[0]}">${p[1]}</span>${fbOwner() ? `<button class="btn sm" data-stab="meta">${st === "none" ? "Set up" : "Open"}</button>` : ""}</span></div></div>`;
 }
 
 // ---------- CSV export ----------
