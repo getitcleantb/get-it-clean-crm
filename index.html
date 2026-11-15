@@ -3117,6 +3117,8 @@ async function saveQuoteNow(silent) {
   EFU_FIELDS.forEach(f => { delete doc[f]; });
   // and its texted link (txinv.js) is saved only when it's made: a copy never shares it
   delete doc.shareId; delete doc.shareAt; delete doc.shareLead; delete doc.shareSig;
+  // nor is its Send invoice tap and what came of it (the review request: txinv.js, and the texting script)
+  ["rvTap", "rvTo", "rvOff", "rvHow", "rvDone", "rvAt"].forEach(f => { delete doc[f]; });
   // so is its status, once it's saved: Sent, Accepted and so on are saved by quoteStatusNow, and an editor opened before
   // another device marked it Accepted doesn't put it back to Sent
   if (!isNew) delete doc.status;
@@ -7829,7 +7831,7 @@ function ibGo(id, leadId) {
 // with "Reply STOP to opt out." Blasts only send 8 AM to 8 PM Eastern (Florida's limits), and none in vacation mode.
 const TX_ON = () => STANDALONE && !!window.GIC;
 // 3: appointment reminders and re-clean texts (autotext.js). Texting works with 2; only the automatic texts need 3.
-const TEXT_SENDER_VERSION = 23, TEXT_SENDER_MIN = 2;
+const TEXT_SENDER_VERSION = 24, TEXT_SENDER_MIN = 2;
 const TX_STOP_LINE = "Reply STOP to opt out.";
 const TX_MAX = 1500; // characters in one text (Quo takes 1,600)
 S.texts = []; S.textBlasts = []; S.textRuns = {}; S.textSender = null; S.textOut = {}; S.textKey = null; S.textRulesOk = null;
@@ -8009,7 +8011,7 @@ async function txQueue(phone, body, extra) {
 const TX_STATUS = { queued: ["Sending…", ""], sending: ["Sending…", ""], sent: ["Sent", ""], delivered: ["Delivered", "good"], failed: ["Didn't go", "bad"], unknown: ["Check in Quo", "warn"], cancelled: ["Canceled", "bad"] };
 function txBubble(t) {
   const [st, cls] = (t.dir === "out" && TX_STATUS[t.status]) || ["", ""], blast = t.campaignId ? S.textBlasts.find(b => b.id === t.campaignId) : null;
-  const meta = [fmtD(t.at, { month: "short", day: "numeric" }) + " " + fmtT(t.at), st, blast ? `Text blast: ${blast.name || "Untitled"}` : t.dir === "out" && t.via === "quo" ? "Sent from Quo" : "", t.media ? "Has a picture (open Quo to see it)" : ""].filter(Boolean).join(" · ");
+  const meta = [fmtD(t.at, { month: "short", day: "numeric" }) + " " + fmtT(t.at), st, blast ? `Text blast: ${blast.name || "Untitled"}` : t.campaignId === "review" ? "Review request" : t.dir === "out" && t.via === "quo" ? "Sent from Quo" : "", t.media ? "Has a picture (open Quo to see it)" : ""].filter(Boolean).join(" · ");
   const retry = t.status === "failed" && !t.retriedAs && !t.campaignId && !txBlocked(e164(t.phone)) && txCanSend() ? ` <button class="btn sm ghost" data-act="tm-retry" data-id="${esc(t.id)}">Send again</button>` : t.retriedAs ? " Sent again below." : "";
   // still waiting for the script: it can be called back
   const cancel = t.dir === "out" && t.status === "queued" && !t.campaignId && (txOwner() || t.by === S.myId) ? `<div class="tm-err"><button class="btn sm ghost" data-act="tm-cancel" data-id="${esc(t.id)}">Don't send it</button></div>` : "";
@@ -8320,7 +8322,7 @@ if (TX_ON()) {
       <label class="f">Service<select id="tx-provider" aria-label="Texting service"><option value="quo" selected>Quo (formerly OpenPhone)</option></select></label>
       <p class="note">Texts go out from your Quo business number, and the answers come back into Email & Texts. A small script in your own Google account does the sending once a minute, so it keeps going when the CRM is closed and your Quo key stays off your crew's logins. Quo charges about 1¢ a text on top of your plan. Set it up once, on a computer.</p>
       ${st !== "none" ? `<p class="note">${s.number ? `Texting from <b>${esc(fmtPhone(s.number))}</b>. ` : ""}Last check ${esc(fmtWhen(new Date(s.lastRun)))}.${s.sentToday ? ` ${plural(s.sentToday, "text")} sent today.` : ""}${s.lastError ? ` <span class="pill due">Problem</span> ${esc(s.lastError)}` : ""}</p>${txBackfilling() ? `<p class="note">${esc(txBackfillNote())}</p>` : ""}` : ""}
-      ${st !== "none" && st !== "old" && (+s.version || 0) < TEXT_SENDER_VERSION ? `<div class="banner info">There's new code for the texting script. With it, a booking you make the day before gets no reminder at 6 PM, only the one the morning of, and a new Facebook lead shows up within a minute all day. Texting keeps working with the code you have now. To get it, do steps 4 and 5 again with <b>both</b> buttons in step 4 (the code and the settings), and tap Allow if Google asks.</div>` : ""}
+      ${st !== "none" && st !== "old" && (+s.version || 0) < TEXT_SENDER_VERSION ? `<div class="banner info">There's new code for the texting script. With it, a customer can get a text asking for a Google review after you text them an invoice (off until you turn it on in Settings > Follow-ups). Texting keeps working with the code you have now. To get it, do steps 4 and 5 again with <b>both</b> buttons in step 4 (the code and the settings), and tap Allow if Google asks.</div>` : ""}
       ${step(1, `Get your Quo API key${done(k ? k.has : null)}`, `<p class="note">In Quo on a computer, open Settings, then <b>API</b>, then <b>Generate API key</b> (only the Quo account owner or an admin sees it). Name it CRM, copy it, and paste it here. Quo also has to finish your US carrier registration (10DLC) before texts can go out this way. That's under Settings in Quo too.</p>
         <div class="row"><input type="password" id="tx-key" placeholder="${k && k.has ? `Saved key ending in ${esc(k.last4)}` : "Paste the API key"}" autocomplete="off" spellcheck="false" style="flex:1 1 240px" aria-label="Quo API key"><button class="btn primary" data-act="tx-key-save">Save key</button>${k && k.has ? `<button class="btn ghost" data-act="tx-key-del">Remove</button>` : ""}</div>`)}
       ${step(2, `Update your database rules${done(S.textRulesOk)}`, `<p class="note">${S.textRulesOk ? "Your rules are up to date: only you can read the key or start text blasts." : `Open the <a href="https://console.firebase.google.com/project/${esc(pid)}/firestore/rules" target="_blank" rel="noopener">Firebase rules page</a>, select everything there, paste the new rules over it, and tap Publish. The key can't be saved until this is done. (The same rules cover email blasts and the links in invoice texts.)`}</p>${S.textRulesOk ? "" : `<div class="row"><button class="btn" data-act="tx-copy-rules">Copy the rules</button></div>`}`)}
@@ -9019,7 +9021,10 @@ function textSender(PROJECT, VERSION, fsKit, SITE) {
     }
     const doc = { kind: "text", phone: p, dir: dir, body: body, at: at, status: dir === "in" ? "received" : statusOf(m.status) || "sent", providerId: m.id, unread: dir === "in" && !first, via: "quo", leadId: "" };
     if (m.media && m.media.length) doc.media = m.media.length;
-    if (F.create("texts/q-" + m.id, doc) && dir === "in" && !first && ctx.news) ctx.news.push({ p: p, body: body, media: doc.media || 0 });
+    const made = F.create("texts/q-" + m.id, doc);
+    if (made && dir === "in" && !first && ctx.news) ctx.news.push({ p: p, body: body, media: doc.media || 0 });
+    // one sent from Quo that could be an invoice (it has a picture, or says so): looked up for the review request
+    if (made && dir === "out" && !first && ctx.rv && (doc.media || /invoice/i.test(body))) ctx.rv.push({ p: p, id: m.id, at: at });
   }
   // STOP and START (and the like) turn texts to the number off and on. Only a text newer than the number's last change
   // counts, so an old STOP seen again doesn't undo a later START, and the owner's own choice in the CRM stands.
@@ -9239,15 +9244,96 @@ function textSender(PROJECT, VERSION, fsKit, SITE) {
   // this run: try again later), or { failed }
   function autoSend(cfg, st, now, ctx, tid, phone, body, l, campaign, note) {
     const at = new Date().toISOString();
-    if (!F.create(tid, { kind: "text", phone: phone, dir: "out", body: body, at: at, status: "sending", claimedAt: at, campaignId: campaign, leadId: l.id, unread: false, by: "auto" })) return true;
+    if (!F.create(tid, { kind: "text", phone: phone, dir: "out", body: body, at: at, status: "sending", claimedAt: at, campaignId: campaign, leadId: l ? l.id : "", unread: false, by: "auto" })) return true;
     const res = sendOne(cfg, phone, body);
     if (res.retry) { F.del(tid); return false; }
     if (res.failed && res.kind !== "recipient") { F.del(tid); stopFor(st, res, now, cfg); return false; }
     F.patch(tid, res.fields);
     if (res.failed && res.optout) markOut(ctx, pkey(phone), { at: now.toISOString(), why: "stop", from: "quo" });
     if (res.ok) st.sentToday = (st.sentToday || 0) + 1;
-    if (!res.failed) { try { F.patch("leads/" + l.id, { activity: [{ at: now.toISOString(), type: "text", text: note }].concat((l.activity || []).slice(0, 199)), lastContact: when(now).day, updatedAt: now.toISOString() }, ["activity", "lastContact", "updatedAt"], l._t); } catch (e) {} }
+    if (!res.failed && l) { try { F.patch("leads/" + l.id, { activity: [{ at: now.toISOString(), type: "text", text: note }].concat((l.activity || []).slice(0, 199)), lastContact: when(now).day, updatedAt: now.toISOString() }, ["activity", "lastContact", "updatedAt"], l._t); } catch (e) {} }
     return { failed: !!res.failed };
+  }
+  // ---- review request after an invoice (version 24; elias, 2026-11-14) ----
+  // "As soon as I send out the invoice to a customer and it actually sends to them ... a message sends to them
+  // requesting a review." He sends the invoice himself in Quo (Send invoice only opens it), so: a text from Quo that
+  // has a picture or says "invoice" (take) is matched with the Send invoice tap saved on an invoice for that number
+  // (quotes: rvTap, rvTo, rvOff, rvHow; a tap at most 2 hours before the text, the box only opened at most 20 minutes). Once Quo says it was delivered, or it's still Sent
+  // with nothing wrong 5 minutes on, the review request goes to the same number: once per number ever (its id is the
+  // number), not when he asked them himself in the last 60 days, never to one that texted STOP or is marked do not
+  // contact, 8 AM to 8 PM (a later one waits for 9 the next morning), and only while its switch is on
+  // (settings/blast-autotext.review). What happened is written back on the invoice (rvDone, rvAt). Nothing is looked up
+  // on a run with no such text waiting. Vacation mode doesn't hold it: he texted them himself a minute before.
+  function rvMark(id, why, now) {
+    for (let i = 0; i < 2; i++) { const q = F.get("quotes/" + id); if (!q) return; if (F.patch("quotes/" + id, { rvDone: why, rvAt: now.toISOString() }, ["rvDone", "rvAt"], q._t)) return; }
+  }
+  function reviewAsks(cfg, st, now, ctx) {
+    const list = (st.rvq || []).concat(ctx.rv || []).slice(-20); delete st.rvq;
+    if (!list.length) return;
+    const MIN = 60000, w = when(now), m = w.h * 60 + w.mi, keep = [], taken = {}, env = {};
+    let sent = 0;
+    for (const c of list) {
+      const age = now.getTime() - Date.parse(c.at);
+      if (!(age >= -5 * MIN && age < 16 * 3600000)) continue;
+      let r = "wait";
+      try { r = sent >= 3 ? "wait" : reviewOne(cfg, st, now, ctx, c, age, m, taken, env); } catch (e) { console.error("Review request: " + e); r = age < 30 * MIN ? "wait" : "drop"; }
+      if (r === "sent") sent++;
+      if (r === "wait") keep.push(c);
+    }
+    if (keep.length) st.rvq = keep;
+  }
+  // "wait" (looked at again next minute), "sent", or anything else: done with this one
+  function reviewOne(cfg, st, now, ctx, c, age, m, taken, env) {
+    const MIN = 60000, k = pkey(c.p);
+    if (!c.q) {
+      // the invoice whose Send invoice was tapped for this number (the newest tap that isn't settled yet)
+      // (the tap is saved from the phone, which may only get it out once the CRM is opened again: looked for every
+      // minute at first, then every 5, for half an hour)
+      if (age >= 3 * MIN && now.getUTCMinutes() % 5) return "wait";
+      const at = Date.parse(c.at), q = F.query("quotes", [["rvTo", "EQUAL", c.p]], 10)
+        .filter(x => x.docType === "INVOICE" && x.rvTap && !x.rvDone && Date.parse(x.rvTap) <= at + 2 * MIN && at - Date.parse(x.rvTap) <= (x.rvHow === "tap" ? 120 : 20) * MIN)
+        .sort((a, b) => String(b.rvTap).localeCompare(String(a.rvTap)))[0];
+      if (!q) return age < 30 * MIN ? "wait" : "drop";
+      c.q = q.id; c.l = q.leadId || "";
+      if (q.rvOff) { rvMark(q.id, "skipped", now); return "drop"; }
+    }
+    // the text and its picture sent one after the other: one request
+    if (taken[c.q]) return "drop"; taken[c.q] = true;
+    if (!env.sw) env.sw = F.get("settings/blast-autotext") || {};
+    if (env.sw.kind !== "autotext" || env.sw.review !== true) { rvMark(c.q, "off", now); return "drop"; }
+    if (!c.ok) {
+      const r = quo(cfg.key, "get", "messages/" + encodeURIComponent(c.id));
+      if (r.code < 200 || r.code >= 300) return age < 30 * MIN ? "wait" : "drop";
+      const s = statusOf((r.json.data || {}).status);
+      // not delivered: no request (the invoice sent again within the 2 hours is looked at afresh)
+      if (s === "failed") return "drop";
+      if (s !== "delivered" && age < 5 * MIN) return "wait";
+      c.ok = true;
+    }
+    if (!st.backfilled || held(st, now, cfg) || limited(st, now)) return "wait";
+    if (m < 8 * 60 || m >= 20 * 60) { c.late = true; return "wait"; }
+    if (c.late && m < 9 * 60) return "wait";
+    const done = (why) => { rvMark(c.q, why, now); return why; };
+    if (isOff(ctx.out()[k])) return done("texted STOP");
+    if (outWhy(ctx.out()[k]) === "review") return done("may have asked to stop");
+    if (ctx.block()[k]) return done(ctx.block()[k] === "bad" ? "wrong number" : "do not contact");
+    const l = c.l ? F.get("leads/" + c.l) : null;
+    if (l && (l.dnc || kylemont(l) || BLOCKED.test(String(l.email || "")))) return done(l.dnc ? "do not contact" : "you contact them yourself");
+    const tid = "texts/rv-" + digits(c.p);
+    if (F.get(tid)) return done("asked before");
+    // asked by hand: a text of his own to them about a review in the last 60 days
+    const since = new Date(now.getTime() - 60 * DAY).toISOString();
+    if (F.query("texts", [["phone", "EQUAL", c.p]], 300, ["dir", "at", "body"]).some(x => x.dir === "out" && String(x.at || "") >= since && /\breview/i.test(String(x.body || "")))) return done("you asked them yourself");
+    if (!env.main) env.main = F.get("settings/main") || {};
+    const rv = env.main.review || {}, link = AP.RV.link(rv.link);
+    if (!link) return done("no review link saved");
+    const body = AP.RV.text(typeof rv.text === "string" ? rv.text : AP.RV.TEXT, { first: l ? AP.first(l) : "", link: link, sent: wall(now) });
+    if (!body.trim() || AP.leftover(body) || body.length > MAX) return done(!body.trim() ? "the text is empty" : AP.leftover(body) ? "the text has " + AP.leftover(body) + " in it" : "the text is too long");
+    const r = autoSend(cfg, st, now, ctx, tid, c.p, body, l, "review", "Review request text sent");
+    if (r === false) return "wait";
+    if (r === true) return done("asked before");
+    if (r.failed) return done("didn't go");
+    rvMark(c.q, "sent", now); return "sent";
   }
   // an estimate 2 hours before (before 10 AM, at 6 PM the evening before); a job at 6 PM the evening before and a heads-up
   // the day of (autoPlan.remList)
@@ -10187,11 +10273,12 @@ function textSender(PROJECT, VERSION, fsKit, SITE) {
       if (held(st, now, cfg)) st.lastError = st.hold.msg; else delete st.hold;
       let out = null, blk = null, tb = null; const tbDoc = () => tb || (tb = F.get("settings/blast-textblock") || {}); const ctx = { out: () => out || (out = ((F.get("settings/blast-textout") || {}).out) || {}), block: () => blk || (blk = tbDoc().nums || {}), crm: () => tbDoc().crm || {} };
       sendQueued(cfg, st, now, ctx);
-      ctx.news = [];
+      ctx.news = []; ctx.rv = [];
       sync(cfg, st, now, ctx);
       pushes(st, now, ctx);
       if (!st.backfilled) { backfill(cfg, st, now, ctx); if (st.backfilled) st.backfilledPn = cfg.pn; }
       pollDelivery(cfg, now);
+      try { reviewAsks(cfg, st, now, ctx); } catch (e) { console.error("Review requests: " + e); }
       try { fbDrip(cfg, st, now, ctx); } catch (e) { console.error("Facebook follow-up texts: " + e); }
       blasts(cfg, st, now, ctx);
       pastClients(cfg, st, now, ctx);
@@ -10560,7 +10647,12 @@ function pcName(phone) {
 //     everything else; a job with several services goes by the soonest. The second 2 weeks later, then one a month,
 //     taking turns through the monthly texts, until they reply, text STOP, book again or are marked do not contact.
 //     Only the ones that come due after it's turned on; each ends with the STOP line.
-// Vacation mode (settings/blast-pause) stops both, like every blast and drip (elias, 2026-10-29: one off switch).
+//   review request (elias, 2026-11-14; texting script version 24): after an invoice is texted with Send invoice and Quo
+//     says the text was delivered, one text asking for a Google review goes to the same number, once per number ever.
+//     The tap is saved on the invoice (rvTap, rvTo, rvOff: txinv.js); the script matches it with the text as Quo sent
+//     it and writes what happened back (rvDone, rvAt). Its switch is settings/blast-autotext.review, off until elias
+//     turns it on; the link and wording are settings/main.review. Vacation mode doesn't hold it (he just texted them).
+// Vacation mode (settings/blast-pause) stops reminders and re-clean texts, like every blast and drip (elias, 2026-10-29).
 // The wording lives with the other messages in settings/main (reminders, reclean2): Settings > Follow-ups.
 
 // what the CRM and the texting script both work out (the script gets a copy of this function's code)
@@ -10711,8 +10803,19 @@ function autoPlan() {
   // the ads planned on 2026-11-12, by how their names start
   const FB_ADS = [{ match: "Roof", service: "roof soft wash", offer: "$100 off your driveway with a roof soft wash" }, { match: "Driveway A", service: "driveway and pool cage cleaning", offer: "$100 off driveway + pool cage + lanai" }, { match: "Driveway B", service: "driveway and pool cage cleaning", offer: "pool cage cleaned free" },
     { match: "Driveway C", service: "driveway cleaning", offer: "5 windows free with any driveway" }, { match: "Window A", service: "window cleaning", offer: "free screen cleaning" }, { match: "Window B", service: "window cleaning", offer: "10 interior windows free" }];
+  // ---- review request after an invoice (elias, 2026-11-14: "As soon as I send out the invoice to a customer and it
+  // actually sends to them ... a message sends to them requesting a review with my Google Business Profile") ----
+  // His own words, with the link last (a phone shows a link's preview when it ends the text).
+  const RV_TEXT = "Whenever you get a moment, would you mind leaving us a quick review? We would really appreciate it. Thank you, and have a great {day}! {link}";
+  // {day}, by when it goes (Eastern wall time): "weekend" Friday to Sunday afternoon, "evening" from 5 PM, else "day"
+  const rvDay = (w) => { const dow = new Date(Date.UTC(+w.slice(0, 4), +w.slice(5, 7) - 1, +w.slice(8, 10))).getUTCDay(), m = mins(w); return dow === 5 || dow === 6 || (dow === 0 && m < 900) ? "weekend" : m >= 1020 ? "evening" : "day"; };
+  // the Google review link as it can go in a text: one https address, nothing else
+  const rvLink = (s) => { const u = String(s || "").trim(); return /^https:\/\/[^\s<>"{}]+\.[^\s<>"{}]+$/i.test(u) ? u : ""; };
+  // o: { first, link, sent (Eastern wall time it goes) }. With no link, {link} is left in, which stops it going.
+  const rvText = (body, o) => (o.first ? String(body || "") : hiFirst(String(body || ""), greet(mins(o.sent) / 60))).replace(/\{first\}/g, () => o.first || "there").replace(/\{day\}/g, () => rvDay(o.sent)).replace(/\{link\}/g, () => o.link || "{link}");
+  const RV = { TEXT: RV_TEXT, day: rvDay, link: rvLink, text: rvText };
   const FB = { service: fbService, services: fbServices, ad: fbAd, text: fbText, slots: fbSlots, slotText: fbSlotText, days: fbDays, hm: fbHm, nextAt: fbNextAt, wait: fbWait, noReach: fbNoReach, WAIT: FB_WAIT, DAYS: FB_DAYS, TEXTS: FB_TEXTS, ADS: FB_ADS };
-  return { addDay: addDay, addMonths: addMonths, mins: mins, clock: clock, remAt: remAt, remLate: remLate, remList: remList, remKey: remKey, remOk: remOk, remWhen: remWhen, remText: remText, sender: sender, SENDERS: SENDERS, first: first, place: place, isWindow: isWindow, rcGroup: rcGroup, rcFill: rcFill, rcBody: rcBody, rcNext: rcNext, rcMonths: rcMonths, rcDue: rcDue, rcText: rcText, rcJobs: rcJobs, leftover: leftover, FB: FB };
+  return { addDay: addDay, addMonths: addMonths, mins: mins, clock: clock, remAt: remAt, remLate: remLate, remList: remList, remKey: remKey, remOk: remOk, remWhen: remWhen, remText: remText, sender: sender, SENDERS: SENDERS, first: first, place: place, isWindow: isWindow, rcGroup: rcGroup, rcFill: rcFill, rcBody: rcBody, rcNext: rcNext, rcMonths: rcMonths, rcDue: rcDue, rcText: rcText, rcJobs: rcJobs, leftover: leftover, FB: FB, RV: RV };
 }
 const AP = autoPlan();
 S.autoText = null; S.autoAsk = "";
@@ -10720,7 +10823,11 @@ const autoOn = (k) => !!(S.autoText && S.autoText[k] === true);
 // the texting script that can send them: re-clean texts by service from version 5, two job reminders from version 6
 // the texting script that leaves out the 6 PM text for a booking made the day before (version 22)
 const remSkipReady = () => !!(S.textSender && (+S.textSender.version || 0) >= 22);
-const autoReady = (k) => !!(S.textSender && (+S.textSender.version || 0) >= (k === "reclean" ? 5 : 6));
+const autoReady = (k) => !!(S.textSender && (+S.textSender.version || 0) >= (k === "review" ? 24 : k === "reclean" ? 5 : 6));
+// the review request's link and wording (settings/main.review), with the starting text until one is saved
+const rvOf = (st) => { const r = (st && st.review) || {}; return { link: String(r.link || "").trim(), text: typeof r.text === "string" ? r.text : AP.RV.TEXT }; };
+const AUTO_ASK = { reminders: "Reminders start going out by themselves from your business number for the estimates and jobs on your calendar.", reclean: "Re-clean texts start going out by themselves to past customers as their date comes up.", review: "A text asking for a Google review starts going out by itself to each customer, right after an invoice you text them is delivered." };
+const AUTO_SAID = { reminders: ["Appointment reminders are on.", "Appointment reminders are off. None go out."], reclean: ["Re-clean texts are on.", "Re-clean texts are off. None go out."], review: ["Review requests are on.", "Review requests are off. None go out."] };
 const wallOf = (s) => { const d = parseD(s); return d ? ymd(d) + "T" + pad(d.getHours()) + ":" + pad(d.getMinutes()) : ""; };
 const wallNow = () => wallOf(new Date().toISOString());
 const atText = (w) => `${fmtD(w.slice(0, 10), { weekday: "short", month: "short", day: "numeric" })} at ${AP.clock(AP.mins(w))}`;
@@ -10747,7 +10854,7 @@ function rcPlanned(rc) {
 function autoSwitch(k, label) {
   const on = autoOn(k), own = canEditBlast(), ready = autoReady(k) || on;
   return `<div class="row spread auto-sw"><span><b>${label}</b> <span class="pill ${on ? "s-scheduled" : "s-lost"}">${on ? "On" : "Off"}</span></span><button class="switch" role="switch" data-act="auto-sw" data-k="${k}" aria-checked="${on}" aria-label="${esc(label)}"${own && ready ? "" : " disabled"}><span class="knob" aria-hidden="true"></span></button></div>
-    ${S.autoAsk === k && !on ? `<div class="banner warn stack"><span>Turn on ${esc(label.toLowerCase())}? ${k === "reminders" ? "Reminders start going out by themselves from your business number for the estimates and jobs on your calendar." : "Re-clean texts start going out by themselves to past customers as their date comes up."}</span><div class="row"><button class="btn sm primary" data-act="auto-sw-yes" data-k="${k}">Turn on</button><button class="btn sm ghost" data-act="auto-sw-no">Cancel</button></div></div>` : ""}`;
+    ${S.autoAsk === k && !on ? `<div class="banner warn stack"><span>Turn on ${esc(label.toLowerCase())}? ${AUTO_ASK[k]}</span><div class="row"><button class="btn sm primary" data-act="auto-sw-yes" data-k="${k}">Turn on</button><button class="btn sm ghost" data-act="auto-sw-no">Cancel</button></div></div>` : ""}`;
 }
 // the wording, with the starting texts for any not written yet
 const remOf = (st) => Object.assign({}, DEFAULT_SETTINGS.reminders, st.reminders || {});
@@ -10767,10 +10874,10 @@ function rcOf(st) {
 // is a form that a data update doesn't redraw)
 function autoTopHTML() {
   const own = canEditBlast(), sv = S.textSender || {}, err = sv.autoError ? `<div class="banner warn">${esc(sv.autoError)}</div>` : "";
-  const ready = !autoReady("reclean") ? `<p class="note">To send these by themselves, the texting script needs its new code first: Settings > Texting, steps 4 and 5. Until then they can't be turned on.</p>` : !autoReady("reminders") ? `<p class="note">Appointment reminders need the newest texting script code first: Settings > Texting, steps 4 and 5. Until then they can't be turned on.</p>` : "";
+  const ready = !autoReady("reclean") ? `<p class="note">To send these by themselves, the texting script needs its new code first: Settings > Texting, steps 4 and 5. Until then they can't be turned on.</p>` : !autoReady("reminders") ? `<p class="note">Appointment reminders need the newest texting script code first: Settings > Texting, steps 4 and 5. Until then they can't be turned on.</p>` : !autoReady("review") ? `<p class="note">Review requests need the newest texting script code first: Settings > Texting, steps 4 and 5. Until then they can't be turned on.</p>` : "";
   return `<div class="panel-h"><h2>Automatic texts</h2></div>
-    <p class="note">These go out by themselves from your business number, between 8 AM and 8 PM, only while they're on. Vacation mode at the top of Email & Texts stops them too, along with every blast. ${own ? "Read the texts below first. Nothing goes out until you turn it on here." : "Only Elias can turn them on."}</p>
-    ${autoSwitch("reminders", "Appointment reminders")}${autoSwitch("reclean", "Re-clean texts")}${ready}${err}`;
+    <p class="note">These go out by themselves from your business number, between 8 AM and 8 PM, only while they're on. Vacation mode at the top of Email & Texts stops reminders and re-clean texts too, along with every blast. ${own ? "Read the texts below first. Nothing goes out until you turn it on here." : "Only Elias can turn them on."}</p>
+    ${autoSwitch("reminders", "Appointment reminders")}${autoSwitch("reclean", "Re-clean texts")}${autoSwitch("review", "Review requests")}${ready}${err}`;
 }
 function autoTopRefresh() { const el = $("#auto-top"); if (el && S.view === "settings" && S.setTab === "drips") el.innerHTML = autoTopHTML(); }
 function autoHTML(st) {
@@ -10795,6 +10902,7 @@ function autoHTML(st) {
     <div class="form">${SND.map(([c, label]) => `<label class="f">${esc(c)}<input data-snd="${c}" value="${esc(sendersOf(st)[c] || "")}" placeholder="${esc(AP.SENDERS[c])}" aria-label="${esc(c)} first name"></label>`).join("")}</div>
     ${sample ? `<p class="note">${esc(leadName(sample.l))} would get this ${esc(atText(sample.at))}:</p>${prev(sample.body)}` : ""}
     <div class="sub-h">The next 3 days${books.length ? ` · ${books.length}` : ""}</div>${rp.length ? `<p class="note">Don't send skips the reminders for that one booking (a job's evening-before and heads-up both). The customer still gets them for their other bookings.</p>` : ""}${rp.length ? `<div class="list">${remRows}</div>` : `<p class="note">No estimates or jobs on the calendar in the next 3 days.</p>`}</section>
+  ${rvHTML(st, warn, prev)}
   <section class="panel"><div class="panel-h"><h2>Re-clean texts</h2></div>
     <p class="note">From a customer's latest paid job: Text 1 at 10 AM once it's been the months below, Text 2 a couple of weeks later, then one a month, taking turns through Monthly A to D. A job with more than one service goes by the one that comes up soonest, so a customer only ever gets one set. They stop when the customer replies, texts STOP, books again or you mark them do not contact. Each one ends with “Reply STOP to opt out.” Customers already past their Text 1 day when you turn it on don't get one (a text blast can reach them). {first} is their first name, {place} their company or address.</p>
     <div class="form"><label class="f">Text 2 goes<span class="row"><input type="number" id="rc-2nd" min="3" max="60" value="${esc(rc.second)}" style="width:80px"> days after Text 1</span></label></div>
@@ -10810,6 +10918,21 @@ function autoHTML(st) {
     ${rcp.going.length ? `<p class="note">Getting re-clean texts now: ${rcp.going.slice(0, 6).map(l => `${esc(leadName(l))} (next ${esc(fmtD(l.reclean.next))})`).join(", ")}${rcp.going.length > 6 ? "…" : ""}</p>` : ""}
     ${((st.drips || {}).paid || []).length ? `<p class="note">Your Paid follow-ups further down still come up on the customer's page for you to send yourself. Remove them there if these re-clean texts replace them.</p>` : ""}</section>`;
 }
+// Review request after an invoice: the link, the wording, how it would read now, and the latest ones that went
+function rvHTML(st, warn, prev) {
+  const rv = rvOf(st), link = AP.RV.link(rv.link), on = autoOn("review");
+  const sent = S.texts.filter(t => t.campaignId === "review").sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")));
+  const who = (t) => { const l = t.leadId ? leadById(t.leadId) : null; return l ? leadName(l) : fmtPhone(t.phone); };
+  const rows = sent.slice(0, 5).map(t => `<div class="item static flow"><div class="main-col"><span class="t">${esc(who(t))}</span><span class="s">${esc(fmtD(t.at, { weekday: "short", month: "short", day: "numeric" }))} · ${esc((TX_STATUS[t.status] || [t.status || ""])[0])}</span></div></div>`).join("");
+  return `<section class="panel" id="rv-panel"><div class="panel-h"><h2>Review request after an invoice</h2></div>
+    <p class="note">When you text a customer their invoice with Send invoice and Quo shows it was delivered, this text goes to the same number a minute or two later. Each number is only ever asked once, and not at all if you already asked them yourself in the last 60 days, they texted STOP or they're marked do not contact. An invoice sent after 8 PM gets it at 9 the next morning. To leave one customer out, untick the box under Text invoice before you send.</p>
+    <div class="form"><label class="f">Your Google review link<input id="rv-link" type="url" inputmode="url" autocomplete="off" value="${esc(rv.link)}" placeholder="https://g.page/r/.../review" aria-label="Google review link"></label></div>
+    ${rv.link && !link ? `<p class="note bad">That doesn't read as a link. It starts with https:// and has no spaces.</p>` : !link ? `<p class="note${on ? " bad" : ""}">${on ? "No link saved, so no review requests go out. " : ""}In your Google Business Profile, tap Ask for reviews and copy the link it gives you. Paste it here and save.</p>` : ""}
+    <div class="tpl"><b>The text</b><textarea id="rv-text" rows="3" aria-label="Review request text">${esc(rv.text)}</textarea>${warn(rv.text, ["{link}", "{day}", "{first}"])}${!rv.text.trim() ? `<p class="note bad">Empty, so none go out.</p>` : !/\{link\}/.test(rv.text) ? `<p class="note">There's no {link} in it, so your review link isn't in the text.</p>` : ""}</div>
+    <p class="note">{link} is your review link. {day} says weekend (Friday to Sunday), evening or day, to match when it goes. {first} is their first name.</p>
+    ${rv.text.trim() ? `<p class="note">Sent right now, it would read:</p>${prev(AP.RV.text(rv.text, { first: "Maria", link: link || "(your review link)", sent: wallNow() }))}` : ""}
+    <div class="sub-h">The latest ones${sent.length ? ` · ${sent.length}` : ""}</div>${rows ? `<div class="list">${rows}</div>` : `<p class="note">None sent yet.</p>`}</section>`;
+}
 // the boxes above, read with the rest of the Settings form
 function readAutoForm(st) {
   if (!document.querySelector("[data-rem]")) return;
@@ -10820,6 +10943,7 @@ function readAutoForm(st) {
   RC_G.forEach(([g]) => { const m = Math.round(Number((document.querySelector(`[data-rcm="${g}"]`) || {}).value)); rc[g] = { months: m >= 1 && m <= 36 ? m : d[g].months, texts: [...document.querySelectorAll(`[data-rcg="${g}"]`)].sort((a, b) => a.dataset.i - b.dataset.i).map(el => el.value) }; });
   document.querySelectorAll("[data-rcr]").forEach(el => { rc.reasons[el.dataset.rcr] = el.value.trim(); });
   st.reclean2 = rc;
+  if ($("#rv-text")) st.review = { link: ($("#rv-link") || {}).value.trim(), text: $("#rv-text").value };
 }
 
 Object.assign(EXTRA_ACTS, {
@@ -10843,18 +10967,20 @@ const byJob = (id) => S.jobs.find(j => j.id === id) || null;
 // what's typed in Settings stays through the redraw
 const autoRedraw = () => { if (S.view === "settings" && document.querySelector("[data-rem]")) S.setDraft = readSettingsForm(); render(); };
 async function autoSave(k, on) {
-  if (!["reminders", "reclean"].includes(k) || !canEditBlast()) return;
+  if (!["reminders", "reclean", "review"].includes(k) || !canEditBlast()) return;
   if (on && !autoReady(k)) { toast("The texting script needs its new code first (Settings > Texting)."); autoRedraw(); return; }
   // it sends the saved wording: unsaved changes are saved first, and the starting texts are saved as they show
   if (on && S.setDirty) { toast("Save your changes first, then turn it on.", 5000); autoRedraw(); return; }
-  const now = new Date().toISOString(), doc = Object.assign({ kind: "autotext", reminders: false, reclean: false }, S.autoText || {}, { [k]: on, [k + "At"]: on ? now : "", by: S.myId || "", updatedAt: now });
+  // a review request is nothing without the link (and it goes as saved)
+  if (on && k === "review") { const rv = rvOf(settings()); if (!AP.RV.link(rv.link)) { toast("Paste your Google review link first (under Review request after an invoice), and save.", 6000); autoRedraw(); return; } if (!rv.text.trim() || AP.leftover(AP.RV.text(rv.text, { first: "Maria", link: rv.link, sent: wallNow() }))) { toast("Fix the review request text first, and save.", 6000); autoRedraw(); return; } }
+  const now = new Date().toISOString(), doc = Object.assign({ kind: "autotext", reminders: false, reclean: false, review: false }, S.autoText || {}, { [k]: on, [k + "At"]: on ? now : "", by: S.myId || "", updatedAt: now });
   delete doc.id; delete doc._t;
   try {
-    if (on) { const cur = settings(), fix = { reminders: remOf(cur), reclean2: rcOf(cur) }; if (S.settings) await saveDoc("settings", "main", fix, true); else await saveDoc("settings", "main", Object.assign({}, cur, fix)); }
+    if (on) { const cur = settings(), fix = { reminders: remOf(cur), reclean2: rcOf(cur), review: rvOf(cur) }; if (S.settings) await saveDoc("settings", "main", fix, true); else await saveDoc("settings", "main", Object.assign({}, cur, fix)); }
     await saveDoc("settings", "blast-autotext", doc);
   } catch (e) { autoRedraw(); return; }
   S.autoText = doc;
-  toast(on ? (k === "reminders" ? "Appointment reminders are on." : "Re-clean texts are on.") : (k === "reminders" ? "Appointment reminders are off. None go out." : "Re-clean texts are off. None go out."), 5000);
+  toast(AUTO_SAID[k][on ? 0 : 1], 5000);
   autoRedraw();
 }
 // ---------- TEXT AN INVOICE (elias, 2026-10-25) ----------
@@ -11031,9 +11157,30 @@ function tiHow() {
   if (p === "ready") return `Send ${tiW()} opens Quo with this message and the picture attached. Tap Send there. If the picture isn't on it, hold your finger on the message box, tap Paste, then Send.`;
   return `${TI && TI.picErr && TI.picErr !== "late" ? `Couldn't attach the picture for you (${TI.picErr}). ` : TI && TI.picErr ? "The picture wasn't ready in time. " : ""}Send ${tiW()} copies the picture and opens Quo with this message to their number. Then hold your finger on the message box, tap Paste to add the picture, and tap Send.${more}`;
 }
+// The review request that follows an invoice text once it's delivered (autotext.js; elias, 2026-11-14): while its switch
+// is on, the box says so, with a tick to leave this customer out. A number already asked is never asked again.
+function tiRvHTML(phone) {
+  if (!TI || !QD || TI.q !== QD || !isInvoice(QD) || typeof autoOn !== "function" || !autoOn("review")) return "";
+  const to = e164(phone); if (!to || txBlocked(to)) return "";
+  const was = S.texts.find(t => t.id === "rv-" + digits(to));
+  if (was) return `<p class="note">They were asked for a review on ${esc(fmtD(was.at, { month: "short", day: "numeric" }))}, so they won't be asked again.</p>`;
+  return `<label class="check full"><input type="checkbox" id="ti-rv-on"${TI.rvOff ? "" : " checked"}> Ask for a Google review once it's delivered</label>`;
+}
+// The invoice is about to be texted: when, and to which number, saved on the invoice. The texting script matches it with
+// the text as Quo sent it, and the review request follows that text (never this by itself). Saved when the box opens
+// ("open": a phone leaves for Quo on the Send invoice tap, before a save made then is sure to get out) and again on the
+// tap ("tap"), with the number and the tick as they are then.
+function tiTap(how) {
+  const q = TI && TI.q; if (!q || !q.id || !TI.ready || !isInvoice(q) || !STANDALONE) return;
+  const el = $("#ti-phone"), to = e164(el ? el.value : tiPhone(q, leadById(q.leadId)) || ""); if (!to) return;
+  // (the tick or the number changed after the tap: the tap's own time stays, so the text sent then still matches)
+  const now = new Date().toISOString(); if (how === "tap") { TI.how = "tap"; TI.tapAt = now; }
+  saveDoc("quotes", q.id, { rvTap: TI.tapAt || now, rvTo: to, rvOff: !!TI.rvOff, rvHow: TI.how || "open", rvDone: "", rvAt: "" }, true).catch(() => {});
+}
 function tiPaint() {
   if (!TI || !QD || TI.q !== QD) return;
-  const g = $("#ti-go"), h = $("#ti-how");
+  const g = $("#ti-go"), h = $("#ti-how"), rv = $("#ti-rv");
+  if (rv) rv.innerHTML = tiRvHTML(($("#ti-phone") || {}).value || "");
   if (g) g.innerHTML = tiGoHTML(($("#ti-phone") || {}).value || "");
   if (h) h.textContent = tiHow();
 }
@@ -11052,6 +11199,7 @@ function tiBoxHTML() {
     <label class="f">Message<textarea id="ti-body" rows="4">${esc(TI.body)}</textarea></label>
     <img id="ti-pic" src="${esc(TI.url)}" alt="Picture of ${w} ${esc(QD.number || "")}" style="width:100%;max-width:440px;border:1px solid var(--line);border-radius:8px">
     <p class="note">The picture of the ${w} goes with the message. No link.</p>
+    <div id="ti-rv">${tiRvHTML(ph)}</div>
     <div class="row" id="ti-go">${tiGoHTML(ph)}</div>
     <p class="note" id="ti-how">${esc(how)}</p>
   </div>`;
@@ -11082,7 +11230,7 @@ EXTRA_ACTS["ti-open"] = async (t) => {
         mine.file = new File([blob], `Get It Clean ${w} ${snap.number || ""}.png`.replace(/ \.png$/, ".png"), { type: "image/png" }); mine.url = URL.createObjectURL(blob); mine.ready = true;
       } catch (e) { mine.err = (e && e.message) || `Couldn't make the picture of the ${w}. Try again.`; }
       // (the picture put on the web for Quo to attach is an invoice thing; an estimate is always pasted)
-      if (TI === mine) { tiRefresh(); if (mine.ready && tiPicOn() && isInvoice(snap)) tiPicStart(mine, snap); } else if (mine.url) URL.revokeObjectURL(mine.url);
+      if (TI === mine) { tiRefresh(); tiTap(); if (mine.ready && tiPicOn() && isInvoice(snap)) tiPicStart(mine, snap); } else if (mine.url) URL.revokeObjectURL(mine.url);
     } finally { delete tiBusy[qid]; }
   } finally { t.disabled = false; }
 };
@@ -11099,6 +11247,7 @@ EXTRA_ACTS["ti-share"] = async () => {
   if (!tiOk()) return;
   try { await navigator.share({ files: [TI.file], text: TI.body }); }
   catch (er) { if (er && er.name === "AbortError") return; toast(`Couldn't open the share sheet. Use Send ${tiW()} instead.`); return; }
+  tiTap("tap");
   await tiSent("Shared. If you picked Save Image, attach it to the message in Quo.");
 };
 EXTRA_ACTS["ti-copy"] = async () => {
@@ -11123,6 +11272,7 @@ document.addEventListener("click", (e) => {
   if (!tiOk()) { e.preventDefault(); return; }
   try { navigator.clipboard.write([new ClipboardItem({ "image/png": TI.file })]).catch(() => toast("Couldn't copy the picture. Use Share picture instead.", 6000)); }
   catch (er) { toast("Couldn't copy the picture. Use Share picture instead.", 6000); }
+  tiTap("tap");
   tiSent(TI.picUrl ? "Quo opened with the message and the picture. Tap Send there (if the picture isn't on it, hold the message box and tap Paste)." : "Quo opened with the message. Hold your finger on the message box, tap Paste to add the picture, then Send.");
 }, true);
 // Send invoice on a computer: the picture is copied in the click itself (only allowed then), Quo opens in a new tab, and
@@ -11130,6 +11280,7 @@ document.addEventListener("click", (e) => {
 document.addEventListener("click", (e) => {
   const a = e.target && e.target.closest && e.target.closest("#ti-web"); if (!a || !TI || !TI.file) return;
   if (!tiOk()) { e.preventDefault(); return; }
+  tiTap("tap");
   tiSent("Quo opened in a new tab with the message. Click in the message box, paste the picture, then press Enter.");
   try { navigator.clipboard.write([new ClipboardItem({ "image/png": TI.file })]).catch(() => toast("Couldn't copy the picture. Use Copy picture, then paste it in Quo.", 6000)); }
   catch (er) { toast("Couldn't copy the picture. Use Copy picture, then paste it in Quo.", 6000); }
@@ -11138,8 +11289,9 @@ document.addEventListener("click", (e) => {
 document.addEventListener("input", (e) => {
   if (!TI || !e.target || !["ti-body", "ti-phone"].includes(e.target.id)) return;
   if (e.target.id === "ti-body") { TI.body = e.target.value; const ph = ($("#ti-phone") || {}).value, a = $("#ti-quo"), w = $("#ti-web"); if (a) a.href = tiQuoLink(ph); if (w) w.href = tiQuoNew(ph); }
-  else { const g = $("#ti-go"); if (g) g.innerHTML = tiGoHTML(e.target.value); }
+  else { const g = $("#ti-go"), rv = $("#ti-rv"); if (g) g.innerHTML = tiGoHTML(e.target.value); if (rv) rv.innerHTML = tiRvHTML(e.target.value); }
 });
+document.addEventListener("change", (e) => { if (!TI || !e.target) return; if (e.target.id === "ti-rv-on") { TI.rvOff = !e.target.checked; tiTap(); } else if (e.target.id === "ti-phone") tiTap(); });
 // a different customer or type: the box is for what was there, so it closes
 document.addEventListener("change", (e) => { if (TI && e.target && ["q-lead", "q-type"].includes(e.target.id)) tiDrop(); });
 // an invoice already texted, after a save: its view-only copy follows what's saved (so a fixed price shows on the same
