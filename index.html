@@ -4184,8 +4184,8 @@ EXTRA_ACTS["efu-resume"] = EXTRA_ACTS["efu-start"];
 // ---------- estimate follow-up TEXTS (elias, 2026-11-16) ----------
 // "if I send a estimate out, the people automatically get dripped reminders and follow-ups ... for like a month ... when
 // I complete an estimate and I click sent, I can either enable drips or don't enable drips". Once an estimate is Sent,
-// it asks "Text them follow-ups?": Turn on texts saves quotes/{id}.etx (the texting script sends them, version 26, and
-// writes back what went and why they stopped), No texts saves etxNo. The wording and days are settings/main.estTexts
+// they stay off unless he taps Start in 2, 5 or 10 days, which saves quotes/{id}.etx (the texting script sends them,
+// version 26, and writes back what went and why they stopped). The wording and days are settings/main.estTexts
 // (Settings > Follow-ups). Separate from the Start follow-ups calendar reminders above.
 const etxReady = () => !!(S.textSender && (+S.textSender.version || 0) >= ETX_VERSION);
 // the estimate as the database has it, else as the editor has it
@@ -4206,23 +4206,24 @@ function etxLine(q) {
   if (x.done || !x.next) return `All ${n} are done.`;
   return `${went} of ${n} sent, next ${atText(x.next)}.`;
 }
-// the choice of when the first one goes: in 2, 5 or 10 days (elias, 2026-11-16)
-const etxPick = (lead) => `<div class="row etx-pick"><span class="note">${lead}</span>${AP.ETX.FIRSTS.map((n, i) => `<button class="btn sm${i ? "" : " primary"}" data-act="etx-on" data-first="${n}">In ${n} days</button>`).join("")}</div>`;
+// the choice of when the first one goes: in 2, 5 or 10 days. None is picked for him and nothing asks: they stay off
+// until he taps one (elias, 2026-11-16: "I have the option of leaving it alone and them not getting any messages at
+// all, or selecting either 2 days, 5 days, or 10 days ... not it automatically starting to send once I send the
+// estimate out"). An older estimate's etxNo (the No texts button that's gone) reads the same as off.
+const etxPick = () => AP.ETX.FIRSTS.map(n => `<button class="btn sm" data-act="etx-on" data-first="${n}">Start in ${n} days</button>`).join("");
 function etxNote(q) {
   if (!q || !q.id || isInvoice(q)) return "";
   const live = etxLive(q), x = live.etx, sent = live.status === "sent";
-  const row = (txt, btn) => `<div class="row efu-note etx-note"><span class="note">${txt}</span>${btn || ""}</div>`;
+  const row = (txt, btns) => `<div class="row efu-note etx-note"><span class="note">${txt}</span>${btns || ""}</div>`;
   if (x && x.on) {
-    if (x.stopped || x.done || !x.next) return row(`Estimate texts: ${esc(etxLine(live))}`) + (sent && x.stopped && !etxWhyNot(live) && etxReady() ? etxPick("Start them over, the first:") : "");
+    if (x.stopped || x.done || !x.next) return row(`Estimate texts: ${esc(etxLine(live))}`, sent && x.stopped && !etxWhyNot(live) && etxReady() ? etxPick() : "");
     if (!sent) return row("Estimate texts stop, since it isn't marked Sent.");
     return row(`Estimate texts on: ${esc(etxLine(live))}`, `<button class="btn sm" data-act="etx-off">Stop texts</button>`);
   }
   if (!sent) return "";
   const why = etxWhyNot(live); if (why) return row(`No estimate texts: ${esc(why)}.`);
-  if (!etxReady()) return row("Estimate texts need the newest texting script code first (Settings > Texting, steps 4 and 5).");
-  if (live.etxNo) return row("No texts on this estimate.") + etxPick("Turn them on, the first:");
-  const N = AP.ETX.of(settings()).texts.filter(t => t.trim()).length;
-  return `<div class="banner stack etx-ask"><span><b>Text them about this estimate?</b> ${N} texts over about a month, at 10 AM. They stop by themselves when they text back or book. When should the first one go?</span><div class="row">${AP.ETX.FIRSTS.map((n, i) => `<button class="btn sm${i ? "" : " primary"}" data-act="etx-on" data-first="${n}">In ${n} days</button>`).join("")}<button class="btn sm ghost" data-act="etx-no">No texts</button></div></div>`;
+  if (!etxReady()) return row("Estimate texts are off. They need the newest texting script code first (Settings > Texting, steps 4 and 5).");
+  return row("Estimate texts are off. Nothing goes unless you start them:", etxPick());
 }
 // saves etx (or etxNo) on the estimate, and keeps this device's copies in step
 async function etxSave(id, patch) {
@@ -4241,11 +4242,6 @@ EXTRA_ACTS["etx-on"] = async (t) => {
   const etx = { id: Date.now().toString(36), on: now, by: S.myId || "", first, at: plan, n: 0, next: plan[0], last: "", stopped: "", stoppedAt: "", done: false, skipped: 0 };
   try { await etxSave(QD.id, { etx, etxNo: "" }); } catch (e) { if (t) t.disabled = false; return; }
   toast(`Estimate texts on. The first goes ${atText(plan[0])}.`, 6000);
-};
-EXTRA_ACTS["etx-no"] = async (t) => {
-  if (!QD || !QD.id) return; if (t) t.disabled = true;
-  try { await etxSave(QD.id, { etxNo: new Date().toISOString() }); } catch (e) { if (t) t.disabled = false; return; }
-  toast("No texts for this one.");
 };
 EXTRA_ACTS["etx-off"] = async (t) => {
   if (!QD || !QD.id) return; const x = etxLive(QD).etx; if (!x) return; if (t) t.disabled = true;
@@ -11045,7 +11041,7 @@ function autoPlan() {
   const FB_TEXTS = ["{greeting} {first}, this is Elias with Get It Clean Tampa Bay. I just got your request through {source} for the {service}. I would be more than happy to come out and give you a free in-person estimate. What day and time works best for you?",
     "Hey {first}, not sure if you saw my message, but I'd be happy to schedule a time to take a look and give you a free in-person estimate. I have availability {times}.",
     "Hi {first}, just a reminder the {offer} deal is still on this month. Want me to swing by for a quick free estimate? Takes about 10 minutes.",
-    "Hi {first}, following up on the {service}. I have a few openings coming up, {times}. Want me to stop by for a free estimate?",
+    "Hi {first}, I have a few openings coming up for the {service}, {times}. Want me to stop by for a free estimate?",
     "Hey {first}, still thinking about getting the {service} done? No pressure. Reply with any questions and I'll get you a price.",
     "Hi {first}, it's Elias with Get It Clean Tampa Bay. Checking in on the {service}. If now's not a good time, just let me know when to reach back out.",
     "{first}, hope all is well. We're booking next month now. Want me to save you a spot for the {service}?",
@@ -11201,7 +11197,7 @@ function etxHTML(st, warn, prev) {
   const e = AP.ETX.of(st), going = S.quotes.filter(q => q.etx && q.etx.next && !q.etx.stopped && !isInvoice(q)).sort((a, b) => String(a.etx.next).localeCompare(String(b.etx.next)));
   const rows = going.slice(0, 8).map(q => `<div class="item static flow"><div class="main-col"><span class="t">${esc(quoteCust(q) || "Estimate " + q.number)} · Estimate ${esc(q.number || "")}</span><span class="s">${esc(etxLine(q))}</span></div></div>`).join("");
   return `<section class="panel" id="etx-panel"><div class="panel-h"><h2>Estimate texts</h2></div>
-    <p class="note">Only on an estimate you turn them on for: when you mark an estimate Sent, it asks “Text them about this estimate?”, and you pick when the first one goes (in 2, 5 or 10 days) or No texts. They go at 10 AM, on the days below when the first goes in 2 days; picking 5 or 10 moves them all later by the same amount (a Sunday moves to Monday). They stop by themselves when the customer texts back, the estimate is accepted or declined, a job or estimate is booked for them, they move on in the pipeline (Lost, Follow up and so on), they text STOP or you mark them do not contact. You can stop them on the estimate anytime. Vacation mode holds them. {first} is their first name. Your Start follow-ups calendar reminders are separate and work the same as before.</p>
+    <p class="note">Off unless you start them on an estimate: once it's marked Sent, tap Start in 2 days, 5 days or 10 days for when the first one goes. Leave it alone and they get none. They go at 10 AM, on the days below when the first goes in 2 days; picking 5 or 10 moves them all later by the same amount (a Sunday moves to Monday). They stop by themselves when the customer texts back, the estimate is accepted or declined, a job or estimate is booked for them, they move on in the pipeline (Lost, Follow up and so on), they text STOP or you mark them do not contact. You can stop them on the estimate anytime. Vacation mode holds them. {first} is their first name. Your Start follow-ups calendar reminders are separate and work the same as before.</p>
     ${e.texts.map((t, i) => `<div class="tpl"><div class="row"><b>Text ${i + 1}</b><label class="row note" style="margin-left:auto">Day <input type="number" min="1" max="90" data-etxd="${i}" value="${esc(e.days[i])}" style="width:64px" aria-label="Text ${i + 1} day"></label></div><textarea data-etx="${i}" rows="3" aria-label="Estimate text ${i + 1}">${esc(t)}</textarea>${warn(t, ["{first}"])}${!t.trim() ? `<p class="note">Empty, so this one is skipped.</p>` : ""}</div>`).join("")}
     ${e.texts[0].trim() ? `<p class="note">Text 1, as Maria would get it:</p>${prev(AP.ETX.text(e.texts[0], { first: "Maria", sent: wallNow() }))}` : ""}
     <div class="sub-h">Getting them now${going.length ? ` · ${going.length}` : ""}</div>${rows ? `<div class="list">${rows}</div>` : `<p class="note">No estimates have them on right now.</p>`}</section>`;
