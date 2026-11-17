@@ -7946,7 +7946,7 @@ function ibGo(id, leadId) {
 // with "Reply STOP to opt out." Blasts only send 8 AM to 8 PM Eastern (Florida's limits), and none in vacation mode.
 const TX_ON = () => STANDALONE && !!window.GIC;
 // 3: appointment reminders and re-clean texts (autotext.js). Texting works with 2; only the automatic texts need 3.
-const TEXT_SENDER_VERSION = 26, TEXT_SENDER_MIN = 2;
+const TEXT_SENDER_VERSION = 27, TEXT_SENDER_MIN = 2;
 const TX_STOP_LINE = "Reply STOP to opt out.";
 const TX_MAX = 1500; // characters in one text (Quo takes 1,600)
 S.texts = []; S.textBlasts = []; S.textRuns = {}; S.textSender = null; S.textOut = {}; S.textKey = null; S.textRulesOk = null;
@@ -9327,7 +9327,9 @@ function textSender(PROJECT, VERSION, fsKit, SITE) {
   const wmin = (w) => Date.UTC(+w.slice(0, 4), +w.slice(5, 7) - 1, +w.slice(8, 10), +w.slice(11, 13), +w.slice(14, 16)) / 60000;
   function autoTexts(cfg, st, now, ctx) {
     const w = when(now), m = w.h * 60 + w.mi;
-    if (m < 8 * 60 || m >= 20 * 60) return;
+    // 8 AM to 8 PM, and from 7 AM for the one reminder that goes then: an 8 AM estimate booked the day before (version
+    // 27; re-clean and estimate texts wait for 10 AM on their own, and no other reminder is ever due before 8)
+    if (m < 7 * 60 || m >= 20 * 60) return;
     if (!st.backfilled || held(st, now, cfg) || limited(st, now)) return;
     if (st.autoAt && now.getTime() - Date.parse(st.autoAt) < 4 * 60000) return;
     st.autoAt = now.toISOString();
@@ -10861,12 +10863,13 @@ function autoPlan() {
   // booked: the day the booking was made, or last moved in the CRM, when that's known. One made the day before, or
   // later (elias, 2026-11-13: "if anyone gets added the day before a job, they don't get a message at 6 p.m., only
   // the morning of"), gets nothing at 6 PM the evening before, since they were only just spoken to: a job keeps its
-  // heads-up the day of, and a morning estimate gets its one reminder the morning of instead (1 hour before, at 8 AM
-  // if that's earlier, and none when it starts by 8). Texting script version 22.
+  // heads-up the day of, and a morning estimate gets its one reminder the morning of instead, 1 hour before (elias,
+  // 2026-11-16, for an 8 AM estimate booked the day before: "7 AM text"; never before 7 AM, and none when it starts
+  // by 7). Texting script version 22, the 7 AM one version 27.
   const remLate = (start, booked) => !!booked && String(booked).slice(0, 10) >= addDay(start.slice(0, 10), -1);
-  const remAt = (start, booked) => { const d = start.slice(0, 10), m = mins(start); if (m >= 600) return d + "T" + hhmm(m - 120); if (!remLate(start, booked)) return addDay(d, -1) + "T18:00"; const h = Math.max(480, m - 60); return h < m ? d + "T" + hhmm(h) : ""; };
-  // texts only go 8 AM to 8 PM
-  const remOk = (at) => mins(at) >= 480 && mins(at) < 1200;
+  const remAt = (start, booked) => { const d = start.slice(0, 10), m = mins(start); if (m >= 600) return d + "T" + hhmm(m - 120); if (!remLate(start, booked)) return addDay(d, -1) + "T18:00"; const h = Math.max(420, m - 60); return h < m ? d + "T" + hhmm(h) : ""; };
+  // texts only go 8 AM to 8 PM, but for that one 7 AM reminder (jobs never get one before 8)
+  const remOk = (at) => mins(at) >= 420 && mins(at) < 1200;
   // a job: the evening before ("job"), and the heads-up the day of ("jobHead")
   const remJob = (start, booked) => { const d = start.slice(0, 10), m = mins(start), h = Math.max(480, m < 600 ? m - 60 : m - 120); return (remLate(start, booked) ? [] : [["job", addDay(d, -1) + "T18:00"]]).concat(h < m ? [["jobHead", d + "T" + hhmm(h)]] : []); };
   // every reminder a booking gets: [which text, when]
@@ -11134,7 +11137,7 @@ function autoTopHTML() {
   const own = canEditBlast(), sv = S.textSender || {}, err = sv.autoError ? `<div class="banner warn">${esc(sv.autoError)}</div>` : "";
   const ready = !autoReady("reclean") ? `<p class="note">To send these by themselves, the texting script needs its new code first: Settings > Texting, steps 4 and 5. Until then they can't be turned on.</p>` : !autoReady("reminders") ? `<p class="note">Appointment reminders need the newest texting script code first: Settings > Texting, steps 4 and 5. Until then they can't be turned on.</p>` : !autoReady("review") ? `<p class="note">Review requests need the newest texting script code first: Settings > Texting, steps 4 and 5. Until then they can't be turned on.</p>` : "";
   return `<div class="panel-h"><h2>Automatic texts</h2></div>
-    <p class="note">These go out by themselves from your business number, between 8 AM and 8 PM, only while they're on. Vacation mode at the top of Email & Texts stops reminders and re-clean texts too, along with every blast. ${own ? "Read the texts below first. Nothing goes out until you turn it on here." : "Only Elias can turn them on."}</p>
+    <p class="note">These go out by themselves from your business number, between 8 AM and 8 PM (an 8 AM estimate booked the day before gets its reminder at 7 AM), only while they're on. Vacation mode at the top of Email & Texts stops reminders and re-clean texts too, along with every blast. ${own ? "Read the texts below first. Nothing goes out until you turn it on here." : "Only Elias can turn them on."}</p>
     ${autoSwitch("reminders", "Appointment reminders")}${autoSwitch("reclean", "Re-clean texts")}${autoSwitch("review", "Review requests")}${ready}${err}`;
 }
 function autoTopRefresh() { const el = $("#auto-top"); if (el && S.view === "settings" && S.setTab === "drips") el.innerHTML = autoTopHTML(); }
@@ -11153,7 +11156,7 @@ function autoHTML(st) {
   const prev = (s) => `<div class="tm-msgs short"><div class="tm-b out"><div class="tm-txt">${esc(s)}</div></div></div>`;
   return `<section class="panel" id="auto-top">${autoTopHTML()}</section>
   <section class="panel"><div class="panel-h"><h2>Appointment reminders</h2></div>
-    <p class="note">For every estimate and job on your calendar with a customer who has a cell number. Jobs get two: one at 6 PM the evening before, and a heads-up the day of, 1 hour before a job that starts before 10 AM and 2 hours before a later one (never before 8 AM). Estimates get one, 2 hours before; if it starts before 10 AM, at 6 PM the evening before instead. A booking you make the day before gets nothing at 6 PM, only the one the morning of (a morning estimate gets its reminder 1 hour before instead). If you move it in Google Calendar, the reminders move with it. Canceled ones get none. {first} is their first name, {time} the time it starts (like 8:30 AM), and {day} says “today” or “tomorrow” by itself, to match when the text goes out.</p>
+    <p class="note">For every estimate and job on your calendar with a customer who has a cell number. Jobs get two: one at 6 PM the evening before, and a heads-up the day of, 1 hour before a job that starts before 10 AM and 2 hours before a later one (never before 8 AM). Estimates get one, 2 hours before; if it starts before 10 AM, at 6 PM the evening before instead. A booking you make the day before gets nothing at 6 PM, only the one the morning of (a morning estimate gets its reminder 1 hour before instead, so an 8 AM one gets it at 7 AM). If you move it in Google Calendar, the reminders move with it. Canceled ones get none. {first} is their first name, {time} the time it starts (like 8:30 AM), and {day} says “today” or “tomorrow” by itself, to match when the text goes out.</p>
     ${[["job", "Jobs: the evening before"], ["jobHead", "Jobs: heads-up the day of"], ["visit", "Estimates"]].map(([k, t]) => `<div class="tpl" data-rem="${k}"><b>${t}</b><textarea data-rk="body" rows="3" aria-label="${esc(t)} reminder">${esc(rem[k])}</textarea>${warn(rem[k], ["{first}", "{sender}", "{day}", "{time}", "{when}", "{greeting}"])}</div>`).join("")}
     <div class="sub-h">{sender}: who the reminder is from</div>
     <p class="note">Elias or Tarik: whichever of you is on the job's crew (both: whoever booked it), or whoever booked the estimate. Anything else, like a job only AL is on, and bookings made before this say Elias.</p>
