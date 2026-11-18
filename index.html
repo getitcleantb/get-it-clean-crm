@@ -2634,7 +2634,7 @@ async function sweepEstimates() {
 // version 25: an older script takes a stage it doesn't know for "moved on" and would stop the texts.
 const META_SRC = "Facebook / Meta ads", META_STAGE_VERSION = 25;
 const metaTried = new Set(); let metaBusy = false;
-const metaWants = (l, v) => !!l && !isOutreach(l) && (l.stage || "new") === "new" && !l.metaAt && (String(l.id || "").startsWith("meta-") || !!(l.fb && l.fb.id) || l.source === META_SRC) && !(l.fb && l.fb.next && v < META_STAGE_VERSION);
+const metaWants = (l, v) => !!l && !isOutreach(l) && (l.stage || "new") === "new" && !l.metaAt && (String(l.id || "").startsWith("meta-") || !!(l.fb && l.fb.id && l.fb.platform !== "angi") || l.source === META_SRC) && !(l.fb && l.fb.next && v < META_STAGE_VERSION);
 async function sweepMeta() {
   const G = window.GIC; if (metaBusy || !S.db || !G || !G.serverDoc) return;
   const v = () => +((S.textSender || {}).version) || 0;
@@ -5887,7 +5887,41 @@ function saveLead_(raw) {
   const ANGI_MANIFEST = JSON.stringify({ timeZone: "America/New_York", runtimeVersion: "V8", exceptionLogging: "STACKDRIVER",
     oauthScopes: ["https://www.googleapis.com/auth/datastore", "https://www.googleapis.com/auth/script.external_request"],
     webapp: { executeAs: "USER_DEPLOYING", access: "ANYONE_ANONYMOUS" } }, null, 2);
-  const angiLeads = () => S.leads.filter(l => l.angiId && !/^angi-test-/.test(l.id));
+  // the ones Angi's own link brought in (the ones from email have the texts' record, fb)
+  const angiLeads = () => S.leads.filter(l => l.angiId && !l.fb && !/^angi-test-/.test(l.id));
+  // ---- Angi leads from the owner's Gmail (elias, 2026-11-18; texting script version 29) ----
+  // The texting script reads the "New Customer Match" emails Angi sends and makes each one a New lead with a
+  // notification (settings/blast-angimail is its answer). Their texts are the Facebook ones, while the owner has this
+  // switch on (settings/blast-fbdrip.angi, straight to the database like the Facebook one).
+  const ANGI_MAIL_VERSION = 29;
+  // none (texting isn't set up), old (the script needs the new code), perm (it needs the owner's OK in Google to read
+  // the emails), wait (it hasn't looked yet), bad, ok
+  const angiMailState = () => {
+    const v = +((S.textSender || {}).version) || 0, s = S.angiMail;
+    if (typeof txState === "function" && txState() === "none") return "none";
+    if (v < ANGI_MAIL_VERSION) return "old";
+    if (!s || (+s.version || 0) < ANGI_MAIL_VERSION) return "wait";
+    return s.ok ? "ok" : s.err === "perm" ? "perm" : "bad";
+  };
+  const angiSave = (o) => G.restSet("settings", "blast-fbdrip", Object.assign({ kind: "fbdrip", by: S.myId || "", updatedAt: new Date().toISOString() }, o), { mask: ["kind", "by", "updatedAt"].concat(Object.keys(o)) });
+  function angiMailHTML() {
+    const st = angiMailState(), s = S.angiMail || {}, on = angiDripOn(), ready = st === "ok" || on, num = (S.textSender || {}).number;
+    const pill = { none: ["s-lost", "Not set up"], old: ["due", "Needs the new code"], perm: ["due", "Needs your OK"], wait: ["s-quoted", "Checking"], bad: ["due", "Has a problem"], ok: ["s-scheduled", "Working"] }[st];
+    const ask = "In Settings > Texting, do step 4 again with <b>both</b> buttons (the code and the settings), then step 5, and tap Allow when Google asks to read your email. Texting keeps working the same.";
+    const msg = { none: `<div class="banner warn" role="status">Angi leads come in through your texting script, so texting has to be set up first (Settings > Texting).</div>`,
+      old: `<div class="banner warn" role="status">One more step on a computer: your texting script needs its new code and settings. ${ask}</div>`,
+      perm: `<div class="banner warn" role="status">Your texting script needs your OK to read your Angi emails. ${ask}</div>`,
+      wait: `<div class="banner info" role="status">Your script is looking at your email. That takes a few minutes.</div>`,
+      bad: `<div class="banner bad" role="status">Your texting script couldn't read your email: ${esc(s.err || "")}</div>`,
+      ok: `<div class="banner good" role="status">Reading your Angi emails. ${+s.n ? `${plural(+s.n, "Angi lead")} brought in so far${s.last ? ", the latest " + esc(fmtWhen(new Date(s.last))) : ""}.` : "No new Angi leads yet."}</div>` }[st];
+    return `<div class="panel-h"><h2>Angi leads from your email</h2><span class="pill ${pill[0]}">${pill[1]}</span></div>
+      <p class="note">Your texting script reads the “New Customer Match” emails Angi sends to your Gmail. Each one shows up on your Leads tab as New, source Angi, with a notification on your phone, usually within 2 minutes. It only reads those emails and can't send any. “New Opportunity” emails stay out, since they have no phone number. Someone already in your CRM doesn't get a second lead: the request goes on their history, with no texts.</p>
+      ${msg}
+      <div class="row spread auto-sw"><span><b>Text new Angi leads by themselves</b> <span class="pill ${on ? "s-scheduled" : "s-lost"}">${on ? "On" : "Off"}</span><br><span class="note">${on ? "Each new Angi lead gets your Facebook lead texts (Settings > Facebook leads), saying Angi instead of Facebook. A text about an ad's offer is skipped." : ready ? "Off: Angi leads still come in, and nothing is texted to them by itself." : "Off. It can be turned on once your script is reading your Angi emails."}</span></span><button class="switch" role="switch" data-act="angi-sw" aria-checked="${on}" aria-label="Text new Angi leads by themselves"${ready ? "" : " disabled"}><span class="knob" aria-hidden="true"></span></button></div>
+      ${S.angiAsk && !on ? `<div class="banner warn stack"><span>Turn on the Angi texts? Every new Angi lead will be texted by itself from ${num ? esc(fmtPhone(num)) : "your business number"}, starting with Text 1 ${esc(fbWaitWords(fbWaitMin()))}, then the rest of your Facebook lead texts on their days. Leads already here don't get them.</span><div class="row"><button class="btn sm primary" data-act="angi-sw-yes">Turn on</button><button class="btn sm ghost" data-act="angi-sw-no">Cancel</button></div></div>` : ""}
+      ${vacIsOn() && on ? `<p class="note">Vacation mode is on, so these are on hold until you turn it off on Email & Texts.</p>` : ""}`;
+  }
+  S.angiRefresh = () => { if (S.view !== "settings" || S.setTab !== "angi") return; const el = $("#angi-mail"); if (el) el.innerHTML = angiMailHTML(); };
   // a test lead left behind (the page was closed or reloaded during a test) is removed once it's 2 minutes old
   const sweeping = new Set();
   S.sweepAngi = () => {
@@ -5902,8 +5936,9 @@ function saveLead_(raw) {
     const st = got.length ? ["s-scheduled", "Working"] : a.emailedAt ? ["s-quoted", "Waiting on Angi"] : a.url ? ["s-quoted", "Link ready"] : ["s-lost", "Not set up"];
     const tst = S.angiTest;
     const step = (n, title, body) => `<div class="tpl"><b>${n}. ${title}</b>${body}</div>`;
-    return `<section class="panel" data-keep><div class="panel-h"><h2>Angi leads</h2><span class="pill ${st[0]}">${st[1]}</span></div>
-      <p class="note">Angi sends each new lead to a link you give them, and it shows up on your Leads tab as New, with source Angi and their request in the notes. The link is a small script in your own Google account, so there's nothing to pay for.${got.length ? ` ${plural(got.length, "Angi lead")} so far, the last on ${esc(fmtD(last, { month: "short", day: "numeric", year: "numeric" }))}.` : ""}</p>
+    return `<section class="panel" id="angi-mail">${angiMailHTML()}</section>
+      <details class="panel flush fold" data-keep${a.url && !a.emailedAt ? " open" : ""}><summary><h2>Or: Angi's own link</h2><span class="row"><span class="pill ${st[0]}">${st[1]}</span><span class="more" aria-hidden="true"></span></span></summary><div style="padding:0 20px 18px">
+      <p class="note">Angi's CRM team can also send each new lead to a link you give them, and it shows up on your Leads tab as New, with source Angi and their request in the notes. The link is a small script in your own Google account, so there's nothing to pay for.${got.length ? ` ${plural(got.length, "Angi lead")} so far, the last on ${esc(fmtD(last, { month: "short", day: "numeric", year: "numeric" }))}.` : ""}</p>
       ${step(1, "Make the link (once, on a computer)", `<ol class="note" style="margin:6px 0 8px 18px;display:grid;gap:4px">
         <li>Open <a href="https://script.google.com/home/projects/create" target="_blank" rel="noopener">script.google.com</a> signed in to the Google account that owns your Firebase project. A new project opens.</li>
         <li>Select everything in the editor, delete it, and paste the code. <button class="btn sm" data-act="angi-copy-code">Copy the code</button></li>
@@ -5917,13 +5952,28 @@ function saveLead_(raw) {
       ${step(3, "Ask Angi to send your leads there", `<p class="note">Angi's CRM team (${ANGI_EMAIL}) connects it. They need your Angi ID, which is next to your city and state when you tap your company name at the top right of the Angi for Pros site (in the app: the person icon, then Account credentials).</p>
         <div class="row"><input type="text" id="angi-id" placeholder="Angi ID" value="${esc(a.angiId || "")}" style="width:160px" aria-label="Angi ID"><button class="btn primary" data-act="angi-email" ${link ? "" : "disabled"}>${mailConnected() ? "Make the email in Gmail" : "Write the email"}</button>${link ? `<button class="btn" data-copy="${esc(link)}" data-copy-label="Link">Copy the link</button>` : ""}</div>
         ${a.emailedAt ? `<p class="note">Email drafted ${esc(fmtD(a.emailedAt, { month: "short", day: "numeric" }))}. Angi usually replies once it's set up, and can send a test lead.</p>` : ""}`)}
-    </section>`;
+    </div></details>`;
   };
   function angiEmail(id) {
     return { subject: `CRM lead integration for Get It Clean Tampa Bay${id ? ` (Angi ID ${id})` : ""}`,
       body: `Hi Angi team,\n\nPlease send our new Angi leads to our CRM:\n\nAngi ID: ${id || "(add it here)"}\nCompany: Get It Clean Tampa Bay\nEmail connected to the CRM: ${BUSINESS.email}\nWebhook URL: ${angiLink()}\nAuthentication: none (the key is part of the URL)\nData format: JSON\nCRM: our own\n\nA test lead is welcome once it's set up.\n\nThank you,\nElias\nGet It Clean Tampa Bay\n${BUSINESS.phone}\n${BUSINESS.email}` };
   }
   Object.assign(EXTRA_ACTS, {
+    "angi-sw": async () => {
+      if (!canEditBlast()) return;
+      if (!angiDripOn()) { S.angiAsk = true; S.angiRefresh(); return; }
+      try { await angiSave({ angi: false, angiOffAt: new Date().toISOString() }); S.fbDrip = Object.assign({}, S.fbDrip || {}, { angi: false }); toast("Off. No more Angi texts go out by themselves.", 5000); }
+      catch (e) { toast("Couldn't turn it off. Check your connection and try again.", 6000); }
+      S.angiRefresh();
+    },
+    "angi-sw-yes": async (t) => {
+      if (!canEditBlast()) return;
+      t.disabled = true; const now = new Date().toISOString();
+      try { await angiSave({ angi: true, angiOnAt: now }); S.fbDrip = Object.assign({ kind: "fbdrip" }, S.fbDrip || {}, { angi: true, angiOnAt: now }); S.angiAsk = false; toast("On. New Angi leads get the texts.", 5000); }
+      catch (e) { toast("Couldn't turn it on. Check your connection and try again.", 6000); }
+      S.angiRefresh();
+    },
+    "angi-sw-no": () => { S.angiAsk = false; S.angiRefresh(); },
     "angi-copy-code": async () => { try { await copy(angiScript(await ensureKey()), "Code"); } catch (e) {} },
     "angi-copy-manifest": async () => { await copy(ANGI_MANIFEST, "Settings"); },
     "angi-save-url": async () => {
@@ -7946,7 +7996,7 @@ function ibGo(id, leadId) {
 // with "Reply STOP to opt out." Blasts only send 8 AM to 8 PM Eastern (Florida's limits), and none in vacation mode.
 const TX_ON = () => STANDALONE && !!window.GIC;
 // 3: appointment reminders and re-clean texts (autotext.js). Texting works with 2; only the automatic texts need 3.
-const TEXT_SENDER_VERSION = 28, TEXT_SENDER_MIN = 2;
+const TEXT_SENDER_VERSION = 29, TEXT_SENDER_MIN = 2;
 const TX_STOP_LINE = "Reply STOP to opt out.";
 const TX_MAX = 1500; // characters in one text (Quo takes 1,600)
 S.texts = []; S.textBlasts = []; S.textRuns = {}; S.textSender = null; S.textOut = {}; S.textKey = null; S.textRulesOk = null;
@@ -9977,6 +10027,122 @@ function textSender(PROJECT, VERSION, fsKit, SITE) {
       : fb.more ? "Only the 12 newest active forms are watched. Archive the forms you no longer use in Meta." : live.length > 3 ? "With " + live.length + " active forms it checks every " + every + " minutes. Archive the forms you no longer use in Meta to make it faster." : "",
       fb.lost ? fb.lost + (fb.lost === 1 ? " form entry" : " form entries") + " couldn't be saved. Look in Meta's Leads Center for any that are missing here." : ""].filter(Boolean).join(" ")); save();
   }
+  // ---- Angi leads from the owner's Gmail (elias, 2026-11-18: "I keep getting them. I don't want to manually input
+  // them. I want them to get automatically dripped"; version 29) ----
+  // Angi emails each lead it matches to the owner ("New Customer Match: ... - from Angi #<job>", from no-reply@angi.com,
+  // in HomeAdvisor's words: "Customer Name : ...", "Daytime Phone : ...", "Job Number : ..."). This reads only those
+  // emails, with Gmail's own read-only permission (gmail.readonly, through this Firebase project like Firestore), and
+  // makes each one a New lead, source Angi, with a notification. Its texts are the Facebook ones (fb.platform "angi", and
+  // they say Angi), and they go only while the owner has the Angi switch on (settings/blast-fbdrip.angi). "New
+  // Opportunity" emails (no phone number until the lead is bought) are left alone. Someone already in the CRM gets no
+  // new lead: the request goes on their history instead. The lead is leads/angi-<job>, the same as Angi's own webhook
+  // would make, so one never comes in twice.
+  const ANGI_Q = 'from:(angi.com OR homeadvisor.com) subject:"New Customer Match"', GMAIL = "https://gmail.googleapis.com/gmail/v1/users/me/";
+  function gmail(path) {
+    const opts = { headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken(), "X-Goog-User-Project": PROJECT }, muteHttpExceptions: true };
+    for (let i = 0; i < 2; i++) {
+      const r = UrlFetchApp.fetch(GMAIL + path, opts), code = r.getResponseCode(), txt = r.getContentText() || "";
+      if (code === 403 && opts.headers["X-Goog-User-Project"] && /USER_PROJECT_DENIED|serviceusage/i.test(txt)) { delete opts.headers["X-Goog-User-Project"]; continue; }
+      let json = {}; try { json = JSON.parse(txt || "{}"); } catch (e) {}
+      if (code >= 300) { const e = new Error(String((json.error && json.error.message) || "error " + code).slice(0, 200)); e.perm = code === 401 || (code === 403 && /scope|insufficient/i.test(txt)); throw e; }
+      return json;
+    }
+    throw new Error("Gmail turned it down.");
+  }
+  const angiB64 = (s) => { s = String(s || "").replace(/-/g, "+").replace(/_/g, "/"); return Utilities.newBlob(Utilities.base64Decode(s + "====".slice(0, (4 - s.length % 4) % 4))).getDataAsString("UTF-8"); };
+  // the email's words: its plain text part, else its HTML part without the tags
+  function angiBody(p) {
+    let plain = "", html = "";
+    const walk = (x, d) => {
+      if (!x || d > 6) return; const t = String(x.mimeType || "").toLowerCase(), data = x.body && x.body.data;
+      if (data && t === "text/plain" && !plain) plain = angiB64(data); else if (data && t === "text/html" && !html) html = angiB64(data);
+      [].concat(x.parts || []).forEach(y => walk(y, d + 1));
+    };
+    walk(p, 0);
+    return plain || html.replace(/<(br|\/p|\/div|\/tr|\/li|\/h\d)[^>]*>/gi, "\n").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&#39;|&apos;/g, "'").replace(/&quot;/g, "\"").replace(/[ \t]+/g, " ");
+  }
+  // "sandra Verola" and "MARY Reeves" read as Sandra Verola and Mary Reeves
+  const angiCase = (s) => String(s || "").trim().replace(/\s+/g, " ").split(" ").map(w => w.length > 1 && (w === w.toLowerCase() || w === w.toUpperCase()) ? w.toLowerCase().replace(/(^|[-'’])([a-z])/g, (m, a, c) => a + c.toUpperCase()) : w).join(" ");
+  // the lead, from the email's "Label : value" lines (the first of each: the second "Address" is only the town)
+  function angiParse(text, subject) {
+    const t = String(text || "").replace(/\r/g, ""), v = {};
+    t.split("\n").forEach(line => { const m = /^\s*([A-Za-z][A-Za-z #]{1,30}?)\s*:\s*(.*\S)\s*$/.exec(line); if (m && v[m[1].trim().toLowerCase()] == null) v[m[1].trim().toLowerCase()] = m[2].trim(); });
+    const toll = /^\+18(00|33|44|55|66|77|88)/, ph = ["mobile phone", "cell phone", "daytime phone", "evening phone", "home phone", "phone", "work phone"].map(k => v[k]).find(x => e164(x) && !toll.test(e164(x)));
+    const any = (t.match(/\(?\b[2-9]\d\d\)?[\s.\-]*\d{3}[\s.\-]*\d{4}\b/g) || []).find(x => e164(x) && !toll.test(e164(x)));
+    const mail = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v.email || "") ? v.email : (t.match(/[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}/g) || []).find(x => !/angi\.com|homeadvisor\.com/i.test(x)) || "";
+    const cm = /^\s*Comments\s*:\s*([\s\S]*?)(?:\n\s*\n|$)/im.exec(t), comments = cm ? cm[1].replace(/\s+/g, " ").trim() : "";
+    const name = v["customer name"] || ((/Customer Information\s+([^\n(]+?)\s*(?:\(|\n)/.exec(t) || [])[1]) || "";
+    const desc = v.description || ((/Customer Match:\s*(.+?)\s+-\s+from\b/i.exec(subject) || [])[1]) || "";
+    const address = v.address || "", seg = address.split(",").map(s => s.trim()).filter(Boolean);
+    return { name: angiCase(name), phone: ph || any || "", email: String(mail || "").toLowerCase(), address: address, city: seg.length > 1 && !/\d/.test(seg[1]) ? seg[1] : "", desc: desc,
+      job: String(v["job number"] || v["job #"] || ((/#\s*(\d+)/.exec(subject) || [])[1]) || "").replace(/\D/g, ""), when: v["contact time"] || "", comments: /did not provide additional comments/i.test(comments) ? "" : comments };
+  }
+  // what the CRM shows in Settings > Angi (saved when it changes)
+  function angiStatus(o) {
+    const doc = Object.assign({ kind: "angimail", version: VERSION }, o), sig = JSON.stringify(doc);
+    if (prop("angisig", "") === sig) return;
+    F.put("settings/blast-angimail", Object.assign({ at: new Date().toISOString() }, doc)); setProp("angisig", sig);
+  }
+  // one email → a lead (true), or onto the history of the lead they already are, or nothing when it came in before
+  function angiMake(m, st, now, env) {
+    const x = angiParse(m.text, m.subject), job = x.job.slice(0, 20) || fbHash(m.id), id = "angi-" + job, at = m.at, day = when(now).day;
+    const e = e164(x.phone), d10 = e ? e.slice(2) : "", phone = e ? "(" + d10.slice(0, 3) + ") " + d10.slice(3, 6) + "-" + d10.slice(6) : fbCut(x.phone, 40);
+    const desc = fbCut(x.desc, 120), svc = /seal/i.test(desc) ? "paver sealing" : /gutter/i.test(desc) ? "gutter cleaning" : AP.FB.service([desc], "power washing");
+    const dup = fbDup(id, e, x.email), what = "New Angi request" + (desc ? ": " + desc : "") + (x.job ? " (Angi job #" + x.job + ")" : "");
+    if (dup) {
+      // already a lead or a customer here: no second lead, and no automatic texts (the owner knows them)
+      if (F.get("leads/" + id)) return false;
+      const cur = F.get("leads/" + dup.id); if (!cur || (x.job && [].concat(cur.activity || []).some(a => String((a && a.text) || "").indexOf("Angi job #" + x.job + ")") >= 0))) return false;
+      F.patch("leads/" + dup.id, { activity: [].concat(cur.activity || []).concat([{ at: now.toISOString(), type: "note", text: fbCut(what + (x.comments ? ". They wrote: " + x.comments : ""), 1000) }]), updatedAt: now.toISOString() }, ["activity", "updatedAt"]);
+      if (now.getTime() - Date.parse(at) < DAY) fbPush(st, "New Angi lead", [String(dup.name || dup.company || x.name || phone || "Someone"), desc, "already in your CRM"].filter(Boolean).join(" · "), leadLink(dup.id));
+      return true;
+    }
+    const sw = env.sw(), on = !!(sw && sw.kind === "fbdrip" && sw.angi === true), fresh = now.getTime() - Date.parse(at) < 13 * 3600000;
+    const tb = e ? env.tb() : {}, known = !!(e && ((tb.crm || {})[pkey(e)] || (tb.nums || {})[pkey(e)]));
+    const why = known ? "this number is already on a contact in your CRM" : !e ? "no phone number that can get texts" : !on ? "the Angi texts were off when this lead came in" : !fresh ? "it came in too long before the CRM saw it" : "";
+    // Text 1 waits like a Facebook lead's (the same box in Settings > Facebook leads), so the owner can call first
+    const w = AP.FB.wait(sw), first1 = wall(new Date(Math.max(Date.parse(at) + w * 60000, now.getTime() + Math.min(5, w) * 60000) + (w ? 59000 : 0)));
+    const notes = [desc ? "Angi: " + desc : "", x.job ? "Angi job #" + x.job : "", x.when ? "Best time to reach: " + x.when : "", x.comments ? "They wrote: " + x.comments : "", known ? "This number is already on a contact in your CRM, so no automatic texts went to them." : ""].filter(Boolean).join("\n");
+    const fb = { id: job, form: "", formName: "", ad: "", adset: "", campaign: "", platform: "angi", at: at, picks: desc ? [desc] : [], timing: fbCut(x.when, 120), service: svc, n: 0, next: why ? "" : first1, stop: why, dup: "" };
+    const doc = { name: fbCut(x.name, 120), company: "", phone: phone, email: fbCut(x.email, 200), address: fbCut(x.address, 300), city: fbCut(x.city, 80), type: "Residential", source: "Angi", stage: "new", stageSince: day,
+      services: /seal|gutter/i.test(desc) ? [] : AP.FB.services([desc], env.main().priceBook), value: 0, nextFollowUp: "", dnc: false, list: "leads", notes: fbCut(notes, 3000), angiId: job, createdAt: at, updatedAt: now.toISOString(),
+      activity: [{ at: now.toISOString(), type: "created", text: "New Angi lead" + (desc ? ": " + desc : "") }], fb: fb };
+    if (!F.create("leads/" + id, doc)) return false;
+    if (fb.next) CACHE.remove("fbnx");
+    if (now.getTime() - Date.parse(at) < DAY) fbPush(st, "New Angi lead", [doc.name || phone || "Someone", desc, doc.city, known ? "already in your CRM" : ""].filter(Boolean).join(" · "), leadLink(id));
+    return true;
+  }
+  // every 2 minutes (each run at night): the Angi emails since the last look, oldest first, 10 at most a run
+  function angiMail(st, now, force) {
+    if (!force && CACHE.get("angiwait")) return;
+    CACHE.put("angiwait", "1", 110);
+    const a = prop("angi", null) || {}, seen = Array.isArray(a.seen) ? a.seen : [], since = +a.since || now.getTime() - DAY, env = fbEnv();
+    let list;
+    try { list = [].concat(gmail("messages?maxResults=20&q=" + encodeURIComponent(ANGI_Q + " after:" + Math.floor(since / 1000))).messages || []); }
+    catch (e) {
+      // not allowed yet (the new settings and the owner's Allow in Google): looked at again in 10 minutes
+      if (e.perm) CACHE.put("angiwait", "1", 600);
+      angiStatus({ ok: false, err: e.perm ? "perm" : String(e.message || e).slice(0, 200), n: +a.n || 0, last: a.last || "" }); return;
+    }
+    const todo = list.filter(x => x && x.id && seen.indexOf(x.id) < 0).reverse().slice(0, 10);
+    let newest = 0, failed = false;
+    for (const x of todo) {
+      try {
+        const g = gmail("messages/" + encodeURIComponent(x.id) + "?format=full"), hs = (g.payload && g.payload.headers) || [];
+        const subject = String((hs.find(h => /^subject$/i.test(h.name)) || {}).value || ""), t = +g.internalDate || now.getTime();
+        newest = Math.max(newest, t);
+        if (angiMake({ id: x.id, at: new Date(t).toISOString(), subject: subject, text: angiBody(g.payload) }, st, now, env)) { a.n = (+a.n || 0) + 1; a.last = new Date(t).toISOString(); }
+        seen.push(x.id);
+      } catch (e) { console.error("Angi email " + x.id + ": " + e); failed = true; break; }
+    }
+    a.seen = seen.slice(-100);
+    // the next look starts 2 hours before the newest one read (an email can show up in a search a little late; the ones
+    // already read are skipped by id), or 2 hours back when everything there was read
+    const left = list.some(x => x && x.id && seen.indexOf(x.id) < 0);
+    a.since = Math.max(since, failed || left ? (newest ? newest - 2 * 3600000 : since) : now.getTime() - 2 * 3600000);
+    setProp("angi", a);
+    angiStatus({ ok: true, err: "", n: +a.n || 0, last: a.last || "" });
+  }
   // the open estimate times for {times}, from the business Google Calendar and the CRM's bookings; false when the
   // calendar can't be read (the text then says "this week")
   function fbTimes(now) {
@@ -10018,15 +10184,17 @@ function textSender(PROJECT, VERSION, fsKit, SITE) {
       CACHE.put("fbnx", at && at < later(5) ? at : later(5), 300); return;
     }
     const sw = F.get("settings/blast-fbdrip");
-    // switched off: the ones that are due wait, and it looks again in 2 minutes
-    if (!sw || sw.kind !== "fbdrip" || sw.on !== true) { st.fbErr = ""; CACHE.put("fbnx", later(2), 120); return; }
+    // Facebook and Angi leads (version 29) each have their own switch: the ones whose switch is off wait, and it looks
+    // again in 2 minutes
+    const go = !sw || sw.kind !== "fbdrip" ? [] : due.filter(l => ((l.fb || {}).platform === "angi" ? sw.angi : sw.on) === true);
+    if (!go.length) { st.fbErr = ""; CACHE.put("fbnx", later(2), 120); return; }
     // vacation mode (Email & Texts) holds these too
     const vac = F.get("settings/blast-pause"); if (vac && vac.kind === "pause" && vac.on === true) { CACHE.put("fbnx", later(2), 120); return; }
     if (st.fbDay !== w.day) { st.fbDay = w.day; st.fbSent = 0; }
     st.fbErr = "";
     const note = (s) => { st.fbErr = s; st.fbErrDay = w.day; };
     let times, n = 0; const slots = () => { if (times === undefined) { times = fbTimes(now); if (times === false) note("The texting script couldn't read your Google Calendar, so a follow-up text said \u201cthis week\u201d instead of open times."); } return times; };
-    for (const l of due) {
+    for (const l of go) {
       // a safety net: no more than 80 of these in a day
       if ((st.fbSent || 0) >= 80) { note("80 Facebook follow-up texts went out today, so the rest wait until tomorrow."); return; }
       const r = fbOne(cfg, st, now, ctx, sw, l, nowW, slots, note);
@@ -10073,12 +10241,12 @@ function textSender(PROJECT, VERSION, fsKit, SITE) {
     const skip = late || !tpl.trim() || (/\{offer\}/.test(tpl) && !offer);
     if (!skip) {
       const tm = /\{times\}/.test(tpl) ? slots() : null;
-      const body = AP.FB.text(tpl, { first: fbFirst(l), h: when(now).h, source: fb.platform === "ig" ? "Instagram" : "Facebook", service: fb.service || AP.FB.service(fb.picks, ad && ad.service), offer: offer, times: tm ? AP.FB.slotText(tm) : "" });
+      const body = AP.FB.text(tpl, { first: fbFirst(l), h: when(now).h, source: fb.platform === "angi" ? "Angi" : fb.platform === "ig" ? "Instagram" : "Facebook", service: fb.service || AP.FB.service(fb.picks, ad && ad.service), offer: offer, times: tm ? AP.FB.slotText(tm) : "" });
       // tried again in half an hour, so one that can't go doesn't hold up the others
       if (AP.leftover(body)) { note("A Facebook follow-up text didn't go out: its text has " + AP.leftover(body) + " in it (Settings > Facebook leads)."); set({ next: wall(new Date(now.getTime() + 30 * 60000)) }); return ""; }
       // the checks can take a while: still between 8 AM and 8 PM (10 PM for Text 1)?
       const t2 = when(new Date()), m2 = t2.h * 60 + t2.mi; if (m2 < 8 * 60 || m2 >= (k === 1 && !same ? FB_LATE : 20 * 60)) return false;
-      const r = autoSend(cfg, st, now, ctx, "texts/fb-" + l.id + "-" + (same ? "sd" : k), phone, body, l, "fbdrip", same ? "Facebook same-day follow-up text sent" : "Facebook follow-up text " + k + " of " + N + " sent");
+      const r = autoSend(cfg, st, now, ctx, "texts/fb-" + l.id + "-" + (same ? "sd" : k), phone, body, l, "fbdrip", fb.platform === "angi" ? (same ? "Angi same-day text sent" : "Angi text " + k + " of " + N + " sent") : same ? "Facebook same-day follow-up text sent" : "Facebook follow-up text " + k + " of " + N + " sent");
       if (r === false) return false;
       if (r !== true && r.failed) return stop("a text to this number didn't go through");
       if (r !== true) st.fbSent = (st.fbSent || 0) + 1;
@@ -10456,6 +10624,7 @@ function textSender(PROJECT, VERSION, fsKit, SITE) {
       try { pics(now); } catch (e) { console.error("Invoice pictures: " + e); }
       try { pay(st, now, force); } catch (e) { console.error("Card payments: " + e); }
       try { fbLeads(st, now, force); } catch (e) { console.error("Facebook leads: " + e); }
+      try { angiMail(st, now, force); } catch (e) { console.error("Angi leads: " + e); }
       const cfg = config(force);
       if (!cfg.key) throw new Error("Add your Quo API key in the CRM (Settings > Texting).");
       if (cfg.err) throw new Error(cfg.err);
@@ -10596,7 +10765,7 @@ ${autoPlan.toString()}
 ${fsKit.toString()}
 `;
 const TEXT_MANIFEST = JSON.stringify({ timeZone: "America/New_York", runtimeVersion: "V8", exceptionLogging: "STACKDRIVER",
-  oauthScopes: ["https://www.googleapis.com/auth/datastore", "https://www.googleapis.com/auth/script.external_request", "https://www.googleapis.com/auth/script.scriptapp", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/calendar.readonly", "https://www.googleapis.com/auth/firebase.messaging", "https://www.googleapis.com/auth/firebase", "https://www.googleapis.com/auth/spreadsheets"] }, null, 2);
+  oauthScopes: ["https://www.googleapis.com/auth/datastore", "https://www.googleapis.com/auth/script.external_request", "https://www.googleapis.com/auth/script.scriptapp", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/calendar.readonly", "https://www.googleapis.com/auth/firebase.messaging", "https://www.googleapis.com/auth/firebase", "https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/gmail.readonly"] }, null, 2);
 
 // ---------- past clients (elias, 2026-11-04) ----------
 // A first text and follow-ups to the past customers from elias's old customer sheet who aren't in the CRM, kept apart
@@ -12452,7 +12621,9 @@ function fbOnSettings(docs) {
   S.fbStatus = docs.find(d => d.id === "blast-meta" && d.kind === "meta") || null;
   S.fbDrip = docs.find(d => d.id === "blast-fbdrip" && d.kind === "fbdrip") || null;
   S.fbSheet = docs.find(d => d.id === "blast-metasheet" && d.kind === "metasheet") || null;
-  fbTopRefresh();
+  // Angi leads from the owner's Gmail (version 29; Settings > Angi in standalone.js)
+  S.angiMail = docs.find(d => d.id === "blast-angimail" && d.kind === "angimail") || null;
+  fbTopRefresh(); if (S.angiRefresh) S.angiRefresh();
 }
 let fbUnsub = null;
 function fbListen() {
@@ -12489,6 +12660,10 @@ function fbState() {
 }
 const fbSheetLink = (id) => "https://docs.google.com/spreadsheets/d/" + id;
 const fbDripOn = () => !!(S.fbDrip && S.fbDrip.on === true);
+// Angi leads (version 29) get the same texts, with their own switch (blast-fbdrip.angi, Settings > Angi)
+const fbIsAngi = (l) => !!(l && l.fb && l.fb.platform === "angi");
+const angiDripOn = () => !!(S.fbDrip && S.fbDrip.angi === true);
+const fbOnFor = (l) => fbIsAngi(l) ? angiDripOn() : fbDripOn();
 const fbTexts = () => { const t = S.fbDrip && Array.isArray(S.fbDrip.texts) && S.fbDrip.texts.length ? S.fbDrip.texts : AP.FB.TEXTS; return t.map(s => String(s || "")); };
 const fbAds = () => (S.fbDrip && Array.isArray(S.fbDrip.ads) ? S.fbDrip.ads : AP.FB.ADS).map(a => ({ match: String((a && a.match) || ""), service: String((a && a.service) || ""), offer: String((a && a.offer) || "") }));
 const fbDayList = () => AP.FB.days({ texts: fbTexts(), days: S.fbDrip && S.fbDrip.days });
@@ -12665,8 +12840,9 @@ if (FB_ON()) {
     // on a lead: no more of these texts for them (it doesn't come back on)
     "fb-lead-stop": async (t, l) => {
       if (!l || !l.fb) return;
-      await saveDoc("leads", l.id, { fbOff: true, activity: activity(l, "note", "Facebook follow-up texts stopped for this lead"), updatedAt: new Date().toISOString() }, true);
-      toast("Stopped. They won't get any more of the Facebook follow-up texts."); refreshLeadModal(true);
+      const angi = fbIsAngi(l);
+      await saveDoc("leads", l.id, { fbOff: true, activity: activity(l, "note", angi ? "Angi texts stopped for this lead" : "Facebook follow-up texts stopped for this lead"), updatedAt: new Date().toISOString() }, true);
+      toast(angi ? "Stopped. They won't get any more of the Angi texts." : "Stopped. They won't get any more of the Facebook follow-up texts."); refreshLeadModal(true);
     }
   });
 }
@@ -12675,21 +12851,21 @@ if (FB_ON()) {
 function fbLeadLine(l) {
   const fb = l && l.fb; if (!fb) return "";
   const n = +fb.n || 0, N = fbTexts().length, sent = n ? `${n} of ${N} went out${fb.sd === "sent" ? ", and the same-day text" : ""}. ` : "";
-  if (fb.done) return `All ${n} follow-up texts went out.`;
+  if (fb.done) return `All ${n} ${fbIsAngi(l) ? "Angi" : "follow-up"} texts went out.`;
   if (l.fbOff) return `${sent}You stopped them for this lead.`;
   if (fb.stop) return n ? `${sent}Then they stopped: ${fb.stop}.` : `None went out: ${fb.stop}.`;
   if (!fb.next) return "";
   const d = parseD(fb.next), when = d ? fmtDT(fb.next) : "";
-  return `${n ? sent : "None yet. "}${!fbDripOn() ? "The follow-up texts are switched off, so the next one waits until you turn them on (Settings > Facebook leads)." : vacIsOn() ? "Vacation mode is holding the next one." : when ? `${fb.sd === "due" ? "The same-day text" : "Text " + (n + 1)} goes ${fb.next <= wallNow() ? "within a few minutes" : when}.` : ""}`;
+  return `${n ? sent : "None yet. "}${!fbOnFor(l) ? (fbIsAngi(l) ? "The Angi texts are switched off, so the next one waits until you turn them on (Settings > Angi)." : "The follow-up texts are switched off, so the next one waits until you turn them on (Settings > Facebook leads).") : vacIsOn() ? "Vacation mode is holding the next one." : when ? `${fb.sd === "due" ? "The same-day text" : "Text " + (n + 1)} goes ${fb.next <= wallNow() ? "within a few minutes" : when}.` : ""}`;
 }
 function fbLeadHTML(l) {
   if (!FB_ON() || !l || !l.fb) return "";
   const fb = l.fb, live = !!fb.next && !fb.stop && !fb.done && !l.fbOff, line = fbLeadLine(l);
-  const from = [fb.ad ? "Ad: " + fb.ad : "", fb.formName ? "Form: " + fb.formName : ""].filter(Boolean).join(" · ");
-  return `<section class="panel"><div class="panel-h"><h2>Facebook follow-up texts</h2>${live ? `<button class="btn sm" data-act="fb-lead-stop">Stop these texts</button>` : ""}</div>
+  const from = fbIsAngi(l) ? (fb.id ? "Angi job #" + fb.id : "") : [fb.ad ? "Ad: " + fb.ad : "", fb.formName ? "Form: " + fb.formName : ""].filter(Boolean).join(" · ");
+  return `<section class="panel"><div class="panel-h"><h2>${fbIsAngi(l) ? "Angi texts" : "Facebook follow-up texts"}</h2>${live ? `<button class="btn sm" data-act="fb-lead-stop">Stop these texts</button>` : ""}</div>
     ${line ? `<p class="note">${esc(line)}</p>` : ""}${from ? `<p class="note">${esc(from)}</p>` : ""}</section>`;
 }
-const fbLeadPill = (l) => { const fb = l && l.fb; if (!FB_ON() || !fb || !fb.next || fb.stop || fb.done || l.fbOff || !fbDripOn()) return ""; return `<span class="pill s-selling">Facebook texts ${+fb.n || 0} of ${fbTexts().length}</span>`; };
+const fbLeadPill = (l) => { const fb = l && l.fb; if (!FB_ON() || !fb || !fb.next || fb.stop || fb.done || l.fbOff || !fbOnFor(l)) return ""; return `<span class="pill s-selling">${fbIsAngi(l) ? "Angi" : "Facebook"} texts ${+fb.n || 0} of ${fbTexts().length}</span>`; };
 // Settings > Connections
 function fbConnRow() {
   const st = fbState(), p = { none: ["s-lost", "Not connected"], old: ["due", "Needs the new code"], check: ["s-quoted", fbSheetState() === "none" ? "Checking the key" : "Checking"], bad: ["due", "Has a problem"], ok: ["s-scheduled", "Connected"] }[st], s = S.fbStatus || {}, n = (fbKeyState() === "ok" ? +s.n || 0 : 0) + (fbSheetState() === "ok" ? +(S.fbSheet || {}).n || 0 : 0);
