@@ -7946,7 +7946,7 @@ function ibGo(id, leadId) {
 // with "Reply STOP to opt out." Blasts only send 8 AM to 8 PM Eastern (Florida's limits), and none in vacation mode.
 const TX_ON = () => STANDALONE && !!window.GIC;
 // 3: appointment reminders and re-clean texts (autotext.js). Texting works with 2; only the automatic texts need 3.
-const TEXT_SENDER_VERSION = 27, TEXT_SENDER_MIN = 2;
+const TEXT_SENDER_VERSION = 28, TEXT_SENDER_MIN = 2;
 const TX_STOP_LINE = "Reply STOP to opt out.";
 const TX_MAX = 1500; // characters in one text (Quo takes 1,600)
 S.texts = []; S.textBlasts = []; S.textRuns = {}; S.textSender = null; S.textOut = {}; S.textKey = null; S.textRulesOk = null;
@@ -9993,18 +9993,25 @@ function textSender(PROJECT, VERSION, fsKit, SITE) {
       return AP.FB.slots(busy, nowW, 3);
     } catch (e) { return false; }
   }
+  // Text 1, the answer to a form just filled in, can go until 10 PM (elias, 2026-11-17, after a lead at 7:58 PM had to
+  // wait for 8 AM: "Facebook leads can get messages after 8 p.m. if they fill out the form"; version 28). The same-day
+  // text and the rest still only go 8 AM to 8 PM.
+  const FB_LATE = 22 * 60;
+  const fbFirstDue = (l) => !(+((l && l.fb) || {}).n) && ((l && l.fb) || {}).sd !== "due";
   function fbDrip(cfg, st, now, ctx) {
     const w = when(now), m = w.h * 60 + w.mi;
     // a note from an earlier day (the calendar couldn't be read) doesn't stay up
     if (st.fbErr && st.fbErrDay !== w.day) st.fbErr = "";
-    if (m < 8 * 60 || m >= 20 * 60) return;
+    if (m < 8 * 60 || m >= FB_LATE) return;
+    // after 8 PM only a first text goes
+    const eve = m >= 20 * 60;
     if (!st.backfilled || held(st, now, cfg) || limited(st, now)) return;
     // only once this run has read every new text from Quo (an answer or a STOP that isn't in yet can't stop anything)
     if (!st.lastSync || now.getTime() - Date.parse(st.lastSync) > 5 * 60000) return;
     // when nothing is due it isn't asked again for a few minutes (a new lead clears this, so its first text goes at once)
     const nowW = wall(now), nx = CACHE.get("fbnx"); if (nx && nx > nowW) return;
     const later = (mins) => wall(new Date(now.getTime() + mins * 60000));
-    const due = F.query("leads", [["fb.next", "GREATER_THAN_OR_EQUAL", "2000-01-01"], ["fb.next", "LESS_THAN_OR_EQUAL", nowW]], 30);
+    const due = F.query("leads", [["fb.next", "GREATER_THAN_OR_EQUAL", "2000-01-01"], ["fb.next", "LESS_THAN_OR_EQUAL", nowW]], 30).filter(l => !eve || fbFirstDue(l));
     if (!due.length) {
       // the soonest one still to come (they come back in order of fb.next), looked at again in 5 minutes at most
       const soon = F.query("leads", [["fb.next", "GREATER_THAN", nowW]], 1, ["fb"])[0], at = String((soon && soon.fb && soon.fb.next) || "");
@@ -10069,8 +10076,8 @@ function textSender(PROJECT, VERSION, fsKit, SITE) {
       const body = AP.FB.text(tpl, { first: fbFirst(l), h: when(now).h, source: fb.platform === "ig" ? "Instagram" : "Facebook", service: fb.service || AP.FB.service(fb.picks, ad && ad.service), offer: offer, times: tm ? AP.FB.slotText(tm) : "" });
       // tried again in half an hour, so one that can't go doesn't hold up the others
       if (AP.leftover(body)) { note("A Facebook follow-up text didn't go out: its text has " + AP.leftover(body) + " in it (Settings > Facebook leads)."); set({ next: wall(new Date(now.getTime() + 30 * 60000)) }); return ""; }
-      // the checks can take a while: still between 8 AM and 8 PM?
-      const t2 = when(new Date()), m2 = t2.h * 60 + t2.mi; if (m2 < 8 * 60 || m2 >= 20 * 60) return false;
+      // the checks can take a while: still between 8 AM and 8 PM (10 PM for Text 1)?
+      const t2 = when(new Date()), m2 = t2.h * 60 + t2.mi; if (m2 < 8 * 60 || m2 >= (k === 1 && !same ? FB_LATE : 20 * 60)) return false;
       const r = autoSend(cfg, st, now, ctx, "texts/fb-" + l.id + "-" + (same ? "sd" : k), phone, body, l, "fbdrip", same ? "Facebook same-day follow-up text sent" : "Facebook follow-up text " + k + " of " + N + " sent");
       if (r === false) return false;
       if (r !== true && r.failed) return stop("a text to this number didn't go through");
@@ -12421,8 +12428,8 @@ if (PAY_ON()) {
 // New entries on the Facebook Page's lead forms (Facebook and Instagram ads) come in as New leads, source "Facebook /
 // Meta ads", each with a notification, in the New Meta leads stage (version 25; elias, 2026-11-15). The texting script (version 19) fetches them from Facebook once a minute or
 // two with the key pasted here, so it works with the CRM closed. Then, only while the owner has the switch on, each
-// new lead gets the follow-up texts from the business number: the first right away, the rest on their days, 8 AM to
-// 8 PM. They stop for good on any text back, STOP, a booked estimate or job, a stage past Contacted (Lost included),
+// new lead gets the follow-up texts from the business number: the first right away (until 10 PM, version 28), the rest
+// on their days, 8 AM to 8 PM. They stop for good on any text back, STOP, a booked estimate or job, a stage past Contacted (Lost included),
 // do not contact, or when turned off on the lead; vacation mode holds them. Someone already in the CRM gets none.
 //   private/metakey        { kind: "metakey", key, savedAt, by }: the Facebook key. Written here, never read here.
 //   private/meta           { kind: "meta", has, last4, pageId, savedAt, by }: what this page shows about it
@@ -12575,7 +12582,7 @@ if (FB_ON()) {
         <div class="row"><input type="password" id="fb-key" placeholder="${c.has ? `Saved key ending in ${esc(c.last4)}` : "Paste the key"}" autocomplete="off" spellcheck="false" style="flex:1 1 240px" aria-label="Facebook key"><button class="btn primary" data-act="fb-key-save">Save</button>${c.has ? `<button class="btn ghost" data-act="fb-key-del">Remove</button>` : ""}</div>`)}
       ${step(2, "Get told about each new lead", `<p class="note">Every new Facebook lead sends a notification to your phone: who it is, what they want cleaned and the city. Turn that on or off in Settings > Notifications. The lead is on Today under New leads, and tapping the notification opens it.</p>`)}
       ${step(3, "Follow-up texts", `<div id="fb-sw-box">${fbSwitchHTML()}</div>
-        <p class="note">While it's on, a new Facebook lead gets Text 1 after the wait you set on it (10 minutes after they fill in the form unless you change it, and never sooner than 5 minutes after the lead shows up here), so you can call them first. One more goes the same day, so many hours after the lead comes in (4 unless you change it), unless that would be 8 PM or later. Then the rest go on the days you set, always between 8 AM and 8 PM (a lead at 10 PM gets Text 1 at 8 AM). If you reach them, log the call result on the lead: anything other than No answer or Left voicemail stops the texts. They also stop for good as soon as they text back anything at all, text STOP, get an estimate or job booked, are moved past Contacted (Lost included) or marked do not contact, or you tap Stop these texts on the lead. Vacation mode holds them. Only leads that come in while it's on get them, and someone who's already in your CRM gets none.</p>
+        <p class="note">While it's on, a new Facebook lead gets Text 1 after the wait you set on it (10 minutes after they fill in the form unless you change it, and never sooner than 5 minutes after the lead shows up here), so you can call them first. One more goes the same day, so many hours after the lead comes in (4 unless you change it), unless that would be 8 PM or later. Text 1 can go until 10 PM, so a lead at 9 PM still gets it that evening; one that comes in later gets it at 8 AM. The same-day text and the rest go on the days you set, always between 8 AM and 8 PM. If you reach them, log the call result on the lead: anything other than No answer or Left voicemail stops the texts. They also stop for good as soon as they text back anything at all, text STOP, get an estimate or job booked, are moved past Contacted (Lost included) or marked do not contact, or you tap Stop these texts on the lead. Vacation mode holds them. Only leads that come in while it's on get them, and someone who's already in your CRM gets none.</p>
         <p class="note">Words that fill themselves in: <b>{greeting}</b> Good morning, afternoon or evening · <b>{first}</b> their first name · <b>{source}</b> Facebook or Instagram, whichever they answered on · <b>{service}</b> what they asked for · <b>{offer}</b> the offer on the ad they answered · <b>{times}</b> your next three open estimate times from Google Calendar. A blank text is skipped, and so is one with {offer} when the ad isn't on the list below.</p>
         ${texts.map((t, i) => `<div class="tpl"><div class="row spread"><b>Text ${i + 1}</b>${i === 0 ? `<label class="row note">Minutes after the form <input type="number" data-fbw min="0" max="120" step="1" value="${esc(fbWaitMin())}" style="width:84px" aria-label="Minutes Text 1 waits after the form"></label>` : `<label class="row note">Day <input type="number" data-fbd min="1" max="365" step="1" value="${esc(days[i])}" style="width:84px" aria-label="Day Text ${i + 1} goes"></label>`}</div><textarea data-fbt rows="${t.length > 170 ? 4 : 3}" aria-label="Text ${i + 1}">${esc(t)}</textarea></div>${i === 0 ? `<div class="tpl"><div class="row spread"><b>Same day</b><label class="row note">Hours after the lead comes in <input type="number" data-fbsh min="1" max="8" step="1" value="${esc(fbSameHrs())}" style="width:84px" aria-label="Hours after the lead comes in that the same-day text goes"></label></div><textarea data-fbs rows="3" aria-label="Same-day text">${esc(fbSameText())}</textarea><p class="note">One more text the same day as Text 1. It's passed over when its time would be 8 PM or later (with 4 hours, a lead that comes in after 4 PM gets none), and when it's left blank.</p></div>` : ""}`).join("")}
         <h3>Your ads and their offers</h3><p class="note">{offer} and, when the form doesn't say, {service} come from the ad the lead answered. Each row covers every ad whose name starts with those words (or, failing that, has them in it).</p>
