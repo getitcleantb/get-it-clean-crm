@@ -10755,7 +10755,7 @@ function fsKit(PROJECT) {
 const textScript = () => `// Get It Clean CRM: texting. Sends the texts you write in the CRM from your Quo number and brings answers back.
 // Made by the CRM (Settings > Texting). Paste it into a project at script.google.com, then run textSetup once.
 const APP = textSender(${JSON.stringify(((window.GIC_CONFIG || {}).firebase || {}).projectId || "")}, ${TEXT_SENDER_VERSION}, fsKit, ${JSON.stringify(new URL("./", location.href).href.split(/[?#]/)[0])});
-function textSetup() { APP.setup(); }
+function textSetup() { if (ScriptApp.requireAllScopes) ScriptApp.requireAllScopes(ScriptApp.AuthMode.FULL); APP.setup(); }
 function textTick() { APP.tick(false); }
 
 ${textSender.toString()}
