@@ -4825,7 +4825,7 @@ VIEWS.money = () => {
   const sk = S.money.sortK, sd = S.money.sortDir;
   const rows = c.jobs.map(j => Object.assign({}, j, { net: j.price - j.cost })).sort((a, b) => { const x = a[sk], y = b[sk]; return (typeof x === "number" ? x - y : String(x).localeCompare(String(y))) * sd; });
   return `
-  ${pageHead("Money", `Revenue, costs and profit. ${esc(range)}.`, `<button class="btn" data-act="mf-open" data-f="job">+ Add job</button><button class="btn" data-act="mf-open" data-f="expense">+ Add expense</button><button class="btn" data-act="export-money">Export</button>`)}
+  ${pageHead("Money", `Revenue, costs and profit. ${esc(range)}.`, `<button class="btn primary" data-act="rc-scan">Scan receipt</button><button class="btn" data-act="mf-open" data-f="job">+ Add job</button><button class="btn" data-act="mf-open" data-f="expense">+ Add expense</button><button class="btn" data-act="export-money">Export</button>`)}
   ${noDbBanner()}
   ${months.length ? `<div class="chips" role="group" aria-label="Pick a month">${[["all", "All months"], ...months.map(x => [x, ml(x) + (x === cur ? " (so far)" : "")])].map(([k, t]) => `<button data-mm="${k}" aria-pressed="${k === m}">${t}</button>`).join("")}</div>` : ""}
   ${S.money.form ? moneyForm(S.money.form) : ""}
@@ -4860,16 +4860,17 @@ VIEWS.money = () => {
     <div class="tablewrap only-wide"><table class="t"><thead><tr>${cols.map(k => `<th data-sort="${k[0]}" class="${k[2] ? "n" : ""}" tabindex="0">${k[1]}${sk === k[0] ? (sd > 0 ? " ↑" : " ↓") : ""}</th>`).join("")}</tr></thead><tbody>
     ${rows.map(j => `<tr ${j.l ? `data-open-lead="${esc(j.l.id)}"` : jobCustAttr(j.id)}><td class="num" style="white-space:nowrap">${esc(dfmt(j.date))}</td><td>${esc(j.client)}</td><td>${esc(j.svc)}</td><td>${esc(j.crew)}</td><td>${esc(j.src)}</td><td class="n">${M(j.price)}</td><td class="n">${j.nocost ? `<span class="flag">no cost entered</span>` : M(j.cost)}</td><td class="n"><b>${M(j.net)}</b></td></tr>`).join("") || `<tr><td colspan="8" class="muted">No paid jobs ${m === "all" ? "yet" : "this month"}.</td></tr>`}
     ${rows.length ? `<tr><td colspan="5"><b>Total</b></td><td class="n"><b>${M(c.rev)}</b></td><td class="n"><b>${M(c.jc)}</b></td><td class="n"><b>${M(c.rev - c.jc)}</b></td></tr>` : ""}</tbody></table></div></section>
-  <section class="panel flush"><div class="panel-h"><h2>Business expenses</h2><button class="btn sm" data-act="mf-open" data-f="expense">+ Add expense</button></div>
-    <div class="list only-narrow">${c.exps.slice().sort((a, b) => a.date < b.date ? 1 : -1).map(e => `<div class="item static"><div class="main-col"><span class="t">${esc(e.vendor || e.cat)}</span><span class="s">${esc([e.date ? dfmt(e.date) : "", e.cat, e.what, e.paid].filter(Boolean).join(" · "))}</span></div><div class="r"><b class="num">${M(e.amt)}</b>${e.bill ? `<span class="chip">Monthly</span><button class="btn sm ghost" data-act="bill-skip" data-bill="${esc(e.bill.id)}" data-m="${esc(e.month)}" aria-label="Skip this month of the bill">Skip month</button>` : `<button class="btn sm ghost" data-del-exp="${esc(e.id)}" aria-label="Delete this expense">Delete</button>`}</div></div>`).join("") || `<div class="pad note">No business expenses ${m === "all" ? "yet" : "this month"}.</div>`}${c.exps.length ? `<div class="item static total-row"><div class="main-col"><span class="t">Total</span></div><div class="r"><b class="num">${M(c.be)}</b></div></div>` : ""}</div>
+  <section class="panel flush"><div class="panel-h"><h2>Business expenses</h2><button class="btn sm" data-act="rc-scan">Scan receipt</button><button class="btn sm" data-act="mf-open" data-f="expense">+ Add expense</button></div>
+    <div class="list only-narrow">${c.exps.slice().sort((a, b) => a.date < b.date ? 1 : -1).map(e => `<div class="item static"><div class="main-col"><span class="t">${esc(e.vendor || e.cat)}</span><span class="s">${esc([e.date ? dfmt(e.date) : "", e.cat, e.what, e.paid].filter(Boolean).join(" · "))}</span></div><div class="r"><b class="num">${M(e.amt)}</b>${e.e && e.e.receipt ? `<button class="btn sm ghost" data-act="rc-view" data-id="${esc(e.id)}">Receipt</button>` : ""}${e.bill ? `<span class="chip">Monthly</span><button class="btn sm ghost" data-act="bill-skip" data-bill="${esc(e.bill.id)}" data-m="${esc(e.month)}" aria-label="Skip this month of the bill">Skip month</button>` : `<button class="btn sm ghost" data-del-exp="${esc(e.id)}" aria-label="Delete this expense">Delete</button>`}</div></div>`).join("") || `<div class="pad note">No business expenses ${m === "all" ? "yet" : "this month"}.</div>`}${c.exps.length ? `<div class="item static total-row"><div class="main-col"><span class="t">Total</span></div><div class="r"><b class="num">${M(c.be)}</b></div></div>` : ""}</div>
     <div class="tablewrap only-wide"><table class="t"><thead><tr><th>Date</th><th>Category</th><th>Vendor</th><th>What</th><th>Paid with</th><th class="n">Amount</th><th></th></tr></thead><tbody>
-    ${c.exps.length ? c.exps.slice().sort((a, b) => a.date < b.date ? 1 : -1).map(e => `<tr><td class="num" style="white-space:nowrap">${esc(e.date ? dfmt(e.date) : "")}</td><td>${esc(e.cat)}</td><td>${esc(e.vendor)}</td><td>${esc(e.what)}${e.src ? ` <span class="chip">${esc(e.src)}</span>` : ""}${e.bill ? ` <span class="chip">Monthly</span>` : ""}</td><td>${esc(e.paid)}</td><td class="n">${M(e.amt)}</td><td class="n">${e.bill ? `<button class="btn sm ghost" data-act="bill-skip" data-bill="${esc(e.bill.id)}" data-m="${esc(e.month)}" aria-label="Skip this month of the bill">Skip month</button>` : `<button class="btn sm ghost" data-del-exp="${esc(e.id)}" aria-label="Delete expense">Delete</button>`}</td></tr>`).join("") + `<tr><td colspan="5"><b>Total</b></td><td class="n"><b>${M(c.be)}</b></td><td></td></tr>` : `<tr><td colspan="7" class="muted">No business expenses ${m === "all" ? "yet" : "this month"}.</td></tr>`}
+    ${c.exps.length ? c.exps.slice().sort((a, b) => a.date < b.date ? 1 : -1).map(e => `<tr><td class="num" style="white-space:nowrap">${esc(e.date ? dfmt(e.date) : "")}</td><td>${esc(e.cat)}</td><td>${esc(e.vendor)}</td><td>${esc(e.what)}${e.src ? ` <span class="chip">${esc(e.src)}</span>` : ""}${e.bill ? ` <span class="chip">Monthly</span>` : ""}</td><td>${esc(e.paid)}</td><td class="n">${M(e.amt)}</td><td class="n">${e.e && e.e.receipt ? `<button class="btn sm ghost" data-act="rc-view" data-id="${esc(e.id)}">Receipt</button>` : ""}${e.bill ? `<button class="btn sm ghost" data-act="bill-skip" data-bill="${esc(e.bill.id)}" data-m="${esc(e.month)}" aria-label="Skip this month of the bill">Skip month</button>` : `<button class="btn sm ghost" data-del-exp="${esc(e.id)}" aria-label="Delete expense">Delete</button>`}</td></tr>`).join("") + `<tr><td colspan="5"><b>Total</b></td><td class="n"><b>${M(c.be)}</b></td><td></td></tr>` : `<tr><td colspan="7" class="muted">No business expenses ${m === "all" ? "yet" : "this month"}.</td></tr>`}
     </tbody></table></div></section>
   <p class="note">Profit is job prices, minus job costs, minus business expenses, the same way your money tracker works it out. Revenue counts jobs once they're marked paid.</p>`;
 };
 function moneyForm(kind) {
   const opt = (arr, cur) => arr.map(v => { const [k, t] = Array.isArray(v) ? v : [v, v]; return `<option value="${esc(k)}" ${cur === k ? "selected" : ""}>${esc(t)}</option>`; }).join("");
   if (kind === "expense") return `<section class="panel" data-keep><div class="panel-h"><h2>${S.money.rep === "monthly" ? "Add a monthly bill" : "Add a business expense"}</h2><button class="btn ghost sm" data-act="mf-close">Close</button></div>
+    ${typeof rcBlock === "function" ? rcBlock() : ""}
     <div class="form">
       <label class="f">Date<input type="date" id="me-date" value="${today()}"></label>
       <label class="f">Repeats<select id="me-rep">${opt([["", "Just once"], ["monthly", "Every month"]], S.money.rep || "")}</select></label>
@@ -4880,7 +4881,7 @@ function moneyForm(kind) {
       <label class="f">Paid with<select id="me-paid">${opt(PAID_WITH, "Business card")}</select></label>
       <label class="f full">Spent to get leads from (optional)<select id="me-src"><option value="">Not for a lead source</option>${opt(SOURCES.filter(s => s !== "HOA outreach" && s !== "Uploaded list"), "")}</select></label>
     </div>
-    <div class="row"><button class="btn primary" data-act="save-mexp">Save expense</button><span class="note">Tag lead fees and ads with their source so “Back per $1” works. Every month: a bill like insurance or a lead subscription, counted on this day each month from this date on, until you stop it under Monthly overhead.</span></div></section>`;
+    <div class="row"><button class="btn primary" data-act="save-mexp">Save expense</button>${typeof rcFor === "function" && rcFor(S.money.gen) ? `<button class="btn" data-act="rc-next">Save and scan next</button>` : ""}<span class="note">Tag lead fees and ads with their source so “Back per $1” works. Every month: a bill like insurance or a lead subscription, counted on this day each month from this date on, until you stop it under Monthly overhead.</span></div></section>`;
   const leads = leadsOnly().slice().sort((a, b) => leadName(a).localeCompare(leadName(b)));
   const pre = S.money.formLead || "", preL = pre ? leadById(pre) : null;
   return `<section class="panel" data-keep><div class="panel-h"><h2>Add a job</h2><button class="btn ghost sm" data-act="mf-close">Close</button></div>
@@ -4960,10 +4961,13 @@ async function saveMoneyExpense(btn) {
   // a year still being typed (0026, 0202...) would put the expense, or every month of a bill, centuries back
   if (!/^\d{4}-\d\d-\d\d$/.test(date) || date < "2000") { toast("Finish typing the year in the date"); const el = $("#me-date"); if (el) el.focus(); return; }
   btn.disabled = true;
+  const id = uid("exp"), rcp = typeof rcFor === "function" ? rcFor(gen) : null;
   const doc = { date, category: v("me-cat"), vendor: v("me-vendor"), note: v("me-note"), paidWith: v("me-paid"), forSource: v("me-src"), amount: amt, createdAt: new Date().toISOString() };
   // a monthly bill: counted on this day of every month from this date on (overhead.js)
   if (rep) Object.assign(doc, { repeat: "monthly", start: date, day: +date.slice(8, 10), end: "", skip: [] });
-  try { await saveDoc("expenses", uid("exp"), doc); if (S.money.gen === gen && S.money.form === "expense") { S.money.form = ""; S.money.rep = ""; forgetTyped(/^me-/); } toast(rep ? "Monthly bill saved. It's under Monthly overhead." : "Expense saved", rep ? 4000 : 2600); schedule(); }
+  // a scanned receipt's photo, kept where only the owner can see it (private/rcpt-<expense id>, receipts.js)
+  if (rcp) { try { await S.db.collection("private").doc("rcpt-" + id).set({ kind: "receipt", expenseId: id, img: rcp.img, read: rcp.read, at: doc.createdAt }); doc.receipt = true; } catch (e) {} }
+  try { await saveDoc("expenses", id, doc); if (rcp) rcSaved(rcp); if (S.money.gen === gen && S.money.form === "expense") { S.money.form = ""; S.money.rep = ""; forgetTyped(/^me-/); } toast(rep ? "Monthly bill saved. It's under Monthly overhead." : "Expense saved", rep ? 4000 : 2600); schedule(); }
   catch (e) { btn.disabled = false; }
 }
 // of the estimates sent to a customer dropped on Paid, the one being paid: the only one, or the only one for that price
@@ -5583,6 +5587,193 @@ Object.assign(EXTRA_ACTS, {
     toast(`${billLabel(e)}: ${fmtD(m + "-01", { month: "long" })} skipped`, 7000, { label: "Undo", fn: async () => { const x = S.expenses.find(y => y.id === e.id); if (x) try { await saveDoc("expenses", e.id, { skip: (x.skip || []).filter(y => y !== m), updatedAt: new Date().toISOString() }, true); } catch (er) {} } });
   }
 });
+// ---------- SCAN A RECEIPT (elias, 2026-11-23) ----------
+// "Is there a way we could add like a scanner to the CRM where I could just click on a button, it pulls out like a
+// camera, you could scan a receipt and it automatically reads what it is and uploads the expense."
+// Money > Scan receipt opens the phone's camera (a file picker on a computer). The photo is read by Google's Gemini
+// through Firebase AI Logic (switched on once in the Firebase console: AI Logic > Get started > Gemini Developer API,
+// free on the Spark plan), and Add expense fills in with the store, date, total, what was bought and a category.
+// Save keeps it, with a smaller copy of the photo in private/rcpt-<expense id> (only the owner can see it); the
+// expense gets receipt: true and a Receipt button on its row. When the photo can't be read, the form stays open to
+// type it in, and the photo is still kept with the expense.
+const RC_URL = "https://firebasevertexai.googleapis.com/v1beta/projects/";
+// Gemini's current Flash model first (Nov 2026), then Google's "newest Flash" name, then older ones: one Google has
+// retired or doesn't offer here is skipped for the next, and the one that works is remembered on this device
+const RC_MODELS = ["gemini-3.5-flash", "gemini-flash-latest", "gemini-2.5-flash", "gemini-3.1-flash-lite"];
+// rc.form: the Add expense form (S.money.gen) the photo belongs to. state: reading, read, notreceipt, off, busy, error
+const rc = { form: -1, small: "", state: "", n: 0, filled: false };
+function rcModelList() { let m = ""; try { m = localStorage.getItem("gic-rc-model") || ""; } catch (e) {} return m && RC_MODELS.includes(m) ? [m].concat(RC_MODELS.filter(x => x !== m)) : RC_MODELS.slice(); }
+// a photo as a JPEG data URL, no bigger than max pixels on its long side
+function rcJpeg(file, max, q) {
+  return new Promise((done, fail) => {
+    const url = URL.createObjectURL(file), img = new Image();
+    img.onload = () => {
+      try {
+        const s = Math.min(1, max / Math.max(img.naturalWidth || 1, img.naturalHeight || 1)), c = document.createElement("canvas");
+        c.width = Math.max(1, Math.round(img.naturalWidth * s)); c.height = Math.max(1, Math.round(img.naturalHeight * s));
+        const g = c.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height);
+        done(c.toDataURL("image/jpeg", q));
+      } catch (e) { fail(e); } finally { URL.revokeObjectURL(url); }
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); fail(new Error("not a picture")); };
+    img.src = url;
+  });
+}
+const RC_PROMPT = "This is a photo of a receipt or bill for Get It Clean Tampa Bay, a power washing business in Palm Harbor, Florida. Read it and fill in every field.\n" +
+  "total: the final amount paid, with tax and after any discounts (the grand total, never the subtotal). 0 if you can't read it.\n" +
+  "date: the purchase date as YYYY-MM-DD, or empty if it isn't shown.\n" +
+  "vendor: the store or company, short, in normal capitals (Home Depot, Lowe's, Shell, Angi).\n" +
+  "what: a few plain words on what was bought (Bleach and surfactant, Gas, Pressure washer pump, Door hangers).\n" +
+  "category: Gas & chemicals for fuel, chlorine, bleach, sodium hypochlorite, surfactant, soap, degreaser and other cleaning chemicals; " +
+  "Equipment for pressure washers, pumps, hoses, reels, nozzles, surface cleaners, ladders, tools, trailers, uniforms and other gear; " +
+  "Maintenance for repairs, oil changes, tires and service on the truck, trailer or machines; Lead vendor for Angi, HomeAdvisor, Thumbtack and other lead services; " +
+  "Marketing for ads, signs, door hangers, flyers, business cards, printing and websites; Insurance; Employee / labor for pay to workers; Other for anything else.\n" +
+  "cash: true only when the receipt shows it was paid in cash.\n" +
+  "isReceipt: false when the photo isn't a receipt or bill, or is too blurry to read the total.";
+const rcSchema = () => ({ type: "object", properties: {
+  isReceipt: { type: "boolean" }, vendor: { type: "string" }, date: { type: "string" }, total: { type: "number" }, what: { type: "string" },
+  category: { type: "string", enum: EXP_CATS.slice() }, cash: { type: "boolean" } }, required: ["isReceipt", "vendor", "date", "total", "what", "category", "cash"] });
+// Gemini's reading of the photo, or an Error whose .why is off (receipt reading not switched on), busy or error
+async function rcRead(jpeg) {
+  const cfg = (window.GIC_CONFIG || {}).firebase || {};
+  if (!cfg.apiKey || !cfg.projectId) throw Object.assign(new Error("no Firebase settings"), { why: "error" });
+  const body = JSON.stringify({ contents: [{ role: "user", parts: [{ inlineData: { mimeType: "image/jpeg", data: jpeg.split(",")[1] } }, { text: RC_PROMPT }] }],
+    generationConfig: { temperature: 0, responseMimeType: "application/json", responseSchema: rcSchema() } });
+  let last = null;
+  for (const m of rcModelList()) {
+    const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 60000);
+    let r, txt = "";
+    try {
+      r = await fetch(RC_URL + encodeURIComponent(cfg.projectId) + "/models/" + m + ":generateContent", { method: "POST", signal: ctl.signal, cache: "no-store",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": cfg.apiKey, "x-goog-api-client": "gl-js/ fire/11.10.0", "X-Firebase-Appid": cfg.appId || "" }, body });
+      txt = await r.text();
+    } catch (e) { throw Object.assign(new Error("no connection"), { why: "error" }); } finally { clearTimeout(timer); }
+    if (r.ok) {
+      let j = null; try { j = JSON.parse(txt); } catch (e) {}
+      const parts = (((j && j.candidates && j.candidates[0]) || {}).content || {}).parts || [];
+      const out = parts.map(p => p.text || "").join("").replace(/^\s*```(?:json)?|```\s*$/g, "").trim();
+      try { const x = JSON.parse(out); try { localStorage.setItem("gic-rc-model", m); } catch (e) {} return x; }
+      catch (e) { throw Object.assign(new Error("unreadable answer"), { why: "error" }); }
+    }
+    if (r.status === 403 && /SERVICE_DISABLED|has not been used|is disabled|API_KEY_SERVICE_BLOCKED|are blocked/i.test(txt)) throw Object.assign(new Error("off"), { why: "off" });
+    if (r.status === 429) throw Object.assign(new Error("busy"), { why: "busy" });
+    // a model that's retired, or not offered to this project: the next one
+    if ((r.status === 404 || r.status === 400) && /not found|is not supported|not available|unknown model|does not exist/i.test(txt)) { last = txt; continue; }
+    throw Object.assign(new Error("error " + r.status), { why: "error" });
+  }
+  throw Object.assign(new Error("no model: " + String(last || "").slice(0, 120)), { why: "error" });
+}
+// what was read, as the form's values
+function rcValues(x) {
+  const v = {}, amt = Math.round((+x.total || 0) * 100) / 100;
+  if (amt > 0) v["me-amt"] = String(amt);
+  // a date that can't be right (in the future, or over a year back) is left as today
+  const d = String(x.date || "").trim(), t = today();
+  if (/^\d{4}-\d\d-\d\d$/.test(d) && d <= t && d >= ymd(new Date(Date.now() - 400 * 86400000))) v["me-date"] = d;
+  if (EXP_CATS.includes(x.category)) v["me-cat"] = x.category;
+  const vendor = String(x.vendor || "").trim().slice(0, 80), what = String(x.what || "").trim().slice(0, 120);
+  if (vendor) v["me-vendor"] = vendor; if (what) v["me-note"] = what;
+  if (x.cash === true) v["me-paid"] = "Business cash";
+  // lead fees and ads tagged with their lead source, so Back per $1 counts them
+  const src = /\b(angi|homeadvisor|home advisor)\b/i.test(vendor) ? "Angi" : /\b(facebook|meta|instagram)\b/i.test(vendor) ? "Facebook / Meta ads" : /\bgoogle\b/i.test(vendor) && /ads?\b/i.test(vendor + " " + what) ? "Google" : "";
+  if (src && SOURCES.includes(src)) v["me-src"] = src;
+  return v;
+}
+// puts what was read into the form on screen, leaving any box the owner already typed in
+function rcFill(v) {
+  let n = 0;
+  Object.keys(v).forEach(id => { const el = document.getElementById(id); if (!el || !$("#view").contains(el) || typedIn(el)) return; if (el.tagName === "SELECT" && ![...el.options].some(o => o.value === v[id])) return; el.value = v[id]; n++; });
+  return n;
+}
+// a photo picked: Add expense opens (a fresh one), the photo shows at the top while it's read, then the boxes fill in
+async function rcStart(file) {
+  if (!S.db) { toast("Your CRM data isn't loaded yet. Try again in a moment."); return; }
+  forgetTyped(/^me-/); S.money.gen = (S.money.gen || 0) + 1; S.money.form = "expense"; S.money.rep = ""; S.money.formLead = ""; S.money.auto = {};
+  const n = ++rc.n; Object.assign(rc, { form: S.money.gen, small: "", state: "reading", filled: false });
+  if (S.view !== "money") { S.view = "money"; }
+  render(); window.scrollTo({ top: 0, behavior: "smooth" });
+  let big = "";
+  try {
+    big = await rcJpeg(file, 1600, 0.85);
+    let small = await rcJpeg(file, 1100, 0.6); if (small.length > 900000) small = await rcJpeg(file, 800, 0.5);
+    if (rc.n !== n) return; rc.small = small.length > 900000 ? "" : small;
+  } catch (e) { if (rc.n === n) { Object.assign(rc, { state: "badphoto", small: "" }); schedule(); } return; }
+  schedule();
+  let got = null, why = "";
+  try { got = await rcRead(big); } catch (e) { why = e.why || "error"; }
+  if (rc.n !== n) return;
+  if (!got) { rc.state = why; schedule(); return; }
+  if (got.isReceipt === false && !(+got.total > 0)) { rc.state = "notreceipt"; schedule(); return; }
+  rc.state = "read"; rc.vals = rcValues(got);
+  // the form is filled the next time it's drawn (rcAfter): now when it's on screen
+  schedule();
+}
+// after Money is drawn: what was read goes into the boxes once
+function rcAfter() {
+  if (rc.state !== "read" || rc.filled || rc.form !== S.money.gen || S.money.form !== "expense" || !$("#me-amt")) return;
+  rc.filled = true; rcFill(rc.vals || {});
+  if (!$("#me-amt").value) { const a = $("#me-amt"); try { a.focus(); } catch (e) {} }
+}
+{ const prev = after.money; after.money = () => { if (prev) prev(); rcAfter(); }; }
+// the photo and what happened with it, at the top of Add expense
+function rcBlock() {
+  if (rc.form !== S.money.gen || !rc.state) return "";
+  const say = {
+    reading: ["Reading the receipt…", "The boxes below fill in when it's read."],
+    read: ["Receipt read", "Check the amount and the category, then Save."],
+    notreceipt: ["Couldn't read a receipt in that photo", "Try another photo, or type it in below. The photo is kept with the expense."],
+    off: ["Receipt reading isn't switched on yet", "It's one switch in the Firebase console (AI Logic). Type it in below for now; the photo is kept with the expense."],
+    busy: ["Too many receipts at once", "Wait a minute and scan it again, or type it in below."],
+    badphoto: ["That photo couldn't be opened", "Try taking it again, or pick a JPG or PNG photo."],
+    error: ["Couldn't read it right now", "Check your connection and scan it again, or type it in below. The photo is kept with the expense."]
+  }[rc.state] || ["", ""];
+  return `<div class="rc-box">${rc.small ? `<img src="${esc(rc.small)}" alt="The receipt">` : ""}<div class="rc-say"><b>${esc(say[0])}</b><span class="note">${esc(say[1])}</span>
+    <div class="row"><button class="btn sm" data-act="rc-scan">Scan again</button><button class="btn sm ghost" data-act="rc-pick">Use a saved photo</button></div></div></div>`;
+}
+// the photo to keep with the expense being saved from form gen, if there's one
+function rcFor(gen) { return rc.form === gen && rc.small ? { img: rc.small, read: rc.state === "read", n: rc.n } : null; }
+function rcSaved(p) { if (p && rc.n === p.n) Object.assign(rc, { form: -1, small: "", state: "", filled: false, vals: null }); }
+// the hidden boxes the camera and the photo picker answer into (kept outside the page so a redraw never drops them)
+function rcInput(id, camera) {
+  let i = document.getElementById(id); if (i) return i;
+  i = document.createElement("input"); i.type = "file"; i.accept = "image/*"; i.id = id; i.tabIndex = -1; i.setAttribute("aria-hidden", "true");
+  if (camera) i.setAttribute("capture", "environment");
+  i.style.cssText = "position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0";
+  i.addEventListener("change", () => { const f = i.files && i.files[0]; i.value = ""; if (f) rcStart(f); });
+  document.body.appendChild(i); return i;
+}
+// a saved receipt, in a window
+async function rcView(id) {
+  showModal(`<div class="sh"><h2>Receipt</h2><button class="x" data-close="1" aria-label="Close">×</button></div><div class="sb" id="rc-view"><p class="note">Loading the receipt…</p></div>`);
+  let img = "";
+  try { const d = await S.db.collection("private").doc("rcpt-" + id).get(); img = (d.exists && (d.data() || {}).img) || ""; } catch (e) {}
+  if (!img) { try { const r = await GIC.restGet("private", "rcpt-" + id); img = (r && r.data && r.data.img) || ""; } catch (e) {} }
+  const box = $("#rc-view"); if (!box) return;
+  box.innerHTML = /^data:image\/(jpeg|png);base64,/.test(img) ? `<img src="${esc(img)}" alt="The receipt" style="max-width:100%;height:auto;border-radius:10px;align-self:center">` : `<p class="note">Couldn't load this receipt. Check your connection and try again.</p>`;
+}
+// The camera has to open in the same tap (phones don't open it later), so these buttons are answered here, before the
+// rest of the page's buttons.
+document.addEventListener("click", (e) => {
+  const b = e.target && e.target.closest && e.target.closest('[data-act="rc-scan"], [data-act="rc-pick"], [data-act="rc-next"], [data-act="rc-view"]');
+  if (!b) return;
+  e.preventDefault(); e.stopPropagation();
+  const act = b.dataset.act;
+  if (act === "rc-view") { rcView(b.dataset.id); return; }
+  if (act === "rc-next") {
+    // Save and scan next: only when it can be saved, so a photo never replaces a form that didn't save
+    const a = $("#me-amt"), d = $("#me-date");
+    if (!(Number(a && a.value) > 0)) { toast("Enter the amount spent (more than $0)"); return; }
+    if (d && (!/^\d{4}-\d\d-\d\d$/.test(d.value) || d.value < "2000")) { toast("Finish typing the year in the date"); return; }
+    rcInput("rc-cam", true).click(); saveMoneyExpense(b); return;
+  }
+  rcInput(act === "rc-pick" ? "rc-pick" : "rc-cam", act !== "rc-pick").click();
+}, true);
+document.head.insertAdjacentHTML("beforeend", `<style>
+.rc-box { display: flex; gap: 14px; align-items: flex-start; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); margin-bottom: 14px; }
+.rc-box img { width: 96px; max-height: 150px; object-fit: cover; object-position: top; border-radius: 8px; flex: none; border: 1px solid var(--line); background: #fff; }
+.rc-say { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.rc-say .row { flex-wrap: wrap; }
+</style>`);
 // ---------- IMPORT ----------
 function importModal() {
   showModal(`<div class="sh"><h2>Upload leads</h2><button class="x" data-close="1" aria-label="Close">×</button></div><div class="sb"><section class="panel">
