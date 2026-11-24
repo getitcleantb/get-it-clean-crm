@@ -5639,7 +5639,7 @@ async function rcRead(jpeg) {
   if (!cfg.apiKey || !cfg.projectId) throw Object.assign(new Error("no Firebase settings"), { why: "error" });
   const body = JSON.stringify({ contents: [{ role: "user", parts: [{ inlineData: { mimeType: "image/jpeg", data: jpeg.split(",")[1] } }, { text: RC_PROMPT }] }],
     generationConfig: { temperature: 0, responseMimeType: "application/json", responseSchema: rcSchema() } });
-  let last = null;
+  let last = null, busy = false;
   for (const m of rcModelList()) {
     const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 60000);
     let r, txt = "";
@@ -5656,12 +5656,13 @@ async function rcRead(jpeg) {
       catch (e) { throw Object.assign(new Error("unreadable answer"), { why: "error" }); }
     }
     if (r.status === 403 && /SERVICE_DISABLED|has not been used|is disabled|API_KEY_SERVICE_BLOCKED|are blocked/i.test(txt)) throw Object.assign(new Error("off"), { why: "off" });
-    if (r.status === 429) throw Object.assign(new Error("busy"), { why: "busy" });
+    // too many at once, or Google's model is overloaded right now: the next model, and "busy" if none can take it
+    if (r.status === 429 || r.status === 500 || r.status === 503) { busy = true; last = txt; continue; }
     // a model that's retired, or not offered to this project: the next one
     if ((r.status === 404 || r.status === 400) && /not found|is not supported|not available|unknown model|does not exist/i.test(txt)) { last = txt; continue; }
     throw Object.assign(new Error("error " + r.status), { why: "error" });
   }
-  throw Object.assign(new Error("no model: " + String(last || "").slice(0, 120)), { why: "error" });
+  throw Object.assign(new Error((busy ? "busy: " : "no model: ") + String(last || "").slice(0, 120)), { why: busy ? "busy" : "error" });
 }
 // what was read, as the form's values
 function rcValues(x) {
@@ -5723,7 +5724,7 @@ function rcBlock() {
     read: ["Receipt read", "Check the amount and the category, then Save."],
     notreceipt: ["Couldn't read a receipt in that photo", "Try another photo, or type it in below. The photo is kept with the expense."],
     off: ["Receipt reading isn't switched on yet", "It's one switch in the Firebase console (AI Logic). Type it in below for now; the photo is kept with the expense."],
-    busy: ["Too many receipts at once", "Wait a minute and scan it again, or type it in below."],
+    busy: ["Google's reader is busy right now", "Wait a minute and scan it again, or type it in below."],
     badphoto: ["That photo couldn't be opened", "Try taking it again, or pick a JPG or PNG photo."],
     error: ["Couldn't read it right now", "Check your connection and scan it again, or type it in below. The photo is kept with the expense."]
   }[rc.state] || ["", ""];
