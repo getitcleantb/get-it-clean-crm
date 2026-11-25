@@ -4806,7 +4806,9 @@ VIEWS.money = () => {
   const crews = [...new Set(c.jobs.map(j => j.crew))].sort();
   const nb = c.jobs.filter(j => j.bankPct > 0).length;
   const spendFor = (src, exps) => sum(exps.filter(e => e.src === src), e => e.amt);
-  const srcKeys = [...new Set(c.jobs.map(j => j.src).concat(c.exps.map(e => e.src).filter(Boolean)))];
+  // Facebook / Meta ads is always listed (elias, 2026-11-25: "add meta ads, because that's one of our new lead sources"),
+  // so it shows before its first job is paid or its first ad charge is entered
+  const srcKeys = [...new Set(c.jobs.map(j => j.src).concat(c.exps.map(e => e.src).filter(Boolean), c.jobs.length || c.exps.length ? ["Facebook / Meta ads"] : []))];
   const ls = srcKeys.map(k => { const js = c.jobs.filter(j => j.src === k); return { k, n: js.length, rev: sum(js, j => j.price), sp: spendFor(k, c.exps) }; }).sort((a, b) => b.rev - a.rev);
   const lmx = Math.max(1, ...ls.map(x => x.rev));
   const tagNames = [...new Set(c.jobs.flatMap(j => j.tags))];
