@@ -6097,6 +6097,16 @@ function saveLead_(raw) {
     if (!s || (+s.version || 0) < ANGI_MAIL_VERSION) return "wait";
     return s.ok ? "ok" : s.err === "perm" ? "perm" : "bad";
   };
+  // the schedule Angi leads' texts go on (version 31): "tight" (elias picked it for Angi, 2026-11-25), or "" for the
+  // Facebook leads' own one
+  const angiPlan = () => S.fbDrip && S.fbDrip.angiPlan === "tight" ? "tight" : "";
+  const angiSw = (plan) => AP.FB.forAngi(Object.assign({}, S.fbDrip || {}, { texts: fbTexts(), angiPlan: plan == null ? angiPlan() : plan }));
+  const angiSchedWords = (plan) => {
+    const sw = angiSw(plan), texts = fbTexts(), w = AP.FB.wait(sw), hrs = AP.FB.sameHrs(sw), same = AP.FB.sameText(sw).trim();
+    // a text about an ad's offer, or a blank one, is passed over for Angi leads
+    const later = AP.FB.days(sw).filter((d, i) => i > 0 && (texts[i] || "").trim() && !/\{offer\}/.test(texts[i]));
+    return `Text 1 ${w ? `${w === 1 ? "a minute" : w + " minutes"} after Angi's email` : "as soon as the CRM sees Angi's email"}${same ? `, another ${hrs === 1 ? "an hour" : hrs + " hours"} later` : ""}${later.length ? `, then on day${later.length > 1 ? "s" : ""} ${andList(later.map(String))}` : ""}. Texts go out 8 AM to 8 PM (Text 1 until 10 PM).`;
+  };
   const angiSave = (o) => G.restSet("settings", "blast-fbdrip", Object.assign({ kind: "fbdrip", by: S.myId || "", updatedAt: new Date().toISOString() }, o), { mask: ["kind", "by", "updatedAt"].concat(Object.keys(o)) });
   function angiMailHTML() {
     const st = angiMailState(), s = S.angiMail || {}, on = angiDripOn(), ready = st === "ok" || on, num = (S.textSender || {}).number;
@@ -6109,11 +6119,14 @@ function saveLead_(raw) {
       bad: `<div class="banner bad" role="status">Your texting script couldn't read your email: ${esc(s.err || "")}</div>`,
       ok: `<div class="banner good" role="status">Reading your Angi emails. ${+s.n ? `${plural(+s.n, "Angi lead")} brought in so far${s.last ? ", the latest " + esc(fmtWhen(new Date(s.last))) : ""}.` : "No new Angi leads yet."}</div>` }[st];
     return `<div class="panel-h"><h2>Angi leads from your email</h2><span class="pill ${pill[0]}">${pill[1]}</span></div>
-      <p class="note">Your texting script reads the “New Customer Match” emails Angi sends to your Gmail. Each one shows up on your Leads tab as New, source Angi, with a notification on your phone, usually within 2 minutes. It only reads those emails and can't send any. “New Opportunity” emails stay out, since they have no phone number. Someone already in your CRM doesn't get a second lead: the request goes on their history, with no texts.</p>
+      <p class="note">Your texting script reads the “New Customer Match” emails Angi sends to your Gmail. Each one shows up on your Leads tab as New, source Angi, with a notification on your phone, usually within a minute or two. It only reads those emails and can't send any. “New Opportunity” emails stay out, since they have no phone number. Someone already in your CRM doesn't get a second lead: the request goes on their history, with no texts.</p>
       ${msg}
       <div class="row spread auto-sw"><span><b>Text new Angi leads by themselves</b> <span class="pill ${on ? "s-scheduled" : "s-lost"}">${on ? "On" : "Off"}</span><br><span class="note">${on ? "Each new Angi lead gets your Facebook lead texts (Settings > Facebook leads), saying Angi instead of Facebook. A text about an ad's offer is skipped." : ready ? "Off: Angi leads still come in, and nothing is texted to them by itself." : "Off. It can be turned on once your script is reading your Angi emails."}</span></span><button class="switch" role="switch" data-act="angi-sw" aria-checked="${on}" aria-label="Text new Angi leads by themselves"${ready ? "" : " disabled"}><span class="knob" aria-hidden="true"></span></button></div>
-      ${S.angiAsk && !on ? `<div class="banner warn stack"><span>Turn on the Angi texts? Every new Angi lead will be texted by itself from ${num ? esc(fmtPhone(num)) : "your business number"}, starting with Text 1 ${esc(fbWaitWords(fbWaitMin()))}, then the rest of your Facebook lead texts on their days. Leads already here don't get them.</span><div class="row"><button class="btn sm primary" data-act="angi-sw-yes">Turn on</button><button class="btn sm ghost" data-act="angi-sw-no">Cancel</button></div></div>` : ""}
-      ${vacIsOn() && on ? `<p class="note">Vacation mode is on, so these are on hold until you turn it off on Email & Texts.</p>` : ""}`;
+      ${S.angiAsk && !on ? `<div class="banner warn stack"><span>Turn on the Angi texts? Every new Angi lead will be texted by itself from ${num ? esc(fmtPhone(num)) : "your business number"}, starting with Text 1 ${esc(fbWaitWords(AP.FB.wait(angiSw())))}, then the rest of your Facebook lead texts on the schedule below. Leads already here don't get them.</span><div class="row"><button class="btn sm primary" data-act="angi-sw-yes">Turn on</button><button class="btn sm ghost" data-act="angi-sw-no">Cancel</button></div></div>` : ""}
+      ${vacIsOn() && on ? `<p class="note">Vacation mode is on, so these are on hold until you turn it off on Email & Texts.</p>` : ""}
+      <div class="tpl"><b>Angi text schedule</b>
+        <div class="chips" role="group" aria-label="Angi text schedule">${[["tight", "Tight"], ["", "Same as Facebook leads"]].map(([k, t]) => `<button data-act="angi-plan" data-plan="${k}" aria-pressed="${angiPlan() === k}"${canEditBlast() ? "" : " disabled"}>${t}</button>`).join("")}</div>
+        <p class="note">${esc(angiSchedWords())} The texts stop for good when they text back, get an estimate or job booked, or you log a call that reached them.${angiPlan() && (+((S.textSender || {}).version) || 0) < 31 ? " The tight schedule starts once your texting script has its new code (Settings > Texting)." : ""}</p></div>`;
   }
   S.angiRefresh = () => { if (S.view !== "settings" || S.setTab !== "angi") return; const el = $("#angi-mail"); if (el) el.innerHTML = angiMailHTML(); };
   // a test lead left behind (the page was closed or reloaded during a test) is removed once it's 2 minutes old
@@ -6168,6 +6181,15 @@ function saveLead_(raw) {
       S.angiRefresh();
     },
     "angi-sw-no": () => { S.angiAsk = false; S.angiRefresh(); },
+    // the schedule only: it never turns the texts on
+    "angi-plan": async (t) => {
+      if (!canEditBlast()) return;
+      const plan = t.dataset.plan === "tight" ? "tight" : "";
+      if (angiPlan() === plan) return;
+      try { await angiSave({ angiPlan: plan }); S.fbDrip = Object.assign({ kind: "fbdrip" }, S.fbDrip || {}, { angiPlan: plan }); toast(plan ? "Saved. Angi leads go on the tight schedule." : "Saved. Angi leads go on your Facebook lead schedule.", 5000); }
+      catch (e) { toast("Couldn't save it. Check your connection and try again.", 6000); }
+      S.angiRefresh();
+    },
     "angi-copy-code": async () => { try { await copy(angiScript(await ensureKey()), "Code"); } catch (e) {} },
     "angi-copy-manifest": async () => { await copy(ANGI_MANIFEST, "Settings"); },
     "angi-save-url": async () => {
@@ -8190,7 +8212,7 @@ function ibGo(id, leadId) {
 // with "Reply STOP to opt out." Blasts only send 8 AM to 8 PM Eastern (Florida's limits), and none in vacation mode.
 const TX_ON = () => STANDALONE && !!window.GIC;
 // 3: appointment reminders and re-clean texts (autotext.js). Texting works with 2; only the automatic texts need 3.
-const TEXT_SENDER_VERSION = 30, TEXT_SENDER_MIN = 2;
+const TEXT_SENDER_VERSION = 31, TEXT_SENDER_MIN = 2;
 const TX_STOP_LINE = "Reply STOP to opt out.";
 const TX_MAX = 1500; // characters in one text (Quo takes 1,600)
 S.texts = []; S.textBlasts = []; S.textRuns = {}; S.textSender = null; S.textOut = {}; S.textKey = null; S.textRulesOk = null;
@@ -10294,8 +10316,9 @@ function textSender(PROJECT, VERSION, fsKit, SITE) {
     const sw = env.sw(), on = !!(sw && sw.kind === "fbdrip" && sw.angi === true), fresh = now.getTime() - Date.parse(at) < 13 * 3600000;
     const tb = e ? env.tb() : {}, known = !!(e && ((tb.crm || {})[pkey(e)] || (tb.nums || {})[pkey(e)]));
     const why = known ? "this number is already on a contact in your CRM" : !e ? "no phone number that can get texts" : !on ? "the Angi texts were off when this lead came in" : !fresh ? "it came in too long before the CRM saw it" : "";
-    // Text 1 waits like a Facebook lead's (the same box in Settings > Facebook leads), so the owner can call first
-    const w = AP.FB.wait(sw), first1 = wall(new Date(Math.max(Date.parse(at) + w * 60000, now.getTime() + Math.min(5, w) * 60000) + (w ? 59000 : 0)));
+    // Text 1 waits like a Facebook lead's (the same box in Settings > Facebook leads), so the owner can call first; on
+    // the tight Angi schedule it goes as soon as the email is seen
+    const w = AP.FB.wait(AP.FB.forAngi(sw)), first1 = wall(new Date(Math.max(Date.parse(at) + w * 60000, now.getTime() + Math.min(5, w) * 60000) + (w ? 59000 : 0)));
     const notes = [desc ? "Angi: " + desc : "", x.job ? "Angi job #" + x.job : "", x.when ? "Best time to reach: " + x.when : "", x.comments ? "They wrote: " + x.comments : "", known ? "This number is already on a contact in your CRM, so no automatic texts went to them." : ""].filter(Boolean).join("\n");
     const fb = { id: job, form: "", formName: "", ad: "", adset: "", campaign: "", platform: "angi", at: at, picks: desc ? [desc] : [], timing: fbCut(x.when, 120), service: svc, n: 0, next: why ? "" : first1, stop: why, dup: "" };
     const doc = { name: fbCut(x.name, 120), company: "", phone: phone, email: fbCut(x.email, 200), address: fbCut(x.address, 300), city: fbCut(x.city, 80), type: "Residential", source: "Angi", stage: "new", stageSince: day,
@@ -10306,10 +10329,10 @@ function textSender(PROJECT, VERSION, fsKit, SITE) {
     if (now.getTime() - Date.parse(at) < DAY) fbPush(st, "New Angi lead", [doc.name || phone || "Someone", desc, doc.city, known ? "already in your CRM" : ""].filter(Boolean).join(" · "), leadLink(id));
     return true;
   }
-  // every 2 minutes (each run at night): the Angi emails since the last look, oldest first, 10 at most a run
+  // every minute (each run at night): the Angi emails since the last look, oldest first, 10 at most a run
   function angiMail(st, now, force) {
     if (!force && CACHE.get("angiwait")) return;
-    CACHE.put("angiwait", "1", 110);
+    CACHE.put("angiwait", "1", 50);
     const a = prop("angi", null) || {}, seen = Array.isArray(a.seen) ? a.seen : [], since = +a.since || now.getTime() - DAY, env = fbEnv();
     let list;
     try { list = [].concat(gmail("messages?maxResults=20&q=" + encodeURIComponent(ANGI_Q + " after:" + Math.floor(since / 1000))).messages || []); }
@@ -10410,6 +10433,8 @@ function textSender(PROJECT, VERSION, fsKit, SITE) {
   }
   // the next text for one lead: true when it went, false to stop this run, "" when it was skipped or the series ended
   function fbOne(cfg, st, now, ctx, sw, l0, nowW, slots, note) {
+    // an Angi lead goes by the Angi schedule (the tight one when the owner picked it)
+    if (l0.fb && l0.fb.platform === "angi") sw = AP.FB.forAngi(sw);
     const fb = l0.fb || {}, texts = (Array.isArray(sw.texts) && sw.texts.length ? sw.texts : AP.FB.TEXTS).map(s => String(s || "")), N = texts.length, k = (+fb.n || 0) + 1;
     // the same-day text is the one that's due (fb.sd): it has its own wording and isn't one of the numbered ones
     const same = fb.sd === "due";
@@ -11431,6 +11456,11 @@ function autoPlan() {
   const FB_SAME = "Hi {first}, Elias again. I'm putting my schedule together for this week and wanted to save you a spot for your free {service} estimate. Does a morning or an afternoon work better for you?", FB_SAME_HRS = 4;
   const fbSameText = (sw) => sw && typeof sw.same === "string" ? sw.same : FB_SAME;
   const fbSameHrs = (sw) => { const h = sw ? sw.sameHrs : null, n = h === "" || h == null ? FB_SAME_HRS : Math.round(Number(h)); return n >= 1 && n <= 8 ? n : FB_SAME_HRS; };
+  // The tight schedule for Angi leads (elias, 2026-11-25: "set up super strict follow-ups with these people"; Angi sends
+  // each lead to several pros). Picked in Settings > Angi (blast-fbdrip.angiPlan "tight"): Text 1 as soon as the email is
+  // seen, the same-day text 2 hours later, then days 1, 2, 3, 5, 7, 14 and 30. Same wording as the Facebook texts.
+  const ANGI_TIGHT = { days: [0, 1, 2, 3, 5, 7, 14, 30], wait: 0, sameHrs: 2 };
+  const fbForAngi = (sw) => sw && sw.angiPlan === "tight" ? Object.assign({}, sw, ANGI_TIGHT) : sw;
   // the ads planned on 2026-11-12, by how their names start
   const FB_ADS = [{ match: "Roof", service: "roof soft wash", offer: "$100 off your driveway with a roof soft wash" }, { match: "Driveway A", service: "driveway and pool cage cleaning", offer: "$100 off driveway + pool cage + lanai" }, { match: "Driveway B", service: "driveway and pool cage cleaning", offer: "pool cage cleaned free" },
     { match: "Driveway C", service: "driveway cleaning", offer: "5 windows free with any driveway" }, { match: "Window A", service: "window cleaning", offer: "free screen cleaning" }, { match: "Window B", service: "window cleaning", offer: "10 interior windows free" }];
@@ -11445,7 +11475,7 @@ function autoPlan() {
   // o: { first, link, sent (Eastern wall time it goes) }. With no link, {link} is left in, which stops it going.
   const rvText = (body, o) => (o.first ? String(body || "") : hiFirst(String(body || ""), greet(mins(o.sent) / 60))).replace(/\{first\}/g, () => o.first || "there").replace(/\{day\}/g, () => rvDay(o.sent)).replace(/\{link\}/g, () => o.link || "{link}");
   const RV = { TEXT: RV_TEXT, day: rvDay, link: rvLink, text: rvText };
-  const FB = { service: fbService, services: fbServices, ad: fbAd, text: fbText, slots: fbSlots, slotText: fbSlotText, days: fbDays, hm: fbHm, nextAt: fbNextAt, wait: fbWait, noReach: fbNoReach, sameText: fbSameText, sameHrs: fbSameHrs, SAME: FB_SAME, SAME_HRS: FB_SAME_HRS, WAIT: FB_WAIT, DAYS: FB_DAYS, TEXTS: FB_TEXTS, ADS: FB_ADS };
+  const FB = { service: fbService, services: fbServices, ad: fbAd, text: fbText, slots: fbSlots, slotText: fbSlotText, days: fbDays, hm: fbHm, nextAt: fbNextAt, wait: fbWait, noReach: fbNoReach, sameText: fbSameText, sameHrs: fbSameHrs, forAngi: fbForAngi, ANGI_TIGHT: ANGI_TIGHT, SAME: FB_SAME, SAME_HRS: FB_SAME_HRS, WAIT: FB_WAIT, DAYS: FB_DAYS, TEXTS: FB_TEXTS, ADS: FB_ADS };
   return { addDay: addDay, addMonths: addMonths, mins: mins, clock: clock, remAt: remAt, remLate: remLate, remList: remList, remTpl: remTpl, remKey: remKey, remOk: remOk, remWhen: remWhen, remText: remText, sender: sender, SENDERS: SENDERS, first: first, place: place, isWindow: isWindow, rcGroup: rcGroup, rcFill: rcFill, rcBody: rcBody, rcCount: rcCount, rcNext: rcNext, rcNorm: rcNorm, RC_ROOF: RC_ROOF, ETX: ETX, rcMonths: rcMonths, rcDue: rcDue, rcText: rcText, rcJobs: rcJobs, leftover: leftover, FB: FB, RV: RV };
 }
 const AP = autoPlan();
