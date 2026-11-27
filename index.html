@@ -11373,7 +11373,9 @@ function autoPlan() {
   // The wording he approved, and the days they go, counted from the day they're turned on. Each at 10 AM; a Sunday
   // moves to Monday, and no two on one day.
   const ETX_DAYS = [2, 5, 10, 18, 30], ETX_AT = "10:00";
-  const ETX_TEXTS = ["Hi {first}, it's Elias with Get It Clean Tampa Bay. Just making sure the estimate I sent came through okay. Let me know if you have any questions at all. Reply STOP to opt out.",
+  // no STOP line on these or on the Facebook / Angi texts (elias, 2026-11-27: "The only time you need to say stop to opt
+  // out is honestly only when we're blasting people that didn't opt in"); blasts and re-clean texts keep theirs
+  const ETX_TEXTS = ["Hi {first}, it's Elias with Get It Clean Tampa Bay. Just making sure the estimate I sent came through okay. Let me know if you have any questions at all.",
     "Hey {first}, just checking in on your estimate. I'm filling in my schedule for the next couple of weeks and would be happy to save you a spot. Just reply with a day that works for you.",
     "Hi {first}, Elias again. If you'd like anything on the estimate changed, like adding or taking off a service, just let me know and I'll put together a new one.",
     "Hey {first}, quick check-in from Get It Clean Tampa Bay. I still have a few openings coming up if you'd like to get on the schedule.",
@@ -11448,7 +11450,7 @@ function autoPlan() {
     "Hey {first}, still thinking about getting the {service} done? No pressure. Reply with any questions and I'll get you a price.",
     "Hi {first}, it's Elias with Get It Clean Tampa Bay. Checking in on the {service}. If now's not a good time, just let me know when to reach back out.",
     "{first}, hope all is well. We're booking next month now. Want me to save you a spot for the {service}?",
-    "Hi {first}, last check-in from me. If you ever want that {service} done, just text this number and I'll take care of you. Reply STOP to opt out."];
+    "Hi {first}, last check-in from me. If you ever want that {service} done, just text this number and I'll take care of you."];
   // A second text the same day (elias, 2026-11-15: "another one that messages them maybe 4 hours after the lead comes in.
   // If a lead comes in after 4 p.m., don't send the 4-hour one. Because then it will be after 8 p.m. and that's too
   // late"). The wording is the one he picked. It isn't one of the numbered texts: blast-fbdrip.same holds its wording
