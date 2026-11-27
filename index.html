@@ -12110,18 +12110,21 @@ if (TX_ON()) {
 // Use puts the number in that line's Sq ft (or Linear ft) box, which prices it from the price book; from a lead's page it
 // can go in their notes.
 // The pictures and the address lookup are the counties' own public map services (no key, no cost): Pinellas County's
-// 2026 aerials (3 inches to the pixel) and Hillsborough County's 2025 ones (6 inches). Anywhere else shows a street map
-// only. The map itself is Leaflet, loaded the first time this opens.
+// 2026 aerials (3 inches to the pixel), Hillsborough County's 2025 ones (6 inches) and Pasco County's 2026 ones (1 foot;
+// added 2026-11-27 when elias asked why it didn't work in New Port Richey). Anywhere else shows a street map only. The map itself is Leaflet, loaded the first time this opens.
 const MS_LEAFLET = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min";
 const MS_STREETS = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 // later in the list draws on top. black: that service sends a solid black square where it has no picture, which is hidden
 const MS_AERIALS = [
+  // Pasco's sends nothing (not found) where it has no picture, so the street map shows there
+  { name: "Pasco County 2026", url: "https://pascogis.pascocountyfl.net/giswebi/rest/services/Aerials/Pasco_Vexcel_2026_1ft/ImageServer/tile/{z}/{y}/{x}", bounds: [[28.146, -82.87], [28.485, -82.046]], max: 22 },
   { name: "Hillsborough County 2025", url: "https://maps.hillsboroughcounty.org/arcgis/rest/services/AerialsNew/Aerials_2025/ImageServer/tile/{z}/{y}/{x}", bounds: [[27.564, -82.78], [28.185, -82.05]], max: 21, black: true },
   { name: "Pinellas County 2026", url: "https://egis.pinellas.gov/gis/rest/services/Aerials2026/ImageServer/tile/{z}/{y}/{x}", bounds: [[27.563, -82.873], [28.184, -82.559]], max: 22 },
 ];
 const MS_FIND = [
   "https://egis.pinellas.gov/gis/rest/services/Geocoding/PinellasComposite/GeocodeServer",
   "https://maps.hillsboroughcounty.org/arcgis/rest/services/Geocoding/Composite_Address_Locator_Overall/GeocodeServer",
+  "https://pascogis.pascocountyfl.net/giswebs/rest/services/Address_Locators/EvacCompositeLocator/GeocodeServer",
 ];
 const MS_HOME = [28.105, -82.72]; // Palm Harbor / East Lake, when there's no address to start from
 const MS_SQFT = 10.763910416709722, MS_FT = 3.280839895013123;
@@ -12158,7 +12161,7 @@ function msTotals() {
 // what Use gives back: feet for a line priced by the linear foot, else square feet
 const msUseN = () => { const t = msTotals(); return Math.round(MS && MS.o.unit === "lnft" ? t.ft : t.sqft); };
 
-// ---- looking an address up: both counties are asked, the better match wins (Pinellas on a tie) ----
+// ---- looking an address up: all three counties are asked, the better match wins (Pinellas first on a tie) ----
 async function msFind(q) {
   q = String(q || "").trim(); if (!q) return null;
   const ask = async (u) => {
@@ -12251,7 +12254,7 @@ async function msGo() {
   $("#ms-hint").textContent = "Looking it up…";
   const hit = await msFind(q);
   if (MS !== me) return;
-  if (!hit) { msRead(); toast("Couldn't find that address in Pinellas or Hillsborough. Check the street and city, or drag the map to it.", 6000); return; }
+  if (!hit) { msRead(); toast("Couldn't find that address in Pinellas, Pasco or Hillsborough. Check the street and city, or drag the map to it.", 6000); return; }
   const L = window.L; me.found = hit.label;
   me.map.setView([hit.lat, hit.lng], 20);
   if (me.pin) me.pin.remove();
